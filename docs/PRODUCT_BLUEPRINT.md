@@ -74,18 +74,18 @@ Conversation / Action Log
 
 What each layer is for:
 
-- **Incoming Message / Request** — the raw contact, regardless of channel (future: website, Telegram, WhatsApp, phone, or entered manually by staff today).
-- **CustomerRequest** — the structured, channel-independent record of that inquiry (**implemented today**, manually created/managed by staff; not yet fed by an incoming-message layer). This is the boundary a future AI is meant to operate through instead of touching operational tables directly.
+- **Incoming Message / Request** — the raw contact, regardless of channel. `Message`/`Conversation` records now exist to hold this (**implemented today**, Prompt 08), but no channel is actually connected to anything real yet — every Conversation/Message today is created manually by staff through the Settings UI, exactly like a CustomerRequest.
+- **CustomerRequest** — the structured, channel-independent record of that inquiry (**implemented today**, manually created/managed by staff, and now optionally linkable to a Conversation). This is the boundary a future AI is meant to operate through instead of touching operational tables directly.
 - **Identify Customer / Identify Vehicle** — resolving the request to a real `Customer`/`Vehicle` row in this tenant's data, never a guess.
 - **Understand Intent** — classifying what the customer actually wants (question, booking, change, cancellation, complaint) — future AI Core work (Roadmap 09).
 - **Knowledge + Business Rules + Service History** — the only allowed sources of business-specific fact (see `AI_BEHAVIOR_CONTRACT.md` §2).
 - **AI Decision** — a structured choice among the actions listed, never free-form unconstrained behavior.
-- **Conversation / Action Log** — a durable, auditable record of what happened and why (future — Roadmap 08 and 13).
+- **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said; the "Action Log" half (a record of what an AI *decided and did*) remains future work — Roadmap 13.
 
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 07 complete).
+`api/`/`src/` trees at the time of writing (Prompt 08 complete).
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -95,7 +95,7 @@ Verified directly against `package.json`, `prisma/schema.prisma`, and the
 - **Auth**: fully custom — email + Argon2id password hashing, cryptographically random session tokens (HMAC-SHA256-hashed before storage), server-side `Session` table, HttpOnly/SameSite cookies. No Supabase Auth, no Clerk/Auth0, no JWT-in-localStorage.
 - **Multi-tenant**: every domain table carries `tenantId` + `businessId`; see Section 4.
 
-**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–07, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
+**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–08, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
 
 ## 4. Multi-Tenancy
 
@@ -131,15 +131,16 @@ Business Data
 - `ServiceRecord`
 - `CustomerRequest`
 - `CustomerRequestStatusHistory`
+- `Conversation`
+- `Message`
 
-`CustomerRequest`/`CustomerRequestStatusHistory` were completed in Prompt 07
-(see `DEVELOPMENT_ROADMAP.md`) — they are **not** a future/planned domain,
-they exist in the schema and API today.
+`CustomerRequest`/`CustomerRequestStatusHistory` were completed in Prompt 07,
+and `Conversation`/`Message` in Prompt 08 (see `DEVELOPMENT_ROADMAP.md`) —
+none of these four are a future/planned domain any more; all exist in the
+schema and API today.
 
 **Planned, not yet in the schema** (no such Prisma models exist today):
 
-- `Conversation`
-- `Message`
 - `AI Action` (or similarly-named decision/tool-call record)
 - `AI Log`
 - `Escalation`
@@ -202,7 +203,7 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | **Authentication** | Login, Register | Implemented |
 | **Dashboard** | Dashboard (summary) | Implemented |
 | **Customer Requests** | Customer Requests list, Customer Request detail (embedded in the edit form, incl. status history) | Implemented (`/settings/customer-requests`) |
-| **Conversations** | Conversations list, Conversation detail | **Future** — no channel/message layer exists yet |
+| **Conversations** | Conversations list, Conversation detail (messages, send-message form, Close/Reopen) | Implemented (`/settings/conversations`) — no channel is actually connected to anything real yet |
 | **CRM** | Customers, Customer profile (detail is the edit form; no separate profile page), Vehicles, Vehicle profile (same) | Implemented (`/settings/customers`, `/settings/vehicles`) |
 | **Operations** | Appointments, Appointment detail, Service History, Service Record detail | Implemented (`/settings/appointments`, `/settings/service-history`) |
 | **Configuration** | Services, Knowledge Base, Business Rules, Business Settings, Working Hours | Implemented (`/settings/services`, `/settings/knowledge`, `/settings/rules`, `/settings/business`, `/settings/hours`) |
@@ -319,7 +320,7 @@ Escalate to human
 This is the single most important constraint on the entire future AI
 layer and is the organizing principle behind `AI_BEHAVIOR_CONTRACT.md`.
 
-## 15. Product Evolution (Future)
+## 15. Product Evolution
 
 ```
 Channels
@@ -337,10 +338,14 @@ Tools
 CRM / Operations
 ```
 
-Planned future channels: Website, Telegram, WhatsApp, Phone, Manual
-(manual entry, as done today, remains a permanent "channel"). None of
-these are implemented now — no channel/message/conversation code exists
-in this repository.
+The `Messages`/`Conversations`/`Customer Requests` middle of this chain is
+**implemented today** (Prompts 07–08) — a Conversation and its Messages can
+optionally link to a CustomerRequest, and multiple Conversations can exist
+per Customer. What remains entirely future is both ends of the chain:
+**Channels** (Website, Telegram, WhatsApp, Phone — `Manual`, entered by
+staff exactly as done today, is the only "channel" actually wired to
+anything) and everything from **AI Core** onward. No channel integration,
+AI code, or tool-calling of any kind exists in this repository.
 
 ## Documentation Source of Truth
 

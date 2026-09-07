@@ -29,6 +29,12 @@ const {
   customerRequestCountMock,
   customerRequestUpdateManyMock,
   customerRequestStatusHistoryCreateMock,
+  conversationFindFirstMock,
+  conversationFindManyMock,
+  conversationCountMock,
+  conversationUpdateManyMock,
+  messageFindManyMock,
+  messageCreateMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -62,6 +68,12 @@ const {
     customerRequestCountMock: vi.fn(),
     customerRequestUpdateManyMock: vi.fn(),
     customerRequestStatusHistoryCreateMock: vi.fn(),
+    conversationFindFirstMock: vi.fn(),
+    conversationFindManyMock: vi.fn(),
+    conversationCountMock: vi.fn(),
+    conversationUpdateManyMock: vi.fn(),
+    messageFindManyMock: vi.fn(),
+    messageCreateMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -102,6 +114,13 @@ vi.mock('../src/server/db/prisma', () => {
       updateMany: customerRequestUpdateManyMock,
     },
     customerRequestStatusHistory: { create: customerRequestStatusHistoryCreateMock },
+    conversation: {
+      findFirst: conversationFindFirstMock,
+      findMany: conversationFindManyMock,
+      count: conversationCountMock,
+      updateMany: conversationUpdateManyMock,
+    },
+    message: { findMany: messageFindManyMock, create: messageCreateMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
   }
@@ -120,6 +139,8 @@ import { leadRepository } from '../src/server/repositories/leadRepository'
 import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
 import { serviceRecordRepository } from '../src/server/repositories/serviceRecordRepository'
 import { customerRequestRepository } from '../src/server/repositories/customerRequestRepository'
+import { conversationRepository } from '../src/server/repositories/conversationRepository'
+import { messageRepository } from '../src/server/repositories/messageRepository'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -151,6 +172,12 @@ beforeEach(() => {
   customerRequestCountMock.mockResolvedValue(0)
   customerRequestUpdateManyMock.mockResolvedValue({ count: 0 })
   customerRequestStatusHistoryCreateMock.mockResolvedValue({})
+  conversationFindFirstMock.mockResolvedValue(null)
+  conversationFindManyMock.mockResolvedValue([])
+  conversationCountMock.mockResolvedValue(0)
+  conversationUpdateManyMock.mockResolvedValue({ count: 0 })
+  messageFindManyMock.mockResolvedValue([])
+  messageCreateMock.mockResolvedValue({ id: 'm1', createdAt: new Date() })
 })
 
 describe('tenant isolation — Business', () => {
@@ -587,5 +614,76 @@ describe('tenant isolation — CustomerRequest', () => {
     const call = customerRequestFindManyMock.mock.calls[0]![0] as { where: { tenantId: string; OR: unknown } }
     expect(call.where.tenantId).toBe('tenant-a')
     expect(call.where.OR).toBeDefined()
+  })
+})
+
+describe('tenant isolation — Conversation', () => {
+  it('tenant B cannot GET tenant A conversation', async () => {
+    conversationFindFirstMock.mockResolvedValue(null)
+    const result = await conversationRepository.findById('tenant-b', 'business-b', 'conversation-owned-by-tenant-a')
+
+    expect(conversationFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot GET tenant A conversation via the with-detail lookup either', async () => {
+    conversationFindFirstMock.mockResolvedValue(null)
+    const result = await conversationRepository.findByIdWithDetail('tenant-b', 'business-b', 'conversation-owned-by-tenant-a')
+
+    expect(conversationFindFirstMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' } })
+    )
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot PATCH tenant A conversation', async () => {
+    conversationUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await conversationRepository.updateById('tenant-b', 'business-b', 'conversation-owned-by-tenant-a', {
+      subject: 'Hijacked',
+    })
+
+    expect(conversationUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { subject: 'Hijacked' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('list queries are always scoped to both tenantId and businessId', async () => {
+    await conversationRepository.list('tenant-a', 'business-a', { skip: 0, take: 20 })
+
+    expect(conversationFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-a', tenantId: 'tenant-a' } })
+    )
+  })
+})
+
+describe('tenant isolation — Message', () => {
+  it('tenant B cannot list tenant A conversation messages (query is scoped, so it simply never matches)', async () => {
+    await messageRepository.listByConversation('tenant-b', 'business-b', 'conversation-owned-by-tenant-a')
+
+    expect(messageFindManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', conversationId: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+      orderBy: { createdAt: 'asc' },
+    })
+  })
+
+  it('a message create for a foreign-tenant conversation never touches (or updates lastMessageAt on) that other tenant: the conversation-touch is scoped and matches zero rows', async () => {
+    conversationUpdateManyMock.mockResolvedValue({ count: 0 })
+    await messageRepository.createAndTouchConversation('tenant-b', 'business-b', {
+      tenantId: 'tenant-b',
+      businessId: 'business-b',
+      conversationId: 'conversation-owned-by-tenant-a',
+      direction: 'INBOUND',
+      senderType: 'CUSTOMER',
+      content: 'hijack attempt',
+    })
+
+    expect(conversationUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { lastMessageAt: expect.any(Date) },
+    })
   })
 })

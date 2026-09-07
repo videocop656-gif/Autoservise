@@ -5,11 +5,14 @@ auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
 **Prompt 03 (Knowledge Base + Business Rules)**, **Prompt 04 (Customers,
 Vehicles & Leads)**, **Prompt 05 (Appointments & Booking Foundation)**, and
 **Prompt 06 (Service History Foundation)**: what was actually done to which
-vehicle, when, at what mileage, and for how much — and **Prompt 07
+vehicle, when, at what mileage, and for how much — **Prompt 07
 (Customer Request Foundation)**: a structured record of a customer's
-inquiry, captured before any Appointment exists. Still no AI, no
-communication channels (Telegram/WhatsApp/chat), no full CRM pipeline, no
-external calendar sync, and no final design.
+inquiry, captured before any Appointment exists — and **Prompt 08
+(Conversations + Messages Foundation)**: the communication plumbing between
+a future channel layer and a `CustomerRequest`, with no channel connected
+to anything real yet. Still no AI, no live communication channels
+(Telegram/WhatsApp/website chat/phone), no full CRM pipeline, no external
+calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -260,6 +263,22 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - `GET /api/customer-requests` is paginated, sorted `createdAt DESC`, and supports `status=`, `source=`, `customerId=`, `vehicleId=`, `serviceId=`, `appointmentId=`, and `search=` (matches `subject`/`description`, case-insensitive).
 - **Manager has full read/write/status-change access** — same operational exception as Appointment/Service History.
 
+## Conversations
+
+`Conversation` + `Message` are the communication foundation between a future channel layer and `CustomerRequest` — plumbing, not a live integration. `channel` (`MANUAL`/`WEBSITE`/`TELEGRAM`/`WHATSAPP`/`PHONE`/`OTHER`) is only a label for where a conversation came from; **no external channel integration exists in this codebase** — creating a Conversation with `channel: "TELEGRAM"` does not talk to Telegram.
+
+- Fields: `customerId`/`customerRequestId` (both optional — the very first message can arrive before anyone is identified, e.g. "how much is an oil change?"), `channel` (required), `status` (`OPEN`/`CLOSED`, defaults `OPEN`), `subject` (optional, ≤200 chars), `startedAt` (defaults to the creation instant), `lastMessageAt` (null until the first message), `closedAt`.
+- **Customer consistency**: if both `customerId` and `customerRequestId` are set, `CustomerRequest.customerId` must equal the Conversation's own `customerId` (`400` otherwise) — a Conversation can never point at inconsistent halves of the same relationship. Both are re-verified server-side against the current tenant+business (404 if foreign-tenant) whenever either is set or changed; a plain field edit that doesn't touch them is never blocked by this.
+- **Multiple conversations per customer are normal** — there is no "one conversation per customer" rule; a customer can have any number of open or closed conversations at once (a booking question, a warranty question, a new complaint, all separately).
+- **Lifecycle is deliberately just two states**, no history kept for them (that's `CustomerRequestStatusHistory`'s job, not this): `OPEN → CLOSED` sets `closedAt` to the given value or `now()` if omitted; `CLOSED → OPEN` always forces `closedAt` back to `null`, regardless of what's sent; re-submitting the same status is a no-op; `closedAt` can also be patched independently of `status`.
+- `Message` is **append-only**: `direction` (`INBOUND`/`OUTBOUND`), `senderType` (`CUSTOMER`/`STAFF`/`SYSTEM` — deliberately no `AI` value at this stage), `content` (required, 1–10,000 chars, trimmed). There is no `PATCH`/`DELETE` for an individual message — `POST /api/conversations/:id/messages` is the only mutation, and once created a message's content can never change.
+- **A closed Conversation rejects new messages** with `409 CONVERSATION_CLOSED` — it must be reopened (`PATCH { status: "OPEN" }`) first. This is deliberate: a closed conversation can't be silently continued.
+- **`lastMessageAt` is always consistent with the actual last message**: creating a Message and updating the parent Conversation's `lastMessageAt` happen inside one interactive Prisma transaction (`messageRepository.createAndTouchConversation`), so the two can never drift apart under concurrent writes.
+- `GET /api/conversations` is paginated, sorted `lastMessageAt DESC` (nulls last) then `createdAt DESC`, and supports `status=`, `channel=`, `customerId=`, `customerRequestId=`, and `search=` (matches `subject`, case-insensitive). `GET /api/conversations/:id` additionally returns `customer`/`customerRequest` summaries and the full `messages` array (oldest first) — messages are not paginated at this stage, a deliberate simplification since there is no live channel feeding volume into them yet.
+- **No hard delete, ever.** `DELETE /api/conversations/:id` is `405`; close one out via `PATCH { status: "CLOSED" }`.
+- **Manager has full read/write access, including sending messages** — same operational exception as Appointment/Service History/Customer Requests.
+- This stage adds no AI, LLM, embeddings, or external channel integration of any kind — see `docs/AI_BEHAVIOR_CONTRACT.md` for what a future AI layer built on top of this will and will not be allowed to do.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -286,8 +305,11 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 | Create / update / archive / restore a service record | ✅ | ✅ | ✅ |
 | List/read customer requests                    | ✅ | ✅ | ✅ |
 | Create / update a customer request (incl. status) | ✅ | ✅ | ✅ |
+| List/read conversations                        | ✅ | ✅ | ✅ |
+| Create / update a conversation (incl. status)  | ✅ | ✅ | ✅ |
+| Send a message                                 | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, and Customer Requests are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), and [Customer Requests](#customer-requests)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, and Conversations are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), and [Conversations](#conversations)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -376,6 +398,11 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | GET    | `/api/customer-requests/:id` | any authenticated       | 404 if unknown or another tenant's; includes `statusHistory` (oldest first) |
 | POST   | `/api/customer-requests`     | owner, admin, **manager** | always creates `status: NEW`; `vehicleId`/`serviceId`/`appointmentId` all optional but cross-checked if given |
 | PATCH  | `/api/customer-requests/:id` | owner, admin, **manager** | partial update, ≥1 field, incl. `status` (transition-checked); no DELETE — always `405` |
+| GET    | `/api/conversations`               | any authenticated       | paginated, sorted `lastMessageAt DESC` (nulls last), `createdAt DESC`; `?status=`, `?channel=`, `?customerId=`, `?customerRequestId=`, `?search=` |
+| GET    | `/api/conversations/:id`           | any authenticated       | 404 if unknown or another tenant's; includes `customer`/`customerRequest` summaries and the full `messages` array |
+| POST   | `/api/conversations`               | owner, admin, **manager** | always creates `status: OPEN`; `customerId`/`customerRequestId` optional but cross-checked for consistency if both given |
+| PATCH  | `/api/conversations/:id`           | owner, admin, **manager** | partial update, ≥1 field, incl. `status`; no DELETE — always `405` |
+| POST   | `/api/conversations/:id/messages`  | owner, admin, **manager** | append-only; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; no PATCH/DELETE for a message ever |
 
 ## Security
 
@@ -461,6 +488,19 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - No AI, messaging channels, or CRM pipeline added — this is a structured data foundation only, exactly as scoped.
 - 91 new unit tests (538 total): schema validation, service-layer ownership/active-state/appointment-consistency/time-range/status-transition/status-history-path checks, and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. proving a foreign-tenant status-changing update never commits a history row).
 
+**Prompt 08 — Conversations + Messages Foundation**
+- `Conversation` model: `customerId`/`customerRequestId` (both optional — a conversation can start before anyone is identified), `channel` (label only, no live integration), `status` (`OPEN`/`CLOSED`), `subject`, `startedAt`, `lastMessageAt`, `closedAt`.
+- `Message` model: append-only, `direction`/`senderType`/`content` (1–10,000 chars); no `AI` sender type at this stage; no `PATCH`/`DELETE` for a message, ever.
+- Customer/CustomerRequest consistency enforced when both are set (`400` on mismatch); ownership re-verified server-side (404 if foreign-tenant) only for relations actually being set/changed.
+- Two-state lifecycle (`OPEN`/`CLOSED`, no history kept for it — that's `CustomerRequestStatusHistory`'s job): closing sets `closedAt` (given value or `now()`); reopening always clears it; a closed conversation rejects new messages with `409 CONVERSATION_CLOSED` until reopened.
+- `lastMessageAt` is kept atomically consistent with the actual last message via an interactive Prisma transaction (`messageRepository.createAndTouchConversation`) — the same pattern introduced in Prompt 07 for CustomerRequest's status history, reused here for a different atomicity need.
+- **Local dev API router extended** (`vite.config.ts`): `resolveApiFile()` now walks a route path segment by segment, matching literal or bracket (`[id]`) directories at any depth, not just a single trailing dynamic file — needed to support the nested `POST /api/conversations/:id/messages` route exactly as Vercel itself would resolve `api/conversations/[id]/messages.ts` in production. Fully backward compatible with every existing single-segment dynamic route.
+- `conversationService`/`conversationRepository` and `messageService`/`messageRepository` follow the established pattern; Prisma FKs use `Restrict` on the optional Customer/CustomerRequest relations (same principle as CustomerRequest's own optional relations) but `Cascade` on Message → Conversation — the first "owned child" relation in this schema pointing at a *domain* entity rather than a Business/Tenant, since a Message only exists as part of its Conversation.
+- Settings UI: `/settings/conversations` — list with search/status/channel filters and pagination, a create form, and a detail panel (messages in chronological order, a message-send form, and a Close/Reopen button) — a functional operational UI, not a chatbot: no AI button, no "generate reply."
+- Manager has full read/write access, including sending messages — same operational exception as Appointment/Service History/Customer Requests.
+- No AI, LLM, embeddings, vector database, external channel integration (Telegram/WhatsApp/website chat/phone/webhooks), or CRM pipeline added — channel values are labels only, exactly as scoped.
+- 65 new unit tests (603 total): schema validation, service-layer relation/consistency/lifecycle checks, and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. proving a message create against a foreign-tenant conversation never touches that tenant's `lastMessageAt`).
+
 ## Not implemented yet
 
 AI / LLM / OpenAI / Anthropic / Gemini, embeddings, vector database, RAG,
@@ -469,15 +509,21 @@ Telegram, WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website
 chat, email integration, SMS, voice AI, CRM (pipeline/kanban), Kommo, external
 calendar sync (Google Calendar/Outlook), webhooks, background jobs, online
 payments, billing, subscriptions, customer self-service portal, recurring
-appointments, drag-and-drop calendar UI, conversations, messages, reminders/
-follow-ups, analytics, notifications, automation engine, final UI/UX & design
-system, marketing site, advanced dashboard.
+appointments, drag-and-drop calendar UI, reminders/follow-ups, analytics,
+notifications, automation engine, final UI/UX & design system, marketing
+site, advanced dashboard.
+
+`Conversation`/`Message` (the communication foundation between a future
+channel layer and `CustomerRequest`) **are** implemented as of Prompt 08 —
+see [Conversations](#conversations) — but carry no channel integration,
+AI, or automatic behavior of any kind; `channel` is a label, not a
+connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `AIProvider` / `CRMAdapter` / `CalendarAdapter` /
 `ChannelAdapter` / `PaymentAdapter` integration layers, and future domain
-models like `Conversation`, `Message`, `AutomationRule`, `Subscription`,
-`UsageEvent`, `AuditLog`) without committing to their shape yet.
+models like `AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`,
+`Escalation`) without committing to their shape yet.
 `KnowledgeItem`/`BusinessRule` are deliberately kept separate from any future
 AI/RAG layer, and `Lead` is deliberately kept separate from `Appointment` — a
 Lead is an inquiry, an Appointment is a confirmed booking (see

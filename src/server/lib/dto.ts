@@ -11,6 +11,8 @@ import type {
   ServiceRecord,
   CustomerRequest,
   CustomerRequestStatusHistory,
+  Conversation,
+  Message,
 } from '@prisma/client'
 
 /**
@@ -364,5 +366,69 @@ export function toCustomerRequestDto(request: CustomerRequestWithOptionalHistory
           })),
         }
       : {}),
+  }
+}
+
+export interface MessageDto {
+  id: string
+  conversationId: string
+  direction: Message['direction']
+  senderType: Message['senderType']
+  content: string
+  createdAt: Date
+}
+
+export function toMessageDto(message: Message): MessageDto {
+  return {
+    id: message.id,
+    conversationId: message.conversationId,
+    direction: message.direction,
+    senderType: message.senderType,
+    content: message.content,
+    createdAt: message.createdAt,
+  }
+}
+
+export interface ConversationDto {
+  id: string
+  customerId: string | null
+  customerRequestId: string | null
+  channel: Conversation['channel']
+  status: Conversation['status']
+  subject: string | null
+  startedAt: Date
+  lastMessageAt: Date | null
+  closedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+  // Only present on the single-GET response (spec §24); list items omit
+  // both the summaries and the messages array.
+  customer?: { id: string; firstName: string; lastName: string | null } | null
+  customerRequest?: { id: string; subject: string; status: CustomerRequest['status'] } | null
+  messages?: MessageDto[]
+}
+
+type ConversationWithOptionalDetail = Conversation & {
+  customer?: { id: string; firstName: string; lastName: string | null } | null
+  customerRequest?: { id: string; subject: string; status: CustomerRequest['status'] } | null
+  messages?: Message[]
+}
+
+export function toConversationDto(conversation: ConversationWithOptionalDetail): ConversationDto {
+  return {
+    id: conversation.id,
+    customerId: conversation.customerId,
+    customerRequestId: conversation.customerRequestId,
+    channel: conversation.channel,
+    status: conversation.status,
+    subject: conversation.subject,
+    startedAt: conversation.startedAt,
+    lastMessageAt: conversation.lastMessageAt,
+    closedAt: conversation.closedAt,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    ...('customer' in conversation ? { customer: conversation.customer ?? null } : {}),
+    ...('customerRequest' in conversation ? { customerRequest: conversation.customerRequest ?? null } : {}),
+    ...(conversation.messages ? { messages: conversation.messages.map(toMessageDto) } : {}),
   }
 }

@@ -88,20 +88,32 @@
 - Frontend: `/settings/customer-requests` (search, status/source filters, pagination, Customer→Vehicle cascading select, embedded status-history panel on the edit form).
 - 91 tests covering schema validation, service-layer business rules, and cross-tenant isolation (part of the project's 538-test suite as of this stage).
 
-## Current
-
-**Status: none in progress.**
-
-Every stage originally planned through "Customer Requests" (01–07) is
-verified complete in the code. There is no partially-implemented stage
-at the time of writing. The next stage to begin, on explicit instruction,
-is **08 — Conversations + Messages** below.
-
-## Future Roadmap
-
 ### 08 — Conversations + Messages
 
-**Goal**: create a conversation/message layer sitting between channels and `CustomerRequest`, so a `CustomerRequest` can be linked to the actual back-and-forth that produced it. Not started — no `Conversation`/`Message` models exist in the schema today.
+**Status: COMPLETED**
+
+- `Conversation`: `customerId`/`customerRequestId` (both optional — a conversation can begin before anyone is identified), `channel` (`ConversationChannel` — a label only, no live integration), `status` (`ConversationStatus`: `OPEN`/`CLOSED`, defaults `OPEN`), `subject`, `startedAt`, `lastMessageAt`, `closedAt`. All fields from the original plan are present in `prisma/schema.prisma` exactly as specified.
+- `Message`: `direction` (`MessageDirection`: `INBOUND`/`OUTBOUND`), `senderType` (`MessageSenderType`: `CUSTOMER`/`STAFF`/`SYSTEM` — deliberately no `AI` value at this stage), `content` (1–10,000 chars). Append-only: no `PATCH`/`DELETE` endpoint exists for a message.
+- Customer/CustomerRequest consistency enforced when both are set on a Conversation (`400` on mismatch); ownership re-verified server-side only for relations actually being set/changed.
+- Two-state lifecycle with no history kept for it (`CustomerRequestStatusHistory` remains the only status-history model): closing sets `closedAt`; reopening always clears it; a closed conversation rejects new messages with `409 CONVERSATION_CLOSED`.
+- `lastMessageAt` kept atomically consistent with the actual last message via an interactive Prisma transaction, reusing the pattern introduced in Prompt 07.
+- The local dev API router (`vite.config.ts`) was generalized to resolve nested dynamic routes (`api/conversations/[id]/messages.ts`), needed for `POST /api/conversations/:id/messages` — a necessary infrastructure change, not a scope expansion; fully backward compatible with every existing route.
+- Manager granted full create/update/status-change access, including sending messages.
+- Frontend: `/settings/conversations` (list with filters/pagination, create form, detail panel with chronological messages, a send-message form, and Close/Reopen).
+- No AI, LLM, embeddings, or external channel integration of any kind — channel values are labels only.
+- 65 tests covering schema validation, service-layer business rules, and cross-tenant isolation (part of the project's 603-test suite as of this stage).
+
+## Current
+
+**Status: 09 — AI Core is CURRENT / NEXT IMPLEMENTATION.**
+
+Every stage through Conversations + Messages (01–08) is verified complete
+in the code. Prompt 09 (AI Core: intent detection, context assembly,
+knowledge/rules retrieval, structured AI decision output) has not been
+started — no AI/LLM code of any kind exists in this repository as of this
+writing.
+
+## Future Roadmap
 
 ### 09 — AI Core
 
@@ -133,7 +145,7 @@ is **08 — Conversations + Messages** below.
 
 ### 16 — Channel Integrations
 
-**Planned channels**: Website, Telegram, WhatsApp, Phone. Each channel is meant to feed into the shared Conversation architecture from Prompt 08 — none are implemented, and this stage is explicitly out of scope until then.
+**Planned channels**: Website, Telegram, WhatsApp, Phone. The `Conversation`/`Message` architecture they're meant to feed into already exists (Prompt 08) — but no channel itself is connected to anything real, and none of the four listed values does more today than label which channel a manually-created Conversation came from.
 
 ### 17 — Production Hardening
 

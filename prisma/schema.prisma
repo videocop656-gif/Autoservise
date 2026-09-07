@@ -92,6 +92,33 @@ enum CustomerRequestStatus {
   CANCELLED
 }
 
+// A channel is only a label for where a Conversation came from — no
+// external integration exists for any of these yet (see Prompt 08 scope).
+enum ConversationChannel {
+  MANUAL
+  WEBSITE
+  TELEGRAM
+  WHATSAPP
+  PHONE
+  OTHER
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageSenderType {
+  CUSTOMER
+  STAFF
+  SYSTEM
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -111,6 +138,8 @@ model Tenant {
   serviceRecords                 ServiceRecord[]
   customerRequests               CustomerRequest[]
   customerRequestStatusHistories CustomerRequestStatusHistory[]
+  conversations                  Conversation[]
+  messages                       Message[]
 
   @@map("tenants")
 }
@@ -159,6 +188,8 @@ model Business {
   serviceRecords                 ServiceRecord[]
   customerRequests               CustomerRequest[]
   customerRequestStatusHistories CustomerRequestStatusHistory[]
+  conversations                  Conversation[]
+  messages                       Message[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -280,6 +311,7 @@ model Customer {
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
+  conversations    Conversation[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -499,6 +531,7 @@ model CustomerRequest {
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
 
   statusHistory CustomerRequestStatusHistory[]
+  conversations Conversation[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -530,6 +563,91 @@ model CustomerRequestStatusHistory {
   @@index([tenantId, businessId, customerRequestId, createdAt])
   @@index([customerRequestId, createdAt])
   @@map("customer_request_status_history")
+}
+
+model Conversation {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  // Both optional: the very first message of a conversation may arrive
+  // before the customer is identified at all ("how much is an oil
+  // change?"), and a Conversation may never end up linked to a
+  // CustomerRequest. When both are set, customerRequest.customerId must
+  // equal customerId — enforced in conversationService.ts, not the DB.
+  customerId        String?
+  customerRequestId String?
+
+  // A label for where the conversation came from — not a live
+  // integration. No channel has an external connection in this codebase.
+  channel ConversationChannel
+  status  ConversationStatus  @default(OPEN)
+
+  subject String?
+
+  // When the conversation began. Defaults to the creation instant if not
+  // given explicitly, but is a distinct field from createdAt so a
+  // conversation can be backfilled with a real historical start time.
+  startedAt DateTime
+
+  // Set (and kept in sync) whenever a Message is created — see
+  // messageRepository.createAndTouchConversation(). Null until the first
+  // message exists.
+  lastMessageAt DateTime?
+
+  // Set when status transitions to CLOSED (explicit value honored if
+  // given, otherwise now()); cleared back to null on every transition to
+  // OPEN. See assertStatusChange() in conversationService.ts.
+  closedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business        Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade: same principle as CustomerRequest's own optional
+  // Vehicle/Service/Appointment relations — a Conversation is a historical
+  // communication record and must survive its Customer/CustomerRequest
+  // being removed outside the app's normal workflow (neither has a
+  // hard-delete path today).
+  customer        Customer?        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customerRequest CustomerRequest? @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
+
+  messages Message[]
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@index([tenantId, businessId, channel])
+  @@index([tenantId, businessId, lastMessageAt])
+  @@index([customerId])
+  @@index([customerRequestId])
+  @@map("conversations")
+}
+
+model Message {
+  id             String            @id @default(uuid())
+  tenantId       String
+  businessId     String
+  conversationId String
+  direction      MessageDirection
+  senderType     MessageSenderType
+  content        String            @db.Text
+  createdAt      DateTime          @default(now())
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business     Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Cascade — unlike every other domain relation added in this schema so
+  // far. A Message only exists as part of its Conversation (it doesn't
+  // reference an independent CRM entity the way Lead/Appointment/
+  // ServiceRecord/CustomerRequest do), so it is an "owned child" record —
+  // the same relationship BusinessWorkingHours has to Business. There is
+  // no DELETE endpoint for Conversation today, so this only matters for
+  // direct DB operations outside the app's normal flow.
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, businessId, conversationId, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("messages")
 }
 
 model Session {

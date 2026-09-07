@@ -5,13 +5,17 @@ import fs from 'node:fs'
 import type { ApiRequest, ApiResponse } from './src/server/types/http'
 
 /**
- * Resolves a request path like "services/abc-123" to an API handler file,
- * mirroring Vercel's file-based routing: an exact match (api/services/abc-123.ts)
- * wins, otherwise a single-segment dynamic file in the same directory
- * (api/services/[id].ts) matches and its bracket name becomes a query param
- * — i.e. req.query.id === "abc-123", exactly like Vercel's own dynamic
- * routes. Only one dynamic segment, at the last path position, is
- * supported — that's all this project's routes need.
+ * Resolves a request path like "services/abc-123" or
+ * "conversations/abc-123/messages" to an API handler file, mirroring
+ * Vercel's file-based routing: an exact match (api/services/abc-123.ts)
+ * or directory index (api/services/abc-123/index.ts) wins outright;
+ * otherwise the path is walked segment by segment, matching either a
+ * literal directory (api/conversations/) or a single bracket-directory
+ * placeholder (api/conversations/[id]/) at each level, and finally either
+ * a literal file or a single bracket file ([id].ts) at the last segment
+ * — exactly like Vercel's nested dynamic routes. Matched bracket names
+ * become query params, e.g. both api/services/[id].ts and
+ * api/conversations/[id]/messages.ts populate req.query.id.
  */
 function resolveApiFile(apiDir: string, routePath: string): { filePath: string; params: Record<string, string> } | null {
   const exact = path.join(apiDir, `${routePath}.ts`)
@@ -24,17 +28,47 @@ function resolveApiFile(apiDir: string, routePath: string): { filePath: string; 
     return { filePath: index, params: {} }
   }
 
-  const segments = routePath.split('/')
-  const last = segments.pop()
-  if (last === undefined || last === '') return null
+  return resolveSegments(apiDir, routePath.split('/'), {})
+}
 
-  const dir = path.join(apiDir, ...segments)
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return null
+function resolveSegments(
+  dir: string,
+  segments: string[],
+  params: Record<string, string>
+): { filePath: string; params: Record<string, string> } | null {
+  const [head, ...rest] = segments
+  if (head === undefined || head === '') return null
 
-  for (const entry of fs.readdirSync(dir)) {
-    const match = /^\[(.+)\]\.ts$/.exec(entry)
-    if (match?.[1]) {
-      return { filePath: path.join(dir, entry), params: { [match[1]]: last } }
+  if (rest.length === 0) {
+    const file = path.join(dir, `${head}.ts`)
+    if (fs.existsSync(file)) {
+      return { filePath: file, params }
+    }
+    if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+      for (const entry of fs.readdirSync(dir)) {
+        const match = /^\[(.+)\]\.ts$/.exec(entry)
+        if (match?.[1]) {
+          return { filePath: path.join(dir, entry), params: { ...params, [match[1]]: head } }
+        }
+      }
+    }
+    return null
+  }
+
+  const literalDir = path.join(dir, head)
+  if (fs.existsSync(literalDir) && fs.statSync(literalDir).isDirectory()) {
+    const viaLiteral = resolveSegments(literalDir, rest, params)
+    if (viaLiteral) return viaLiteral
+  }
+
+  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+    for (const entry of fs.readdirSync(dir)) {
+      const match = /^\[(.+)\]$/.exec(entry)
+      if (!match?.[1]) continue
+      const dynamicDir = path.join(dir, entry)
+      if (!fs.statSync(dynamicDir).isDirectory()) continue
+      const viaDynamic = resolveSegments(dynamicDir, rest, { ...params, [match[1]]: head })
+      if (viaDynamic) return viaDynamic
     }
   }
 
