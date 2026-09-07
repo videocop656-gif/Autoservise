@@ -20,3 +20,14 @@ export function parseEnumQueryParam<T extends z.ZodTypeAny>(
   }
   return result.data
 }
+
+/** Parses an optional ISO 8601 date/datetime query param (e.g. ?dateFrom=...). Throws 400 if present but unparseable. */
+export function parseDateQueryParam(raw: string | string[] | undefined, fieldName: string): Date | undefined {
+  if (raw === undefined) return undefined
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const date = new Date(value ?? '')
+  if (!value || Number.isNaN(date.getTime())) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Invalid ${fieldName}`)
+  }
+  return date
+}

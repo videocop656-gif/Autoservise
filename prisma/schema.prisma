@@ -66,6 +66,15 @@ enum LeadSource {
   OTHER
 }
 
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -81,6 +90,7 @@ model Tenant {
   customers      Customer[]
   vehicles       Vehicle[]
   leads          Lead[]
+  appointments   Appointment[]
 
   @@map("tenants")
 }
@@ -124,6 +134,7 @@ model Business {
   customers      Customer[]
   vehicles       Vehicle[]
   leads          Lead[]
+  appointments   Appointment[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -164,9 +175,10 @@ model Service {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  leads    Lead[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  leads        Lead[]
+  appointments Appointment[]
 
   @@index([tenantId])
   @@index([businessId])
@@ -235,10 +247,11 @@ model Customer {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  vehicles Vehicle[]
-  leads    Lead[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  vehicles     Vehicle[]
+  leads        Lead[]
+  appointments Appointment[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -265,12 +278,13 @@ model Vehicle {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict, not Cascade: a domain record (Vehicle) is never deleted
   // just because its Customer is soft-deleted elsewhere in the app.
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  leads    Lead[]
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  leads        Lead[]
+  appointments Appointment[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, customerId])
@@ -307,6 +321,40 @@ model Lead {
   @@index([tenantId, businessId, customerId])
   @@index([tenantId, businessId, createdAt])
   @@map("leads")
+}
+
+model Appointment {
+  id         String            @id @default(uuid())
+  tenantId   String
+  businessId String
+  customerId String
+  vehicleId  String
+  serviceId  String
+  // Stored in UTC. Business.timezone (not stored here) is the sole source
+  // of truth for interpreting these as local wall-clock time — see
+  // src/server/lib/timezone.ts's toBusinessLocalDateTime().
+  startAt    DateTime
+  endAt      DateTime
+  status     AppointmentStatus @default(SCHEDULED)
+  notes      String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade: an Appointment is history and must survive even
+  // if the Customer/Vehicle/Service it references is later removed from
+  // the database outside the app's normal soft-delete workflow.
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle  Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, startAt])
+  @@index([tenantId, businessId, customerId])
+  @@index([tenantId, businessId, vehicleId])
+  @@index([tenantId, businessId, status])
+  @@map("appointments")
 }
 
 model Session {

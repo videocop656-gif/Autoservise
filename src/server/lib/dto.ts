@@ -1,4 +1,14 @@
-import type { Business, BusinessWorkingHours, Service, KnowledgeItem, BusinessRule, Customer, Vehicle, Lead } from '@prisma/client'
+import type {
+  Business,
+  BusinessWorkingHours,
+  Service,
+  KnowledgeItem,
+  BusinessRule,
+  Customer,
+  Vehicle,
+  Lead,
+  Appointment,
+} from '@prisma/client'
 
 /**
  * Never return raw Prisma objects to the client. These DTOs are the single
@@ -214,5 +224,33 @@ export function toLeadDto(lead: Lead): LeadDto {
     notes: lead.notes,
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt,
+  }
+}
+
+export interface AppointmentDto {
+  id: string
+  customerId: string
+  vehicleId: string
+  serviceId: string
+  startAt: Date
+  endAt: Date
+  status: Appointment['status']
+  notes: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toAppointmentDto(appointment: Appointment): AppointmentDto {
+  return {
+    id: appointment.id,
+    customerId: appointment.customerId,
+    vehicleId: appointment.vehicleId,
+    serviceId: appointment.serviceId,
+    startAt: appointment.startAt,
+    endAt: appointment.endAt,
+    status: appointment.status,
+    notes: appointment.notes,
+    createdAt: appointment.createdAt,
+    updatedAt: appointment.updatedAt,
   }
 }

@@ -10,6 +10,7 @@ import RulesSettingsPage from './pages/settings/RulesSettingsPage'
 import CustomersSettingsPage from './pages/settings/CustomersSettingsPage'
 import VehiclesSettingsPage from './pages/settings/VehiclesSettingsPage'
 import LeadsSettingsPage from './pages/settings/LeadsSettingsPage'
+import AppointmentsSettingsPage from './pages/settings/AppointmentsSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -86,6 +87,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <LeadsSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/appointments"
+        element={
+          <ProtectedRoute>
+            <AppointmentsSettingsPage />
           </ProtectedRoute>
         }
       />

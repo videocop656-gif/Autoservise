@@ -5,11 +5,14 @@ import { logger } from './logger'
 export class ApiError extends Error {
   readonly statusCode: number
   readonly code: string
+  /** Optional safe, non-sensitive extra context (e.g. a conflicting resource id). Never PII. */
+  readonly details?: Record<string, unknown>
 
-  constructor(statusCode: number, code: string, message: string) {
+  constructor(statusCode: number, code: string, message: string, details?: Record<string, unknown>) {
     super(message)
     this.statusCode = statusCode
     this.code = code
+    this.details = details
   }
 }
 
@@ -19,7 +22,9 @@ export class ApiError extends Error {
  */
 export function sendError(res: ApiResponse, err: unknown): void {
   if (err instanceof ApiError) {
-    res.status(err.statusCode).json({ error: { code: err.code, message: err.message } })
+    res.status(err.statusCode).json({
+      error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) },
+    })
     return
   }
 

@@ -2,10 +2,11 @@
 
 SaaS-приложение для автосервисов. This covers **Prompt 01 (Foundation)** —
 auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
-**Prompt 03 (Knowledge Base + Business Rules)**, and **Prompt 04 (Customers,
-Vehicles & Leads)**: who the customer is, what they drive, and what they
-asked about. Still no AI, no communication channels (Telegram/WhatsApp/chat),
-no CRM pipeline, no booking/calendar, and no final design.
+**Prompt 03 (Knowledge Base + Business Rules)**, **Prompt 04 (Customers,
+Vehicles & Leads)**, and **Prompt 05 (Appointments & Booking Foundation)**:
+who is booked, on which vehicle, for which service, when, and in what
+status. Still no AI, no communication channels (Telegram/WhatsApp/chat), no
+full CRM pipeline, no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -200,15 +201,30 @@ Fields: `name`, `description`, `category`, `priority`, `isActive`. Category is a
 
 > A Lead represents an inquiry or sales opportunity.
 > An Appointment represents a confirmed scheduled time.
-> Appointments are not implemented in Prompt 04.
+> See [Appointments](#appointments) below for the latter.
 
-A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time slot exists anywhere — that's a future `Appointment` model's job, deliberately not built yet, so the two are never conflated.
+A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time slot exists anywhere — an `Appointment` (see below) is a separate record, so the two are never conflated.
 
 - Fields: `customerId` (required), `vehicleId` / `serviceId` (optional), `subject` (required), `description`, `notes`, `status` (`NEW` default), `source` (`MANUAL` default).
 - `status`: `NEW → IN_PROGRESS → QUALIFIED → WON | LOST` (enum `LeadStatus`; a Lead is never hard-deleted — closing one out means setting `status: "LOST"`, so there is no `DELETE /api/leads/:id`).
 - `source`: `MANUAL | WEBSITE | PHONE | OTHER` (enum `LeadSource`) — channel integrations (Telegram/WhatsApp/etc.) will extend this enum later, not before.
 - All three relations are re-verified server-side on both create and update: `customerId`/`serviceId` must belong to the current tenant+business (404 otherwise), and if `vehicleId` is set, that vehicle must belong to the *specified* `customerId` — a vehicle from a different customer in the *same* tenant is a `400 VALIDATION_ERROR`, not a 404 (it exists, it's just the wrong customer).
 - `GET /api/leads` is paginated, always sorted `createdAt DESC`, and supports `status=`, `source=`, `customerId=`, `vehicleId=`, `serviceId=`, and `search=` (subject/description) filters.
+
+## Appointments
+
+`Appointment` is a **confirmed, scheduled booking** — the thing a `Lead` (above) doesn't represent. A Customer, Vehicle, and Service are all *required* (unlike Lead, where Vehicle/Service are optional): an Appointment always means a specific car, coming in for a specific service, at a specific time.
+
+- Fields: `customerId`, `vehicleId`, `serviceId` (all required), `startAt`/`endAt` (stored as UTC `DateTime`), `status` (`SCHEDULED` default), `notes`.
+- **No Appointment-level timezone.** `startAt`/`endAt` are plain UTC instants; the *only* source of truth for "what local time is this" is `Business.timezone`, read fresh on every check — never a timezone from the request, the browser, or the server's own clock.
+- **Working hours**: reuses the exact `BusinessWorkingHours` data from Prompt 02 (`GET`/`PUT /api/business/hours`) — no second schedule was created. Before accepting an interval, the server converts both `startAt` and `endAt` into the Business's local wall-clock time via `Intl.DateTimeFormat` (DST-aware; see `src/server/lib/timezone.ts`'s `toBusinessLocalDateTime`), then checks: (1) both ends fall on the *same* local calendar day — crossing local midnight is always rejected, even when the UTC interval looks fine; (2) that local day is `isOpen`; (3) `localStart >= openTime` and `localEnd <= closeTime` (both boundaries inclusive — starting exactly at opening or ending exactly at closing is valid).
+- **Duration**: 15 minutes minimum, 24 hours maximum; `endAt` must be strictly after `startAt`.
+- **Conflict detection**: overlapping Appointments for the same `vehicleId` are rejected with `409 APPOINTMENT_CONFLICT` (plus a `conflictingAppointmentId` in `error.details`). Overlap is the standard interval rule (`existing.startAt < new.endAt AND existing.endAt > new.startAt`), so back-to-back bookings (`10:00–11:00` then `11:00–12:00`) never conflict. Only `SCHEDULED`/`CONFIRMED`/`IN_PROGRESS` block a slot — `CANCELLED`/`COMPLETED`/`NO_SHOW` free it up immediately. Updating an Appointment excludes itself from this check.
+- **Ownership & active state**: `customerId`/`vehicleId`/`serviceId` are re-verified server-side against the current tenant+business on every create/update (404 if foreign-tenant); the vehicle must belong to the given customer (400 if not, same as Leads); and all three must currently be `isActive` for a *new* booking or when a reference is *changed* (400 if not) — but an update that doesn't touch these fields (e.g. a pure status change) never re-checks them, so closing out an Appointment whose Customer/Vehicle/Service was later deactivated always still works.
+- **Status**: `SCHEDULED → CONFIRMED → IN_PROGRESS → COMPLETED`, with `CANCELLED`/`NO_SHOW` reachable from any non-terminal status. `COMPLETED`/`CANCELLED`/`NO_SHOW` are terminal and never reopen (any transition out of them is `400`). Only `SCHEDULED` is a valid status at creation — an Appointment can't be born already confirmed/in-progress/completed/cancelled/no-show. There is no `DELETE /api/appointments/:id`; cancel via `PATCH { status: "CANCELLED" }`.
+- Historical Appointments are never touched when a Customer/Vehicle/Service is later deactivated — no cascade, no auto status change.
+- `GET /api/appointments` is paginated, always sorted `startAt ASC`, and supports `status=`, `customerId=`, `vehicleId=`, `serviceId=`, `dateFrom=`/`dateTo=` (filtering `startAt`, half-open `[dateFrom, dateTo)`), and `includeCancelled=true` (default `false` — an explicit `status=` filter always overrides this).
+- **Manager can create and update Appointments** — this is the one entity so far where manager isn't read-only, because booking/rescheduling/status changes are day-to-day operational work, not a Settings change. Manager still can't bypass tenant isolation or touch anything DELETE-shaped (there isn't one).
 
 ## Roles
 
@@ -230,17 +246,19 @@ A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time s
 | Create / update / deactivate a vehicle    | ✅ | ✅ | ❌ |
 | List/read leads                           | ✅ | ✅ | ✅ |
 | Create / update a lead (incl. status)     | ✅ | ✅ | ❌ |
+| List/read appointments                    | ✅ | ✅ | ✅ |
+| Create / update an appointment (incl. status) | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`) — the frontend also hides unavailable actions for `manager`, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it, same as every other Lead field.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment is the deliberate exception: manager has full create/update access there (see [Appointments](#appointments)), because booking work is operational, not a Settings change — but still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
 - One **Tenant** = one auto service company. Every user belongs to exactly one tenant; all business data is tied to a `tenantId`.
 - Tenant isolation is enforced **server-side only** — never via frontend filtering. `tenantId`/`businessId` always come from the authenticated session (`requireAuth`), never from client-supplied fields — a client can send a `Service` **id** to identify a resource, but the server always re-checks `tenantId` and `businessId` against the session before acting on it.
 - The reusable `withTenant()` helper (`src/server/lib/tenantScope.ts`) is meant to be the one way tenant-owned queries build their `where` clause, so future endpoints don't accidentally forget the filter — see `businessRepository.update` and `serviceRepository` for the pattern (scoped `updateMany`/`findFirst`, never a bare `findUnique({ where: { id } })`).
-- A service, knowledge item, business rule, customer, vehicle, or lead belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH/DELETE` on any of their `:id` endpoints return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
-- `knowledgeRepository`, `businessRuleRepository`, `customerRepository`, `vehicleRepository`, and `leadRepository` all follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all of them.
-- Relations that span models (Vehicle→Customer, Lead→Customer/Vehicle/Service) are re-verified server-side wherever they're set, never trusted from the client — see [Vehicles](#vehicles) and [Leads](#leads).
+- A service, knowledge item, business rule, customer, vehicle, lead, or appointment belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH` (and `DELETE`, where it exists) on any of their `:id` endpoints return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
+- `knowledgeRepository`, `businessRuleRepository`, `customerRepository`, `vehicleRepository`, `leadRepository`, and `appointmentRepository` all follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all of them, including the conflict-detection query itself.
+- Relations that span models (Vehicle→Customer, Lead→Customer/Vehicle/Service, Appointment→Customer/Vehicle/Service) are re-verified server-side wherever they're set, never trusted from the client — see [Vehicles](#vehicles), [Leads](#leads), and [Appointments](#appointments).
 - Role-based checks (`owner`, `admin`, `manager`) via `requireRole()` (`src/server/middleware/requireRole.ts`).
 
 ## Money
@@ -250,6 +268,8 @@ Prices are `Prisma.Decimal` end to end — never `number`/`Float` — to avoid f
 ## Timezone
 
 `Business.timezone` must be a real IANA identifier. Validation (`src/server/lib/timezone.ts`) relies on `Intl.DateTimeFormat(undefined, { timeZone })` throwing for anything invalid — this uses the ICU timezone database bundled with Node.js (Node 20+ ships full ICU by default), so no extra package or hand-maintained timezone list is needed. Working-hours times are plain `"HH:mm"` local wall-clock strings, interpreted using this timezone — they are not stored as UTC or `Date` values.
+
+The same file's `toBusinessLocalDateTime(date, timeZone)` extends this to real UTC instants (used for Appointment validation): it formats a `Date` through `Intl.DateTimeFormat` with the Business's `timeZone` to get the correct local date/weekday/time, DST-aware, for any real IANA zone — deliberately not manual UTC-offset arithmetic, which silently breaks across a DST transition. The frontend has a parallel client-side utility (`src/lib/businessTime.ts`) for the same reason: the Appointments form takes separate Date/Start time/End time inputs specifically so no native `<input type="datetime-local">` can silently apply the *browser's* timezone instead of the Business's.
 
 ## Optional field & soft-delete semantics
 
@@ -264,6 +284,7 @@ These rules are enforced consistently across Customer, Vehicle, and Lead (and, w
 - **Soft-delete is idempotent everywhere it exists** (`Customer`, `Vehicle`, and every earlier soft-deletable model): `DELETE` sets `isActive = false` via an `updateMany` whose `where` clause never filters on the *current* `isActive` value, so deactivating an already-inactive row still matches and returns success rather than a spurious 404.
 - **Deactivating a Customer never cascades.** It only ever touches the `customers` row — existing `Vehicle`s and `Lead`s referencing that customer are left completely untouched (not deactivated, not deleted, status unchanged) and remain fully readable, since neither `Vehicle` nor `Lead` has any `isActive`-of-its-customer dependency built in.
 - **The one exception**: `POST /api/leads` (creating a *new* Lead) is rejected with `400 VALIDATION_ERROR` if `customerId` points to an inactive Customer — you can't open a new inquiry against a customer record that's been deactivated. This check is deliberately create-only: updating an *existing* Lead (e.g. setting `status: "LOST"` to close it out) still works normally even if its Customer has since been deactivated, so staff can always finish handling what's already open.
+- **Appointment generalizes this further**, since it references three entities instead of one: creating a new Appointment, or updating one to reference a *different* Customer/Vehicle/Service, requires all of them to be currently active (400 otherwise). But an update that only changes `status` or `notes` — not touching the Customer/Vehicle/Service references at all — never re-checks their active state, so an Appointment can always still be closed out (`COMPLETED`/`CANCELLED`/`NO_SHOW`) even after everything it refers to has since been deactivated. Deactivating a Customer/Vehicle/Service never touches its historical Appointments — no cascade, no auto status change, same principle as Leads above.
 
 ## API
 
@@ -305,14 +326,18 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | GET    | `/api/leads/:id`         | any authenticated       | 404 if unknown or another tenant's |
 | POST   | `/api/leads`             | owner, admin            | `customerId`/`vehicleId`/`serviceId` all re-verified server-side; 400 if vehicle belongs to a different customer or the customer is inactive |
 | PATCH  | `/api/leads/:id`         | owner, admin            | partial update, ≥1 field, incl. `status`; no DELETE — use `status: "LOST"` |
+| GET    | `/api/appointments`      | any authenticated       | paginated, sorted `startAt ASC`; `?status=`, `?customerId=`, `?vehicleId=`, `?serviceId=`, `?dateFrom=`, `?dateTo=`, `?includeCancelled=true` |
+| GET    | `/api/appointments/:id`  | any authenticated       | 404 if unknown or another tenant's |
+| POST   | `/api/appointments`      | owner, admin, **manager** | `status` optional, only `SCHEDULED` accepted; working-hours + conflict + ownership/active checks all apply |
+| PATCH  | `/api/appointments/:id`  | owner, admin, **manager** | partial update, ≥1 field, incl. `status` (transition-checked); no DELETE — use `status: "CANCELLED"` |
 
 ## Security
 
 - Argon2id password hashing, no custom crypto.
 - Server-side sessions; only a hashed, HMAC-keyed token is persisted.
 - HttpOnly / Secure (prod) / SameSite=Lax cookies; nothing auth-related in localStorage/sessionStorage.
-- Zod validation on every input, including business profile, working hours, service, knowledge base, business rule, customer, vehicle, and lead payloads.
-- Customer PII (phone, email, notes) and Lead descriptions are never written to logs — `src/server/lib/logger.ts`'s redaction list covers them the same way it covers secrets; only route/status/generic error codes are logged for these operations.
+- Zod validation on every input, including business profile, working hours, service, knowledge base, business rule, customer, vehicle, lead, and appointment payloads.
+- Customer PII (phone, email, notes) and Lead/Appointment notes and descriptions are never written to logs — `src/server/lib/logger.ts`'s redaction list covers them the same way it covers secrets; only route/status/generic error codes are logged for these operations. `AppointmentDto`/`ApiError.details` never carry PII either — a conflict response's `conflictingAppointmentId` is just an id.
 - Tenant isolation and role checks enforced server-side — see [Multi-tenancy](#multi-tenancy) and [Roles](#roles).
 - Basic rate limiting on auth endpoints.
 - Centralized error handling (`src/server/lib/errors.ts`) — no stack traces, SQL errors, env vars, or file paths ever reach the client.
@@ -356,24 +381,35 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - Settings UI: `/settings/customers`, `/settings/vehicles`, `/settings/leads` — search, filters, pagination controls, quick inline status change for leads.
 - 121 new unit tests (299 total): schema validation (incl. the optional-field edge cases above), service-layer role/ownership checks, and cross-tenant + cross-customer isolation tests.
 
+**Prompt 05 — Appointments & Booking Foundation**
+- `Appointment` model: customerId/vehicleId/serviceId (all required, unlike Lead), startAt/endAt (UTC), status, notes — reuses Prompt 02's `BusinessWorkingHours`/`Business.timezone` as the sole schedule source, no second schedule created.
+- Timezone-aware working-hours validation (`toBusinessLocalDateTime`, DST-correct via `Intl.DateTimeFormat`) rejects appointments outside opening hours, on closed days, or crossing local midnight — evaluated in the *Business's* timezone only, never UTC hours or a request/browser timezone.
+- Vehicle-scoped conflict detection (standard interval overlap, `409 APPOINTMENT_CONFLICT` + `conflictingAppointmentId`), ignoring `CANCELLED`/`COMPLETED`/`NO_SHOW` and excluding the appointment being updated from its own conflict check.
+- `AppointmentStatus` transition rules: only `SCHEDULED` at creation; terminal statuses (`COMPLETED`/`CANCELLED`/`NO_SHOW`) never reopen; no `DELETE` endpoint — cancel via `PATCH { status: "CANCELLED" }`.
+- Manager can create/update appointments (the one entity where manager isn't read-only — operational booking work, not a Settings change).
+- `appointmentService`/`appointmentRepository` follow the established pattern; `ApiError` gained an optional `details` field (used for `conflictingAppointmentId`) without changing the existing error contract.
+- Settings UI: `/settings/appointments` — separate Date/Start time/End time inputs (deliberately not a native `datetime-local`, so the Business's timezone is used, never the browser's), customer→vehicle cascading select, inline quick status change.
+- 83 new unit tests (382 total), incl. explicit DST-conversion tests (`America/New_York`, winter vs. summer) and every listed valid/invalid status transition.
+
 ## Not implemented yet
 
 AI / LLM / OpenAI / Anthropic / Gemini, embeddings, vector database, RAG,
 semantic search, prompt templates, AI administrator logic, AI receptionist,
 Telegram, WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website
-chat, email integration, SMS, voice AI, CRM (pipeline/kanban), Kommo, Google
-Calendar, booking/appointments, conversations, messages, reminders/
-follow-ups, payments, subscriptions, billing, analytics, notifications,
-automation engine, final UI/UX & design system, marketing site, advanced
-dashboard.
+chat, email integration, SMS, voice AI, CRM (pipeline/kanban), Kommo, external
+calendar sync (Google Calendar/Outlook), webhooks, background jobs, online
+payments, billing, subscriptions, customer self-service portal, recurring
+appointments, drag-and-drop calendar UI, conversations, messages, reminders/
+follow-ups, analytics, notifications, automation engine, final UI/UX & design
+system, marketing site, advanced dashboard.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `AIProvider` / `CRMAdapter` / `CalendarAdapter` /
 `ChannelAdapter` / `PaymentAdapter` integration layers, and future domain
-models like `Conversation`, `Message`, `Appointment`, `AutomationRule`,
-`Subscription`, `UsageEvent`, `AuditLog`) without committing to their shape
-yet. `BusinessWorkingHours` is deliberately kept separate from any future
-`Appointment`/calendar model, `KnowledgeItem`/`BusinessRule` are deliberately
-kept separate from any future AI/RAG layer, and `Lead` is deliberately kept
-separate from any future `Appointment` — a Lead is an inquiry, never a
-confirmed booking (see [Leads](#leads)).
+models like `Conversation`, `Message`, `AutomationRule`, `Subscription`,
+`UsageEvent`, `AuditLog`) without committing to their shape yet.
+`KnowledgeItem`/`BusinessRule` are deliberately kept separate from any future
+AI/RAG layer, and `Lead` is deliberately kept separate from `Appointment` — a
+Lead is an inquiry, an Appointment is a confirmed booking (see
+[Leads](#leads) and [Appointments](#appointments)); `Appointment` itself is
+foundation-only, with no recurrence, external calendar sync, or reminders yet.

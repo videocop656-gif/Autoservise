@@ -17,6 +17,8 @@ const {
   vehicleUpdateManyMock,
   leadFindFirstMock,
   leadUpdateManyMock,
+  appointmentFindFirstMock,
+  appointmentUpdateManyMock,
   transactionMock,
 } = vi.hoisted(() => ({
   businessFindManyMock: vi.fn(),
@@ -35,6 +37,8 @@ const {
   vehicleUpdateManyMock: vi.fn(),
   leadFindFirstMock: vi.fn(),
   leadUpdateManyMock: vi.fn(),
+  appointmentFindFirstMock: vi.fn(),
+  appointmentUpdateManyMock: vi.fn(),
   transactionMock: vi.fn(async (ops: unknown[]) => ops),
 }))
 
@@ -47,6 +51,7 @@ vi.mock('../src/server/db/prisma', () => ({
     customer: { findFirst: customerFindFirstMock, updateMany: customerUpdateManyMock },
     vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock },
     lead: { findFirst: leadFindFirstMock, updateMany: leadUpdateManyMock },
+    appointment: { findFirst: appointmentFindFirstMock, updateMany: appointmentUpdateManyMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
   },
@@ -60,6 +65,7 @@ import { businessRuleRepository } from '../src/server/repositories/businessRuleR
 import { customerRepository } from '../src/server/repositories/customerRepository'
 import { vehicleRepository } from '../src/server/repositories/vehicleRepository'
 import { leadRepository } from '../src/server/repositories/leadRepository'
+import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -79,6 +85,8 @@ beforeEach(() => {
   vehicleUpdateManyMock.mockResolvedValue({ count: 0 })
   leadFindFirstMock.mockResolvedValue(null)
   leadUpdateManyMock.mockResolvedValue({ count: 0 })
+  appointmentFindFirstMock.mockResolvedValue(null)
+  appointmentUpdateManyMock.mockResolvedValue({ count: 0 })
 })
 
 describe('tenant isolation — Business', () => {
@@ -335,5 +343,56 @@ describe('tenant isolation — Lead', () => {
       data: { subject: 'Hijacked' },
     })
     expect(result).toBeNull()
+  })
+})
+
+describe('tenant isolation — Appointment', () => {
+  it('tenant B cannot GET tenant A appointment', async () => {
+    appointmentFindFirstMock.mockResolvedValue(null)
+    const result = await appointmentRepository.findById('tenant-b', 'business-b', 'appointment-owned-by-tenant-a')
+
+    expect(appointmentFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'appointment-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot PATCH tenant A appointment', async () => {
+    appointmentUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await appointmentRepository.updateById('tenant-b', 'business-b', 'appointment-owned-by-tenant-a', {
+      notes: 'Hijacked',
+    })
+
+    expect(appointmentUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'appointment-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { notes: 'Hijacked' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('the conflict query is scoped to tenantId + businessId + vehicleId and excludes non-blocking statuses', async () => {
+    const startAt = new Date('2026-09-07T06:00:00Z')
+    const endAt = new Date('2026-09-07T07:00:00Z')
+    await appointmentRepository.findConflict('tenant-a', 'business-a', 'vehicle-a', startAt, endAt)
+
+    expect(appointmentFindFirstMock).toHaveBeenCalledWith({
+      where: {
+        businessId: 'business-a',
+        vehicleId: 'vehicle-a',
+        tenantId: 'tenant-a',
+        status: { in: ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'] },
+        startAt: { lt: endAt },
+        endAt: { gt: startAt },
+      },
+    })
+  })
+
+  it('the conflict query excludes the appointment being updated when excludeId is given', async () => {
+    const startAt = new Date('2026-09-07T06:00:00Z')
+    const endAt = new Date('2026-09-07T07:00:00Z')
+    await appointmentRepository.findConflict('tenant-a', 'business-a', 'vehicle-a', startAt, endAt, 'self-id')
+
+    const call = appointmentFindFirstMock.mock.calls[0]![0] as { where: { id: { not: string } } }
+    expect(call.where.id).toEqual({ not: 'self-id' })
   })
 })

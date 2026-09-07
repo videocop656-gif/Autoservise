@@ -14,6 +14,7 @@ const LINKS = [
   { to: '/settings/customers', label: 'Customers' },
   { to: '/settings/vehicles', label: 'Vehicles' },
   { to: '/settings/leads', label: 'Leads' },
+  { to: '/settings/appointments', label: 'Appointments' },
 ]
 
 /** Shown on every authenticated page. Only lists routes — role-based action buttons live inside each page. */
