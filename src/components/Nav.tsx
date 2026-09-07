@@ -11,6 +11,9 @@ const LINKS = [
   { to: '/settings/services', label: 'Services' },
   { to: '/settings/knowledge', label: 'Knowledge Base' },
   { to: '/settings/rules', label: 'Rules' },
+  { to: '/settings/customers', label: 'Customers' },
+  { to: '/settings/vehicles', label: 'Vehicles' },
+  { to: '/settings/leads', label: 'Leads' },
 ]
 
 /** Shown on every authenticated page. Only lists routes — role-based action buttons live inside each page. */
@@ -25,7 +28,7 @@ export default function Nav() {
 
   return (
     <nav className="border-b bg-card">
-      <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2 px-6 py-3">
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-2 px-6 py-3">
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5 font-semibold">
             <Wrench className="h-4 w-4" />

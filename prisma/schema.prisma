@@ -51,6 +51,21 @@ enum BusinessRuleCategory {
   GENERAL
 }
 
+enum LeadStatus {
+  NEW
+  IN_PROGRESS
+  QUALIFIED
+  WON
+  LOST
+}
+
+enum LeadSource {
+  MANUAL
+  WEBSITE
+  PHONE
+  OTHER
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -63,6 +78,9 @@ model Tenant {
   services       Service[]
   knowledgeItems KnowledgeItem[]
   businessRules  BusinessRule[]
+  customers      Customer[]
+  vehicles       Vehicle[]
+  leads          Lead[]
 
   @@map("tenants")
 }
@@ -103,6 +121,9 @@ model Business {
   services       Service[]
   knowledgeItems KnowledgeItem[]
   businessRules  BusinessRule[]
+  customers      Customer[]
+  vehicles       Vehicle[]
+  leads          Lead[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -145,6 +166,7 @@ model Service {
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  leads    Lead[]
 
   @@index([tenantId])
   @@index([businessId])
@@ -194,6 +216,97 @@ model BusinessRule {
   @@index([tenantId, businessId, category])
   @@index([tenantId, businessId, priority])
   @@map("business_rules")
+}
+
+model Customer {
+  id         String   @id @default(uuid())
+  tenantId   String
+  businessId String
+  firstName  String
+  lastName   String?
+  phone      String
+  // Normalized lowercase. Duplicate active-customer emails within a
+  // Business are rejected at the service layer (not a DB unique
+  // constraint, since email is optional and multiple inactive/legacy
+  // records may share one).
+  email      String?
+  notes      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  vehicles Vehicle[]
+  leads    Lead[]
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, isActive])
+  @@index([tenantId, businessId, email])
+  @@map("customers")
+}
+
+model Vehicle {
+  id           String   @id @default(uuid())
+  tenantId     String
+  businessId   String
+  customerId   String
+  make         String
+  model        String
+  year         Int?
+  // Normalized uppercase.
+  licensePlate String?
+  // Normalized uppercase.
+  vin          String?
+  // Kilometers (this app's standard unit; no separate unit field).
+  mileage      Int?
+  notes        String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade: a domain record (Vehicle) is never deleted
+  // just because its Customer is soft-deleted elsewhere in the app.
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  leads    Lead[]
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, customerId])
+  @@index([tenantId, businessId, isActive])
+  @@map("vehicles")
+}
+
+model Lead {
+  id          String     @id @default(uuid())
+  tenantId    String
+  businessId  String
+  customerId  String
+  vehicleId   String?
+  serviceId   String?
+  status      LeadStatus @default(NEW)
+  source      LeadSource @default(MANUAL)
+  subject     String
+  description String?
+  notes       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict/SetNull, not Cascade: a Lead's history must survive even if
+  // the Customer/Vehicle/Service it references is later removed from the
+  // database outside the app's normal soft-delete workflow.
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle  Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  service  Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@index([tenantId, businessId, customerId])
+  @@index([tenantId, businessId, createdAt])
+  @@map("leads")
 }
 
 model Session {

@@ -2,9 +2,10 @@
 
 SaaS-приложение для автосервисов. This covers **Prompt 01 (Foundation)** —
 auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
-and **Prompt 03 (Knowledge Base + Business Rules)**: structured data a future
-AI administrator will read from, with no AI wired up yet. Still no AI,
-integrations, or final design.
+**Prompt 03 (Knowledge Base + Business Rules)**, and **Prompt 04 (Customers,
+Vehicles & Leads)**: who the customer is, what they drive, and what they
+asked about. Still no AI, no communication channels (Telegram/WhatsApp/chat),
+no CRM pipeline, no booking/calendar, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -175,6 +176,40 @@ Fields: `name`, `description`, `category`, `priority`, `isActive`. Category is a
 
 **Priority**: an integer 0–100 (default 50). **Lower number = higher priority — 0 is the highest priority, 100 is the lowest.** `GET /api/rules` always returns rules sorted by `priority ASC, createdAt ASC`, so the most important rules are always first — this ordering is what a future AI layer would read top-to-bottom. Same soft-delete/filter behavior as Knowledge Base (`isActive`, `?activeOnly=false`, `?category=PAYMENT`).
 
+## Customers
+
+`Customer` is a person the auto service has dealt with (or might): `firstName` (required), `lastName`, `phone` (required), `email`, `notes`, `isActive`.
+
+- `phone` has no country-specific parsing/normalization at this stage — stored trimmed, as entered.
+- `email` is normalized to lowercase. **Duplicate protection, not deduplication**: creating or updating a customer to an email that already belongs to another *active* customer in the same Business is rejected (`409 CUSTOMER_EMAIL_EXISTS`) rather than silently creating a second record — but there is no fuzzy matching, merging, or name-based dedup system.
+- `GET /api/customers` is paginated (`page`, `pageSize`, default 1/20, max pageSize 100) and supports `search=` (case-insensitive substring match over firstName/lastName/phone/email) and `includeInactive=true`. Response shape: `{ items, page, pageSize, total, totalPages }`.
+- `GET /api/customers/:id?includeVehicles=true` optionally attaches the customer's active vehicles (`{ customer, vehicles }`) — never on by default, so a plain fetch stays a single-row lookup.
+- Soft-delete only (`DELETE` → `isActive = false`, idempotent).
+
+## Vehicles
+
+`Vehicle` belongs to exactly one `Customer` (`Customer 1 — N Vehicle`): `make`/`model` (required), `year` (1886–2100), `licensePlate` and `vin` (normalized uppercase), `mileage` (kilometers, 0–2,000,000), `notes`, `isActive`.
+
+- `customerId` is required at creation and **re-verified server-side** against the current tenant+business — a client can never attach a vehicle to a customer it can't already see. It cannot be changed afterward (re-assigning a vehicle to a different customer isn't supported; create a new vehicle instead).
+- `GET /api/vehicles` supports the same pagination as Customers, plus `customerId=` and `search=` (make/model/licensePlate/vin) and `includeInactive=true`.
+- Soft-delete only, same as Customers.
+
+## Leads
+
+`Lead` is an inquiry: a customer (or prospect) asked something or expressed interest — "how much for an oil change?", "do you have a slot Tuesday?", "I'd like to book a repair." It optionally references the `Vehicle` and `Service` the inquiry is about.
+
+> A Lead represents an inquiry or sales opportunity.
+> An Appointment represents a confirmed scheduled time.
+> Appointments are not implemented in Prompt 04.
+
+A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time slot exists anywhere — that's a future `Appointment` model's job, deliberately not built yet, so the two are never conflated.
+
+- Fields: `customerId` (required), `vehicleId` / `serviceId` (optional), `subject` (required), `description`, `notes`, `status` (`NEW` default), `source` (`MANUAL` default).
+- `status`: `NEW → IN_PROGRESS → QUALIFIED → WON | LOST` (enum `LeadStatus`; a Lead is never hard-deleted — closing one out means setting `status: "LOST"`, so there is no `DELETE /api/leads/:id`).
+- `source`: `MANUAL | WEBSITE | PHONE | OTHER` (enum `LeadSource`) — channel integrations (Telegram/WhatsApp/etc.) will extend this enum later, not before.
+- All three relations are re-verified server-side on both create and update: `customerId`/`serviceId` must belong to the current tenant+business (404 otherwise), and if `vehicleId` is set, that vehicle must belong to the *specified* `customerId` — a vehicle from a different customer in the *same* tenant is a `400 VALIDATION_ERROR`, not a 404 (it exists, it's just the wrong customer).
+- `GET /api/leads` is paginated, always sorted `createdAt DESC`, and supports `status=`, `source=`, `customerId=`, `vehicleId=`, `serviceId=`, and `search=` (subject/description) filters.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -189,16 +224,23 @@ Fields: `name`, `description`, `category`, `priority`, `isActive`. Category is a
 | Create / update / deactivate knowledge    | ✅ | ✅ | ❌ |
 | List/read business rules (active or all)  | ✅ | ✅ | ✅ |
 | Create / update / deactivate a rule       | ✅ | ✅ | ❌ |
+| List/read customers (search, pagination)  | ✅ | ✅ | ✅ |
+| Create / update / deactivate a customer   | ✅ | ✅ | ❌ |
+| List/read vehicles                        | ✅ | ✅ | ✅ |
+| Create / update / deactivate a vehicle    | ✅ | ✅ | ❌ |
+| List/read leads                           | ✅ | ✅ | ✅ |
+| Create / update a lead (incl. status)     | ✅ | ✅ | ❌ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`) — the frontend also hides unavailable actions for `manager`, but that's UX only, not the security boundary.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`) — the frontend also hides unavailable actions for `manager`, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it, same as every other Lead field.
 
 ## Multi-tenancy
 
 - One **Tenant** = one auto service company. Every user belongs to exactly one tenant; all business data is tied to a `tenantId`.
 - Tenant isolation is enforced **server-side only** — never via frontend filtering. `tenantId`/`businessId` always come from the authenticated session (`requireAuth`), never from client-supplied fields — a client can send a `Service` **id** to identify a resource, but the server always re-checks `tenantId` and `businessId` against the session before acting on it.
 - The reusable `withTenant()` helper (`src/server/lib/tenantScope.ts`) is meant to be the one way tenant-owned queries build their `where` clause, so future endpoints don't accidentally forget the filter — see `businessRepository.update` and `serviceRepository` for the pattern (scoped `updateMany`/`findFirst`, never a bare `findUnique({ where: { id } })`).
-- A service, knowledge item, or business rule belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH/DELETE` on any of `/api/services/:id`, `/api/knowledge/:id`, `/api/rules/:id` all return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
-- `knowledgeRepository` and `businessRuleRepository` follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all three.
+- A service, knowledge item, business rule, customer, vehicle, or lead belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH/DELETE` on any of their `:id` endpoints return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
+- `knowledgeRepository`, `businessRuleRepository`, `customerRepository`, `vehicleRepository`, and `leadRepository` all follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all of them.
+- Relations that span models (Vehicle→Customer, Lead→Customer/Vehicle/Service) are re-verified server-side wherever they're set, never trusted from the client — see [Vehicles](#vehicles) and [Leads](#leads).
 - Role-based checks (`owner`, `admin`, `manager`) via `requireRole()` (`src/server/middleware/requireRole.ts`).
 
 ## Money
@@ -208,6 +250,20 @@ Prices are `Prisma.Decimal` end to end — never `number`/`Float` — to avoid f
 ## Timezone
 
 `Business.timezone` must be a real IANA identifier. Validation (`src/server/lib/timezone.ts`) relies on `Intl.DateTimeFormat(undefined, { timeZone })` throwing for anything invalid — this uses the ICU timezone database bundled with Node.js (Node 20+ ships full ICU by default), so no extra package or hand-maintained timezone list is needed. Working-hours times are plain `"HH:mm"` local wall-clock strings, interpreted using this timezone — they are not stored as UTC or `Date` values.
+
+## Optional field & soft-delete semantics
+
+These rules are enforced consistently across Customer, Vehicle, and Lead (and, where applicable, everywhere else optional fields exist):
+
+- **Create, field omitted** → stored as `null`.
+- **Create, field is `""` or whitespace-only** → trimmed and stored as `null` (never an empty string).
+- **Update (`PATCH`), field omitted** → left unchanged. Every validation schema's Zod output simply omits a key that wasn't in the request, and Prisma's `update`/`updateMany` skip any key absent from the `data` object — the two facts together are what make "omitted = unchanged" work without special-casing it per field.
+- **Update, field is explicit `null`** → clears the optional field to `null`.
+- **Update, field is `""` or whitespace-only** → same as explicit `null` (trimmed first).
+- **Required fields** (`Customer.firstName`/`phone`, `Vehicle.make`/`model`, `Lead.customerId`/`subject`, …) reject `null` and `""` outright — there's no way to "clear" a required field through these endpoints.
+- **Soft-delete is idempotent everywhere it exists** (`Customer`, `Vehicle`, and every earlier soft-deletable model): `DELETE` sets `isActive = false` via an `updateMany` whose `where` clause never filters on the *current* `isActive` value, so deactivating an already-inactive row still matches and returns success rather than a spurious 404.
+- **Deactivating a Customer never cascades.** It only ever touches the `customers` row — existing `Vehicle`s and `Lead`s referencing that customer are left completely untouched (not deactivated, not deleted, status unchanged) and remain fully readable, since neither `Vehicle` nor `Lead` has any `isActive`-of-its-customer dependency built in.
+- **The one exception**: `POST /api/leads` (creating a *new* Lead) is rejected with `400 VALIDATION_ERROR` if `customerId` points to an inactive Customer — you can't open a new inquiry against a customer record that's been deactivated. This check is deliberately create-only: updating an *existing* Lead (e.g. setting `status: "LOST"` to close it out) still works normally even if its Customer has since been deactivated, so staff can always finish handling what's already open.
 
 ## API
 
@@ -235,13 +291,28 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | POST   | `/api/rules`             | owner, admin            | `category`/`priority` optional, default `GENERAL`/`50` |
 | PATCH  | `/api/rules/:id`         | owner, admin            | partial update, ≥1 field |
 | DELETE | `/api/rules/:id`         | owner, admin            | soft delete (`isActive = false`), idempotent |
+| GET    | `/api/customers`         | any authenticated       | paginated; `?search=`, `?includeInactive=true` |
+| GET    | `/api/customers/:id`     | any authenticated       | 404 if unknown/foreign-tenant; `?includeVehicles=true` |
+| POST   | `/api/customers`         | owner, admin            | 409 `CUSTOMER_EMAIL_EXISTS` on active-email duplicate |
+| PATCH  | `/api/customers/:id`     | owner, admin            | partial update, ≥1 field; same 409 check on email change |
+| DELETE | `/api/customers/:id`     | owner, admin            | soft delete, idempotent, never cascades to Vehicles/Leads |
+| GET    | `/api/vehicles`          | any authenticated       | paginated; `?customerId=`, `?search=`, `?includeInactive=true` |
+| GET    | `/api/vehicles/:id`      | any authenticated       | 404 if unknown or another tenant's |
+| POST   | `/api/vehicles`          | owner, admin            | `customerId` ownership re-checked server-side (404 if foreign) |
+| PATCH  | `/api/vehicles/:id`      | owner, admin            | partial update, ≥1 field; `customerId` not changeable |
+| DELETE | `/api/vehicles/:id`      | owner, admin            | soft delete (`isActive = false`), idempotent |
+| GET    | `/api/leads`             | any authenticated       | paginated, sorted `createdAt DESC`; `?status=`, `?source=`, `?customerId=`, `?vehicleId=`, `?serviceId=`, `?search=` |
+| GET    | `/api/leads/:id`         | any authenticated       | 404 if unknown or another tenant's |
+| POST   | `/api/leads`             | owner, admin            | `customerId`/`vehicleId`/`serviceId` all re-verified server-side; 400 if vehicle belongs to a different customer or the customer is inactive |
+| PATCH  | `/api/leads/:id`         | owner, admin            | partial update, ≥1 field, incl. `status`; no DELETE — use `status: "LOST"` |
 
 ## Security
 
 - Argon2id password hashing, no custom crypto.
 - Server-side sessions; only a hashed, HMAC-keyed token is persisted.
 - HttpOnly / Secure (prod) / SameSite=Lax cookies; nothing auth-related in localStorage/sessionStorage.
-- Zod validation on every input, including business profile, working hours, service, knowledge base, and business rule payloads.
+- Zod validation on every input, including business profile, working hours, service, knowledge base, business rule, customer, vehicle, and lead payloads.
+- Customer PII (phone, email, notes) and Lead descriptions are never written to logs — `src/server/lib/logger.ts`'s redaction list covers them the same way it covers secrets; only route/status/generic error codes are logged for these operations.
 - Tenant isolation and role checks enforced server-side — see [Multi-tenancy](#multi-tenancy) and [Roles](#roles).
 - Basic rate limiting on auth endpoints.
 - Centralized error handling (`src/server/lib/errors.ts`) — no stack traces, SQL errors, env vars, or file paths ever reach the client.
@@ -274,22 +345,35 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - No AI, embeddings, or vector search — this is a structured data foundation only.
 - 65 new unit tests (178 total): schema validation, service-layer role checks, and explicit cross-tenant read/update/deactivate isolation tests for both models.
 
+**Prompt 04 — Customers, Vehicles & Leads**
+- `Customer` model: firstName/lastName/phone/email/notes/isActive, tenant+business owned; active-email duplicate protection (not fuzzy dedup).
+- `Vehicle` model: belongs to exactly one Customer (server-verified ownership), make/model/year/licensePlate/vin (normalized uppercase)/mileage/notes/isActive.
+- `Lead` model: an inquiry, not a booking — `customerId` (required) + optional `vehicleId`/`serviceId`, all cross-checked server-side (right tenant, and the vehicle must belong to the given customer); `status` (`NEW→IN_PROGRESS→QUALIFIED→WON|LOST`) and `source` (`MANUAL|WEBSITE|PHONE|OTHER`) enums; no DELETE endpoint — closing one out means `PATCH { status: "LOST" }`.
+- Pagination (`page`/`pageSize`, capped at 100) and search added to Customer/Vehicle/Lead list endpoints — the first paginated endpoints in the API (`src/server/lib/pagination.ts`).
+- Explicit, tested optional-field semantics across Customer/Vehicle/Lead: omitted stays unchanged on update, `null`/blank clears an optional field, required fields can't be cleared — see [Optional field & soft-delete semantics](#optional-field--soft-delete-semantics).
+- Deactivating a Customer never cascades to its Vehicles/Leads; creating a *new* Lead against an inactive Customer is rejected (`400`), but updating an existing one still works.
+- `customerService` / `vehicleService` / `leadService` layers mirroring the established pattern; new repositories `customerRepository`/`vehicleRepository`/`leadRepository`.
+- Settings UI: `/settings/customers`, `/settings/vehicles`, `/settings/leads` — search, filters, pagination controls, quick inline status change for leads.
+- 121 new unit tests (299 total): schema validation (incl. the optional-field edge cases above), service-layer role/ownership checks, and cross-tenant + cross-customer isolation tests.
+
 ## Not implemented yet
 
 AI / LLM / OpenAI / Anthropic / Gemini, embeddings, vector database, RAG,
 semantic search, prompt templates, AI administrator logic, AI receptionist,
 Telegram, WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website
-chat, email integration, SMS, voice AI, CRM, Kommo, Google Calendar,
-booking/appointments, leads, contacts, conversations, messages,
-reminders/follow-ups, payments, subscriptions, billing, analytics,
-notifications, automation engine, final UI/UX & design system, marketing
-site, advanced dashboard.
+chat, email integration, SMS, voice AI, CRM (pipeline/kanban), Kommo, Google
+Calendar, booking/appointments, conversations, messages, reminders/
+follow-ups, payments, subscriptions, billing, analytics, notifications,
+automation engine, final UI/UX & design system, marketing site, advanced
+dashboard.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `AIProvider` / `CRMAdapter` / `CalendarAdapter` /
 `ChannelAdapter` / `PaymentAdapter` integration layers, and future domain
-models like `Contact`, `Lead`, `Conversation`, `Message`, `Appointment`,
-`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`) without committing
-to their shape yet. `BusinessWorkingHours` is deliberately kept separate from
-any future `Appointment`/calendar model, and `KnowledgeItem`/`BusinessRule`
-are deliberately kept separate from any future AI/RAG layer.
+models like `Conversation`, `Message`, `Appointment`, `AutomationRule`,
+`Subscription`, `UsageEvent`, `AuditLog`) without committing to their shape
+yet. `BusinessWorkingHours` is deliberately kept separate from any future
+`Appointment`/calendar model, `KnowledgeItem`/`BusinessRule` are deliberately
+kept separate from any future AI/RAG layer, and `Lead` is deliberately kept
+separate from any future `Appointment` — a Lead is an inquiry, never a
+confirmed booking (see [Leads](#leads)).

@@ -7,6 +7,9 @@ import HoursSettingsPage from './pages/settings/HoursSettingsPage'
 import ServicesSettingsPage from './pages/settings/ServicesSettingsPage'
 import KnowledgeSettingsPage from './pages/settings/KnowledgeSettingsPage'
 import RulesSettingsPage from './pages/settings/RulesSettingsPage'
+import CustomersSettingsPage from './pages/settings/CustomersSettingsPage'
+import VehiclesSettingsPage from './pages/settings/VehiclesSettingsPage'
+import LeadsSettingsPage from './pages/settings/LeadsSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -59,6 +62,30 @@ export default function App() {
         element={
           <ProtectedRoute>
             <RulesSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/customers"
+        element={
+          <ProtectedRoute>
+            <CustomersSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/vehicles"
+        element={
+          <ProtectedRoute>
+            <VehiclesSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/leads"
+        element={
+          <ProtectedRoute>
+            <LeadsSettingsPage />
           </ProtectedRoute>
         }
       />

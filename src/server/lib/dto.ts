@@ -1,4 +1,4 @@
-import type { Business, BusinessWorkingHours, Service, KnowledgeItem, BusinessRule } from '@prisma/client'
+import type { Business, BusinessWorkingHours, Service, KnowledgeItem, BusinessRule, Customer, Vehicle, Lead } from '@prisma/client'
 
 /**
  * Never return raw Prisma objects to the client. These DTOs are the single
@@ -126,5 +126,93 @@ export function toBusinessRuleDto(rule: BusinessRule): BusinessRuleDto {
     isActive: rule.isActive,
     createdAt: rule.createdAt,
     updatedAt: rule.updatedAt,
+  }
+}
+
+export interface CustomerDto {
+  id: string
+  firstName: string
+  lastName: string | null
+  phone: string
+  email: string | null
+  notes: string | null
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toCustomerDto(customer: Customer): CustomerDto {
+  return {
+    id: customer.id,
+    firstName: customer.firstName,
+    lastName: customer.lastName,
+    phone: customer.phone,
+    email: customer.email,
+    notes: customer.notes,
+    isActive: customer.isActive,
+    createdAt: customer.createdAt,
+    updatedAt: customer.updatedAt,
+  }
+}
+
+export interface VehicleDto {
+  id: string
+  customerId: string
+  make: string
+  model: string
+  year: number | null
+  licensePlate: string | null
+  vin: string | null
+  mileage: number | null
+  notes: string | null
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toVehicleDto(vehicle: Vehicle): VehicleDto {
+  return {
+    id: vehicle.id,
+    customerId: vehicle.customerId,
+    make: vehicle.make,
+    model: vehicle.model,
+    year: vehicle.year,
+    licensePlate: vehicle.licensePlate,
+    vin: vehicle.vin,
+    mileage: vehicle.mileage,
+    notes: vehicle.notes,
+    isActive: vehicle.isActive,
+    createdAt: vehicle.createdAt,
+    updatedAt: vehicle.updatedAt,
+  }
+}
+
+export interface LeadDto {
+  id: string
+  customerId: string
+  vehicleId: string | null
+  serviceId: string | null
+  status: Lead['status']
+  source: Lead['source']
+  subject: string
+  description: string | null
+  notes: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toLeadDto(lead: Lead): LeadDto {
+  return {
+    id: lead.id,
+    customerId: lead.customerId,
+    vehicleId: lead.vehicleId,
+    serviceId: lead.serviceId,
+    status: lead.status,
+    source: lead.source,
+    subject: lead.subject,
+    description: lead.description,
+    notes: lead.notes,
+    createdAt: lead.createdAt,
+    updatedAt: lead.updatedAt,
   }
 }
