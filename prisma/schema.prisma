@@ -21,6 +21,16 @@ enum UserRole {
   manager
 }
 
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -30,6 +40,7 @@ model Tenant {
 
   users      User[]
   businesses Business[]
+  services   Service[]
 
   @@map("tenants")
 }
@@ -60,13 +71,62 @@ model Business {
   email       String?
   address     String?
   timezone    String   @default("UTC")
+  website     String?
+  currency    String   @default("RUB")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workingHours BusinessWorkingHours[]
+  services     Service[]
 
   @@index([tenantId])
   @@map("businesses")
+}
+
+model BusinessWorkingHours {
+  id         String    @id @default(uuid())
+  businessId String
+  dayOfWeek  DayOfWeek
+  isOpen     Boolean   @default(true)
+  // Local wall-clock time as "HH:mm" (e.g. "09:00"). Null when isOpen = false.
+  // Interpreted using Business.timezone; not a Date/UTC value.
+  openTime   String?
+  closeTime  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, dayOfWeek])
+  @@index([businessId])
+  @@map("business_working_hours")
+}
+
+model Service {
+  id              String   @id @default(uuid())
+  tenantId        String
+  businessId      String
+  name            String
+  description     String?
+  // Money as Decimal, never Float. Serialized to the API as fixed-point
+  // strings (e.g. "1500.00"), never as floating-point numbers.
+  priceFrom       Decimal? @db.Decimal(10, 2)
+  priceTo         Decimal? @db.Decimal(10, 2)
+  currency        String
+  durationMinutes Int
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([businessId])
+  @@index([isActive])
+  @@index([businessId, isActive])
+  @@map("services")
 }
 
 model Session {

@@ -26,6 +26,8 @@ export interface AuthBusiness {
   email: string | null
   address: string | null
   timezone: string
+  website: string | null
+  currency: string
 }
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'

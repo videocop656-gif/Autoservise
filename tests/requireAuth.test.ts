@@ -18,11 +18,15 @@ vi.mock('../src/server/repositories/userRepository', () => ({
 vi.mock('../src/server/repositories/tenantRepository', () => ({
   tenantRepository: { findById: vi.fn() },
 }))
+vi.mock('../src/server/repositories/businessRepository', () => ({
+  businessRepository: { findFirstByTenant: vi.fn() },
+}))
 
 import { requireAuth } from '../src/server/middleware/requireAuth'
 import { sessionRepository } from '../src/server/repositories/sessionRepository'
 import { userRepository } from '../src/server/repositories/userRepository'
 import { tenantRepository } from '../src/server/repositories/tenantRepository'
+import { businessRepository } from '../src/server/repositories/businessRepository'
 import { ApiError } from '../src/server/lib/errors'
 import type { ApiRequest } from '../src/server/types/http'
 
@@ -96,10 +100,56 @@ describe('requireAuth', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as never)
+    vi.mocked(businessRepository.findFirstByTenant).mockResolvedValue({
+      id: 'b1',
+      tenantId: 't1',
+      name: 'Shop',
+      description: null,
+      phone: null,
+      email: null,
+      address: null,
+      timezone: 'UTC',
+      website: null,
+      currency: 'RUB',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never)
 
     const ctx = await requireAuth(makeRequest({ session_token: 'abc' }))
     expect(ctx.user.email).toBe('a@b.com')
     expect(ctx.user).not.toHaveProperty('passwordHash')
     expect(ctx.tenant.id).toBe('t1')
+    expect(ctx.business.id).toBe('b1')
+  })
+
+  it('throws 404 when the tenant has no business (data-integrity guard)', async () => {
+    vi.mocked(sessionRepository.findByTokenHash).mockResolvedValue({
+      id: 's1',
+      userId: 'u1',
+      tokenHash: 'h',
+      expiresAt: new Date(Date.now() + 100000),
+      createdAt: new Date(),
+      lastUsedAt: new Date(),
+    } as never)
+    vi.mocked(userRepository.findById).mockResolvedValue({
+      id: 'u1',
+      tenantId: 't1',
+      email: 'a@b.com',
+      passwordHash: 'x',
+      name: 'A',
+      role: 'owner',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never)
+    vi.mocked(tenantRepository.findById).mockResolvedValue({
+      id: 't1',
+      name: 'Tenant',
+      status: 'trial',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never)
+    vi.mocked(businessRepository.findFirstByTenant).mockResolvedValue(null)
+
+    await expect(requireAuth(makeRequest({ session_token: 'abc' }))).rejects.toMatchObject({ statusCode: 404 })
   })
 })

@@ -1,4 +1,4 @@
-import type { Tenant, UserRole } from '@prisma/client'
+import type { Business, Tenant, UserRole } from '@prisma/client'
 
 /** User shape that is safe to return to the client: never includes passwordHash. */
 export interface SafeUser {
@@ -11,9 +11,15 @@ export interface SafeUser {
   updatedAt: Date
 }
 
-/** Server-resolved identity for the current request. Never trust client-sent tenantId/userId/role instead of this. */
+/**
+ * Server-resolved identity for the current request. Never trust
+ * client-sent tenantId/userId/role/businessId instead of this — `business`
+ * is resolved the same way tenant is: from the session, not from the
+ * request. Every tenant has exactly one Business at this stage.
+ */
 export interface AuthContext {
   user: SafeUser
   tenant: Tenant
+  business: Business
   sessionId: string
 }

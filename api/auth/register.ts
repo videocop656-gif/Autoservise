@@ -6,6 +6,7 @@ import { sendError, ApiError } from '../../src/server/lib/errors'
 import { rateLimit } from '../../src/server/middleware/rateLimit'
 import { getClientIp } from '../../src/server/lib/request'
 import { logger } from '../../src/server/lib/logger'
+import { toBusinessDto } from '../../src/server/lib/dto'
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   try {
@@ -28,7 +29,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     res.status(201).json({
       user: result.user,
       tenant: result.tenant,
-      business: result.business,
+      business: toBusinessDto(result.business),
     })
   } catch (err) {
     sendError(res, err)

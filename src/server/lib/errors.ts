@@ -24,11 +24,23 @@ export function sendError(res: ApiResponse, err: unknown): void {
   }
 
   if (err instanceof ZodError) {
+    // Object-level refine/superRefine issues (e.g. "at least one field must
+    // be provided", "duplicate day") have no field path, so Zod puts them
+    // in formErrors rather than fieldErrors. Surface both under `details`
+    // so the client can show them even when no single field is at fault.
+    const { fieldErrors, formErrors } = err.flatten()
+    const details: Record<string, string[]> = {}
+    for (const [field, messages] of Object.entries(fieldErrors)) {
+      if (messages) details[field] = messages
+    }
+    if (formErrors.length > 0) {
+      details._form = formErrors
+    }
     res.status(400).json({
       error: {
         code: 'VALIDATION_ERROR',
         message: 'Invalid request data',
-        details: err.flatten().fieldErrors,
+        details,
       },
     })
     return

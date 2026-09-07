@@ -6,16 +6,25 @@ vi.mock('../src/server/lib/env', () => ({
   SESSION_DURATION_MS: 1000 * 60 * 60 * 24,
 }))
 
-const { tenantCreate, userCreate, businessCreate, userFindUnique, tenantFindUnique, sessionCreate, sessionDeleteMany } =
-  vi.hoisted(() => ({
-    tenantCreate: vi.fn(),
-    userCreate: vi.fn(),
-    businessCreate: vi.fn(),
-    userFindUnique: vi.fn(),
-    tenantFindUnique: vi.fn(),
-    sessionCreate: vi.fn(),
-    sessionDeleteMany: vi.fn(),
-  }))
+const {
+  tenantCreate,
+  userCreate,
+  businessCreate,
+  workingHoursCreateMany,
+  userFindUnique,
+  tenantFindUnique,
+  sessionCreate,
+  sessionDeleteMany,
+} = vi.hoisted(() => ({
+  tenantCreate: vi.fn(),
+  userCreate: vi.fn(),
+  businessCreate: vi.fn(),
+  workingHoursCreateMany: vi.fn(),
+  userFindUnique: vi.fn(),
+  tenantFindUnique: vi.fn(),
+  sessionCreate: vi.fn(),
+  sessionDeleteMany: vi.fn(),
+}))
 
 vi.mock('../src/server/db/prisma', () => ({
   prisma: {
@@ -24,6 +33,7 @@ vi.mock('../src/server/db/prisma', () => ({
         tenant: { create: tenantCreate },
         user: { create: userCreate },
         business: { create: businessCreate },
+        businessWorkingHours: { createMany: workingHoursCreateMany },
       })
     ),
     user: { findUnique: userFindUnique },
@@ -42,6 +52,7 @@ import { registerTenant, loginUser, logoutUser } from '../src/server/services/au
 beforeEach(() => {
   vi.clearAllMocks()
   sessionCreate.mockResolvedValue({})
+  workingHoursCreateMany.mockResolvedValue({ count: 7 })
 })
 
 describe('registerTenant', () => {
@@ -67,6 +78,30 @@ describe('registerTenant', () => {
     expect(sessionCreate).toHaveBeenCalledTimes(1)
     expect(typeof result.token).toBe('string')
     expect(result.token.length).toBeGreaterThan(0)
+  })
+
+  it('creates exactly 7 default working-hours records, one per day, inside the same transaction', async () => {
+    tenantCreate.mockResolvedValue({ id: 't1', name: 'Shop', status: 'trial', createdAt: new Date(), updatedAt: new Date() })
+    userCreate.mockResolvedValue({
+      id: 'u1',
+      tenantId: 't1',
+      email: 'a@b.com',
+      passwordHash: 'hashed:secret123',
+      name: 'A',
+      role: 'owner',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    businessCreate.mockResolvedValue({ id: 'b1', tenantId: 't1', name: 'Shop' })
+
+    await registerTenant({ businessName: 'Shop', name: 'A', email: 'a@b.com', password: 'secret123' })
+
+    expect(workingHoursCreateMany).toHaveBeenCalledTimes(1)
+    const call = workingHoursCreateMany.mock.calls[0]![0] as { data: Array<{ businessId: string; dayOfWeek: string }> }
+    expect(call.data).toHaveLength(7)
+    expect(call.data.every((d) => d.businessId === 'b1')).toBe(true)
+    const days = new Set(call.data.map((d) => d.dayOfWeek))
+    expect(days.size).toBe(7)
   })
 })
 

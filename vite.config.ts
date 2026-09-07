@@ -5,6 +5,43 @@ import fs from 'node:fs'
 import type { ApiRequest, ApiResponse } from './src/server/types/http'
 
 /**
+ * Resolves a request path like "services/abc-123" to an API handler file,
+ * mirroring Vercel's file-based routing: an exact match (api/services/abc-123.ts)
+ * wins, otherwise a single-segment dynamic file in the same directory
+ * (api/services/[id].ts) matches and its bracket name becomes a query param
+ * — i.e. req.query.id === "abc-123", exactly like Vercel's own dynamic
+ * routes. Only one dynamic segment, at the last path position, is
+ * supported — that's all this project's routes need.
+ */
+function resolveApiFile(apiDir: string, routePath: string): { filePath: string; params: Record<string, string> } | null {
+  const exact = path.join(apiDir, `${routePath}.ts`)
+  if (fs.existsSync(exact)) {
+    return { filePath: exact, params: {} }
+  }
+
+  const index = path.join(apiDir, routePath, 'index.ts')
+  if (fs.existsSync(index)) {
+    return { filePath: index, params: {} }
+  }
+
+  const segments = routePath.split('/')
+  const last = segments.pop()
+  if (last === undefined || last === '') return null
+
+  const dir = path.join(apiDir, ...segments)
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return null
+
+  for (const entry of fs.readdirSync(dir)) {
+    const match = /^\[(.+)\]\.ts$/.exec(entry)
+    if (match?.[1]) {
+      return { filePath: path.join(dir, entry), params: { [match[1]]: last } }
+    }
+  }
+
+  return null
+}
+
+/**
  * Local development emulation of Vercel serverless functions.
  *
  * In production, files under /api are deployed by Vercel as individual
@@ -26,12 +63,14 @@ function localApiPlugin(): Plugin {
 
         const url = new URL(req.url, 'http://localhost')
         const routePath = url.pathname.replace(/^\/api\//, '').replace(/\/$/, '')
-        const filePath = path.resolve(server.config.root, 'api', `${routePath}.ts`)
+        const apiDir = path.resolve(server.config.root, 'api')
+        const resolved = resolveApiFile(apiDir, routePath)
 
-        if (!fs.existsSync(filePath)) {
+        if (!resolved) {
           next()
           return
         }
+        const { filePath, params } = resolved
 
         try {
           const chunks: Buffer[] = []
@@ -68,7 +107,7 @@ function localApiPlugin(): Plugin {
           const apiReq = req as unknown as ApiRequest
           apiReq.body = body
           apiReq.cookies = cookies
-          apiReq.query = Object.fromEntries(url.searchParams)
+          apiReq.query = { ...Object.fromEntries(url.searchParams), ...params }
 
           const apiRes = res as unknown as ApiResponse
           apiRes.status = (code: number) => {

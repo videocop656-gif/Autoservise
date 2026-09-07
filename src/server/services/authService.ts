@@ -5,6 +5,7 @@ import { generateSessionToken, hashSessionToken } from '../auth/tokens'
 import { SESSION_DURATION_MS } from '../lib/env'
 import { ApiError } from '../lib/errors'
 import { toSafeUser } from '../lib/safeUser'
+import { DEFAULT_WORKING_HOURS } from '../domain/workingHoursDefaults'
 import type { RegisterInput, LoginInput } from '../validation/auth.schemas'
 
 // Precomputed once per process. Used to keep the timing of a "user not
@@ -36,6 +37,9 @@ export async function registerTenant(input: RegisterInput) {
       })
       const business = await tx.business.create({
         data: { tenantId: tenant.id, name: input.businessName },
+      })
+      await tx.businessWorkingHours.createMany({
+        data: DEFAULT_WORKING_HOURS.map((day) => ({ businessId: business.id, ...day })),
       })
       return { tenant, user, business }
     })

@@ -6,6 +6,7 @@ import { hashSessionToken } from '../auth/tokens'
 import { sessionRepository } from '../repositories/sessionRepository'
 import { userRepository } from '../repositories/userRepository'
 import { tenantRepository } from '../repositories/tenantRepository'
+import { businessRepository } from '../repositories/businessRepository'
 import { toSafeUser } from '../lib/safeUser'
 
 /**
@@ -36,8 +37,17 @@ export async function requireAuth(req: ApiRequest): Promise<AuthContext> {
     throw new ApiError(401, 'UNAUTHORIZED', 'Tenant not found')
   }
 
+  // Every tenant is created together with exactly one Business at
+  // registration time, so this should never be null in practice. If it
+  // ever is (data integrity issue), fail closed rather than handing out a
+  // context with a missing business to downstream handlers.
+  const business = await businessRepository.findFirstByTenant(tenant.id)
+  if (!business) {
+    throw new ApiError(404, 'NOT_FOUND', 'Business not found')
+  }
+
   // Best-effort activity tracking; must never block or fail the request.
   void sessionRepository.touch(session.id).catch(() => {})
 
-  return { user: toSafeUser(user), tenant, sessionId: session.id }
+  return { user: toSafeUser(user), tenant, business, sessionId: session.id }
 }
