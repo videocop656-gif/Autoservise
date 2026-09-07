@@ -1,9 +1,10 @@
 # Автосервис — AI-администратор (Foundation)
 
 SaaS-приложение для автосервисов. This covers **Prompt 01 (Foundation)** —
-auth, multi-tenant, DB — plus **Prompt 02 (Business Profile + Service
-Catalog)**: a real Business profile, working hours, and a service catalog.
-Still no AI, integrations, or final design.
+auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
+and **Prompt 03 (Knowledge Base + Business Rules)**: structured data a future
+AI administrator will read from, with no AI wired up yet. Still no AI,
+integrations, or final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -154,25 +155,50 @@ Each Business has exactly 7 `BusinessWorkingHours` rows (one per `DayOfWeek`), c
 - Deactivating a service (`DELETE /api/services/:id`) never deletes the row; it sets `isActive = false` and is idempotent (deactivating an already-inactive service still returns success). This preserves history for the future AI layer and any reporting.
 - This shape is deliberately AI-consumption-ready (name/description/price range/currency/duration/active) without implementing any AI yet.
 
+## Knowledge Base
+
+`KnowledgeItem` stores information a future AI administrator will use to answer customer questions — "What documents do I need?", "Is there a warranty?", "How do I prepare my car for diagnostics?", "What payment methods do you accept?". It is **not** operational logic — see Business Rules below for that.
+
+Fields: `title`, `content`, `category`, `isActive`. Category is a fixed enum:
+
+- `FAQ`, `SERVICE_INFO`, `POLICY`, `WARRANTY`, `PAYMENT`, `PREPARATION`, `GENERAL`
+
+New items are always created active; `DELETE /api/knowledge/:id` soft-deletes (`isActive = false`, idempotent) rather than removing the row — the future AI layer and any audit trail need the history. `GET /api/knowledge` defaults to active items only and supports `?activeOnly=false` and `?category=FAQ` filters (an unrecognized category is a `400 VALIDATION_ERROR`, not silently ignored).
+
+## Business Rules
+
+`BusinessRule` stores *operational* rules — not "what do we know", but "how must we act": *"the car isn't released until payment is complete"*, *"walk-ins are only accepted if there's a free slot"*, *"diagnostics require the customer's consent first"*.
+
+Fields: `name`, `description`, `category`, `priority`, `isActive`. Category is a fixed enum:
+
+- `APPOINTMENT`, `SERVICE`, `PAYMENT`, `WARRANTY`, `CUSTOMER`, `OPERATIONS`, `GENERAL`
+
+**Priority**: an integer 0–100 (default 50). **Lower number = higher priority — 0 is the highest priority, 100 is the lowest.** `GET /api/rules` always returns rules sorted by `priority ASC, createdAt ASC`, so the most important rules are always first — this ordering is what a future AI layer would read top-to-bottom. Same soft-delete/filter behavior as Knowledge Base (`isActive`, `?activeOnly=false`, `?category=PAYMENT`).
+
 ## Roles
 
-| Action                              | owner | admin | manager |
-|--------------------------------------|:---:|:---:|:---:|
-| Read Business profile                 | ✅ | ✅ | ✅ |
-| Update Business profile               | ✅ | ✅ | ❌ |
-| Read working hours                    | ✅ | ✅ | ✅ |
-| Replace working hours                 | ✅ | ✅ | ❌ |
-| List/read services (active or all)    | ✅ | ✅ | ✅ |
-| Create / update / deactivate a service| ✅ | ✅ | ❌ |
+| Action                                 | owner | admin | manager |
+|------------------------------------------|:---:|:---:|:---:|
+| Read Business profile                     | ✅ | ✅ | ✅ |
+| Update Business profile                   | ✅ | ✅ | ❌ |
+| Read working hours                        | ✅ | ✅ | ✅ |
+| Replace working hours                     | ✅ | ✅ | ❌ |
+| List/read services (active or all)        | ✅ | ✅ | ✅ |
+| Create / update / deactivate a service    | ✅ | ✅ | ❌ |
+| List/read knowledge items (active or all) | ✅ | ✅ | ✅ |
+| Create / update / deactivate knowledge    | ✅ | ✅ | ❌ |
+| List/read business rules (active or all)  | ✅ | ✅ | ✅ |
+| Create / update / deactivate a rule       | ✅ | ✅ | ❌ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`) — the frontend also hides unavailable actions for `manager`, but that's UX only, not the security boundary.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`) — the frontend also hides unavailable actions for `manager`, but that's UX only, not the security boundary.
 
 ## Multi-tenancy
 
 - One **Tenant** = one auto service company. Every user belongs to exactly one tenant; all business data is tied to a `tenantId`.
 - Tenant isolation is enforced **server-side only** — never via frontend filtering. `tenantId`/`businessId` always come from the authenticated session (`requireAuth`), never from client-supplied fields — a client can send a `Service` **id** to identify a resource, but the server always re-checks `tenantId` and `businessId` against the session before acting on it.
 - The reusable `withTenant()` helper (`src/server/lib/tenantScope.ts`) is meant to be the one way tenant-owned queries build their `where` clause, so future endpoints don't accidentally forget the filter — see `businessRepository.update` and `serviceRepository` for the pattern (scoped `updateMany`/`findFirst`, never a bare `findUnique({ where: { id } })`).
-- A service belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH/DELETE /api/services/:id` all return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
+- A service, knowledge item, or business rule belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH/DELETE` on any of `/api/services/:id`, `/api/knowledge/:id`, `/api/rules/:id` all return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
+- `knowledgeRepository` and `businessRuleRepository` follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all three.
 - Role-based checks (`owner`, `admin`, `manager`) via `requireRole()` (`src/server/middleware/requireRole.ts`).
 
 ## Money
@@ -199,13 +225,23 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | POST   | `/api/services`          | owner, admin            | `currency` optional, defaults from Business |
 | PATCH  | `/api/services/:id`      | owner, admin            | partial update, ≥1 field |
 | DELETE | `/api/services/:id`      | owner, admin            | soft delete (`isActive = false`), idempotent |
+| GET    | `/api/knowledge`         | any authenticated       | `?activeOnly=false`, `?category=FAQ` |
+| GET    | `/api/knowledge/:id`     | any authenticated       | 404 if unknown or another tenant's |
+| POST   | `/api/knowledge`         | owner, admin            | `category` optional, defaults `GENERAL` |
+| PATCH  | `/api/knowledge/:id`     | owner, admin            | partial update, ≥1 field |
+| DELETE | `/api/knowledge/:id`     | owner, admin            | soft delete (`isActive = false`), idempotent |
+| GET    | `/api/rules`             | any authenticated       | sorted `priority ASC, createdAt ASC`; `?activeOnly=false`, `?category=PAYMENT` |
+| GET    | `/api/rules/:id`         | any authenticated       | 404 if unknown or another tenant's |
+| POST   | `/api/rules`             | owner, admin            | `category`/`priority` optional, default `GENERAL`/`50` |
+| PATCH  | `/api/rules/:id`         | owner, admin            | partial update, ≥1 field |
+| DELETE | `/api/rules/:id`         | owner, admin            | soft delete (`isActive = false`), idempotent |
 
 ## Security
 
 - Argon2id password hashing, no custom crypto.
 - Server-side sessions; only a hashed, HMAC-keyed token is persisted.
 - HttpOnly / Secure (prod) / SameSite=Lax cookies; nothing auth-related in localStorage/sessionStorage.
-- Zod validation on every input, including business profile, working hours, and service payloads.
+- Zod validation on every input, including business profile, working hours, service, knowledge base, and business rule payloads.
 - Tenant isolation and role checks enforced server-side — see [Multi-tenancy](#multi-tenancy) and [Roles](#roles).
 - Basic rate limiting on auth endpoints.
 - Centralized error handling (`src/server/lib/errors.ts`) — no stack traces, SQL errors, env vars, or file paths ever reach the client.
@@ -230,18 +266,30 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - Settings UI: `/settings/business`, `/settings/hours`, `/settings/services`, plus a shared `Nav` and a dashboard summary (active service count, working-hours summary).
 - Unit tests for password hashing, tokens, validation schemas, `requireAuth`, `requireRole`, tenant isolation (business/service/hours), and the register/login/logout/business/hours/service service logic — 113 tests total.
 
+**Prompt 03 — Knowledge Base + Business Rules**
+- `KnowledgeItem` model: title/content/category/isActive, tenant+business owned, soft-delete.
+- `BusinessRule` model: name/description/category/priority/isActive, tenant+business owned, soft-delete, sorted by priority.
+- `knowledgeService` / `businessRuleService` layers mirroring the Prompt 02 pattern exactly (role checks, tenant-scoped repository calls, DTO mapping).
+- Settings UI: `/settings/knowledge`, `/settings/rules`, with status (active/inactive/all) and category filters, added to `Nav`.
+- No AI, embeddings, or vector search — this is a structured data foundation only.
+- 65 new unit tests (178 total): schema validation, service-layer role checks, and explicit cross-tenant read/update/deactivate isolation tests for both models.
+
 ## Not implemented yet
 
-AI / LLM / OpenAI, AI receptionist, Telegram, WhatsApp, Avito, VK, MAX, website
-chat, CRM, Kommo, Google Calendar, booking/appointments, leads, contacts,
-conversations, messages, reminders/follow-ups, payments, subscriptions,
-billing, analytics, notifications, email provider, SMS, voice AI, message
-generation, final UI/UX & design system, marketing site, advanced dashboard.
+AI / LLM / OpenAI / Anthropic / Gemini, embeddings, vector database, RAG,
+semantic search, prompt templates, AI administrator logic, AI receptionist,
+Telegram, WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website
+chat, email integration, SMS, voice AI, CRM, Kommo, Google Calendar,
+booking/appointments, leads, contacts, conversations, messages,
+reminders/follow-ups, payments, subscriptions, billing, analytics,
+notifications, automation engine, final UI/UX & design system, marketing
+site, advanced dashboard.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `AIProvider` / `CRMAdapter` / `CalendarAdapter` /
 `ChannelAdapter` / `PaymentAdapter` integration layers, and future domain
-models like `KnowledgeItem`, `Contact`, `Lead`, `Conversation`, `Message`,
-`Appointment`, `AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`)
-without committing to their shape yet. `BusinessWorkingHours` is deliberately
-kept separate from any future `Appointment`/calendar model.
+models like `Contact`, `Lead`, `Conversation`, `Message`, `Appointment`,
+`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`) without committing
+to their shape yet. `BusinessWorkingHours` is deliberately kept separate from
+any future `Appointment`/calendar model, and `KnowledgeItem`/`BusinessRule`
+are deliberately kept separate from any future AI/RAG layer.

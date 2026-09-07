@@ -5,6 +5,8 @@ import DashboardPage from './pages/DashboardPage'
 import BusinessSettingsPage from './pages/settings/BusinessSettingsPage'
 import HoursSettingsPage from './pages/settings/HoursSettingsPage'
 import ServicesSettingsPage from './pages/settings/ServicesSettingsPage'
+import KnowledgeSettingsPage from './pages/settings/KnowledgeSettingsPage'
+import RulesSettingsPage from './pages/settings/RulesSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -41,6 +43,22 @@ export default function App() {
         element={
           <ProtectedRoute>
             <ServicesSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/knowledge"
+        element={
+          <ProtectedRoute>
+            <KnowledgeSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/rules"
+        element={
+          <ProtectedRoute>
+            <RulesSettingsPage />
           </ProtectedRoute>
         }
       />

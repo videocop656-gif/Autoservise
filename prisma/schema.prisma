@@ -31,6 +31,26 @@ enum DayOfWeek {
   SUNDAY
 }
 
+enum KnowledgeCategory {
+  FAQ
+  SERVICE_INFO
+  POLICY
+  WARRANTY
+  PAYMENT
+  PREPARATION
+  GENERAL
+}
+
+enum BusinessRuleCategory {
+  APPOINTMENT
+  SERVICE
+  PAYMENT
+  WARRANTY
+  CUSTOMER
+  OPERATIONS
+  GENERAL
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -38,9 +58,11 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users      User[]
-  businesses Business[]
-  services   Service[]
+  users          User[]
+  businesses     Business[]
+  services       Service[]
+  knowledgeItems KnowledgeItem[]
+  businessRules  BusinessRule[]
 
   @@map("tenants")
 }
@@ -76,9 +98,11 @@ model Business {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  workingHours BusinessWorkingHours[]
-  services     Service[]
+  tenant         Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workingHours   BusinessWorkingHours[]
+  services       Service[]
+  knowledgeItems KnowledgeItem[]
+  businessRules  BusinessRule[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -127,6 +151,49 @@ model Service {
   @@index([isActive])
   @@index([businessId, isActive])
   @@map("services")
+}
+
+model KnowledgeItem {
+  id         String            @id @default(uuid())
+  tenantId   String
+  businessId String
+  title      String
+  content    String
+  category   KnowledgeCategory @default(GENERAL)
+  isActive   Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, isActive])
+  @@index([tenantId, businessId, category])
+  @@map("knowledge_items")
+}
+
+model BusinessRule {
+  id          String               @id @default(uuid())
+  tenantId    String
+  businessId  String
+  name        String
+  description String
+  category    BusinessRuleCategory @default(GENERAL)
+  // Lower number = higher priority. 0 = highest, 100 = lowest, 50 = default.
+  priority    Int                  @default(50)
+  isActive    Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, isActive])
+  @@index([tenantId, businessId, category])
+  @@index([tenantId, businessId, priority])
+  @@map("business_rules")
 }
 
 model Session {

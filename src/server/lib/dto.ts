@@ -1,4 +1,4 @@
-import type { Business, BusinessWorkingHours, Service } from '@prisma/client'
+import type { Business, BusinessWorkingHours, Service, KnowledgeItem, BusinessRule } from '@prisma/client'
 
 /**
  * Never return raw Prisma objects to the client. These DTOs are the single
@@ -80,5 +80,51 @@ export function toServiceDto(service: Service): ServiceDto {
     isActive: service.isActive,
     createdAt: service.createdAt,
     updatedAt: service.updatedAt,
+  }
+}
+
+export interface KnowledgeItemDto {
+  id: string
+  title: string
+  content: string
+  category: KnowledgeItem['category']
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toKnowledgeItemDto(item: KnowledgeItem): KnowledgeItemDto {
+  return {
+    id: item.id,
+    title: item.title,
+    content: item.content,
+    category: item.category,
+    isActive: item.isActive,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  }
+}
+
+export interface BusinessRuleDto {
+  id: string
+  name: string
+  description: string
+  category: BusinessRule['category']
+  priority: number
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toBusinessRuleDto(rule: BusinessRule): BusinessRuleDto {
+  return {
+    id: rule.id,
+    name: rule.name,
+    description: rule.description,
+    category: rule.category,
+    priority: rule.priority,
+    isActive: rule.isActive,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
   }
 }

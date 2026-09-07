@@ -7,6 +7,10 @@ const {
   serviceFindManyMock,
   serviceFindFirstMock,
   serviceUpdateManyMock,
+  knowledgeFindFirstMock,
+  knowledgeUpdateManyMock,
+  ruleFindFirstMock,
+  ruleUpdateManyMock,
   transactionMock,
 } = vi.hoisted(() => ({
   businessFindManyMock: vi.fn(),
@@ -15,6 +19,10 @@ const {
   serviceFindManyMock: vi.fn(),
   serviceFindFirstMock: vi.fn(),
   serviceUpdateManyMock: vi.fn(),
+  knowledgeFindFirstMock: vi.fn(),
+  knowledgeUpdateManyMock: vi.fn(),
+  ruleFindFirstMock: vi.fn(),
+  ruleUpdateManyMock: vi.fn(),
   transactionMock: vi.fn(async (ops: unknown[]) => ops),
 }))
 
@@ -22,6 +30,8 @@ vi.mock('../src/server/db/prisma', () => ({
   prisma: {
     business: { findMany: businessFindManyMock, findFirst: businessFindFirstMock, updateMany: businessUpdateManyMock },
     service: { findMany: serviceFindManyMock, findFirst: serviceFindFirstMock, updateMany: serviceUpdateManyMock },
+    knowledgeItem: { findFirst: knowledgeFindFirstMock, updateMany: knowledgeUpdateManyMock },
+    businessRule: { findFirst: ruleFindFirstMock, updateMany: ruleUpdateManyMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
   },
@@ -30,6 +40,8 @@ vi.mock('../src/server/db/prisma', () => ({
 import { businessRepository } from '../src/server/repositories/businessRepository'
 import { serviceRepository } from '../src/server/repositories/serviceRepository'
 import { workingHoursRepository } from '../src/server/repositories/workingHoursRepository'
+import { knowledgeRepository } from '../src/server/repositories/knowledgeRepository'
+import { businessRuleRepository } from '../src/server/repositories/businessRuleRepository'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -39,6 +51,10 @@ beforeEach(() => {
   serviceFindManyMock.mockResolvedValue([])
   serviceFindFirstMock.mockResolvedValue(null)
   serviceUpdateManyMock.mockResolvedValue({ count: 0 })
+  knowledgeFindFirstMock.mockResolvedValue(null)
+  knowledgeUpdateManyMock.mockResolvedValue({ count: 0 })
+  ruleFindFirstMock.mockResolvedValue(null)
+  ruleUpdateManyMock.mockResolvedValue({ count: 0 })
 })
 
 describe('tenant isolation — Business', () => {
@@ -122,5 +138,73 @@ describe('tenant isolation — Working hours', () => {
     expect(transactionMock).toHaveBeenCalledTimes(1)
     const ops = transactionMock.mock.calls[0]![0] as Array<{ where: { businessId_dayOfWeek: { businessId: string } } }>
     expect(ops.every((op) => op.where.businessId_dayOfWeek.businessId === 'business-a')).toBe(true)
+  })
+})
+
+describe('tenant isolation — Knowledge base', () => {
+  it('Test 1 — tenant A knowledge item cannot be read by tenant B', async () => {
+    knowledgeFindFirstMock.mockResolvedValue(null)
+    const result = await knowledgeRepository.findById('tenant-b', 'business-b', 'item-owned-by-tenant-a')
+
+    expect(knowledgeFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'item-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('Test 2 — tenant A cannot update tenant B knowledge item', async () => {
+    knowledgeUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await knowledgeRepository.updateById('tenant-a', 'business-a', 'item-owned-by-tenant-b', { title: 'X' })
+
+    expect(knowledgeUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: 'item-owned-by-tenant-b', tenantId: 'tenant-a' },
+      data: { title: 'X' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('Test 3 — tenant A cannot deactivate tenant B knowledge item', async () => {
+    knowledgeUpdateManyMock.mockResolvedValue({ count: 0 })
+    const count = await knowledgeRepository.deactivate('tenant-a', 'business-a', 'item-owned-by-tenant-b')
+
+    expect(knowledgeUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: 'item-owned-by-tenant-b', tenantId: 'tenant-a' },
+      data: { isActive: false },
+    })
+    expect(count).toBe(0)
+  })
+})
+
+describe('tenant isolation — Business rules', () => {
+  it('Test 1 — tenant A rule cannot be read by tenant B', async () => {
+    ruleFindFirstMock.mockResolvedValue(null)
+    const result = await businessRuleRepository.findById('tenant-b', 'business-b', 'rule-owned-by-tenant-a')
+
+    expect(ruleFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'rule-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('Test 2 — tenant A cannot update tenant B rule', async () => {
+    ruleUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await businessRuleRepository.updateById('tenant-a', 'business-a', 'rule-owned-by-tenant-b', { priority: 1 })
+
+    expect(ruleUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: 'rule-owned-by-tenant-b', tenantId: 'tenant-a' },
+      data: { priority: 1 },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('Test 3 — tenant A cannot deactivate tenant B rule', async () => {
+    ruleUpdateManyMock.mockResolvedValue({ count: 0 })
+    const count = await businessRuleRepository.deactivate('tenant-a', 'business-a', 'rule-owned-by-tenant-b')
+
+    expect(ruleUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: 'rule-owned-by-tenant-b', tenantId: 'tenant-a' },
+      data: { isActive: false },
+    })
+    expect(count).toBe(0)
   })
 })
