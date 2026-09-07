@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum TenantStatus {
+  trial
+  active
+  suspended
+  cancelled
+}
+
+enum UserRole {
+  owner
+  admin
+  manager
+}
+
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  status    TenantStatus @default(trial)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  users      User[]
+  businesses Business[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(owner)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Business {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  phone       String?
+  email       String?
+  address     String?
+  timezone    String   @default("UTC")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("businesses")
+}
+
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("sessions")
+}
