@@ -5,7 +5,9 @@ auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
 **Prompt 03 (Knowledge Base + Business Rules)**, **Prompt 04 (Customers,
 Vehicles & Leads)**, **Prompt 05 (Appointments & Booking Foundation)**, and
 **Prompt 06 (Service History Foundation)**: what was actually done to which
-vehicle, when, at what mileage, and for how much. Still no AI, no
+vehicle, when, at what mileage, and for how much — and **Prompt 07
+(Customer Request Foundation)**: a structured record of a customer's
+inquiry, captured before any Appointment exists. Still no AI, no
 communication channels (Telegram/WhatsApp/chat), no full CRM pipeline, no
 external calendar sync, and no final design.
 
@@ -243,6 +245,21 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - `GET /api/service-history` is paginated, sorted `performedAt DESC, createdAt DESC`, hides archived records by default (`includeArchived=true` to include them), and supports `customerId=`, `vehicleId=`, `serviceId=`, `dateFrom=`/`dateTo=` (filtering `performedAt`, half-open `[dateFrom, dateTo)`) — `?vehicleId=...` is this app's vehicle service-history view, linked from a "History" button on each row of `/settings/vehicles`.
 - **Manager can create, update, archive, and restore** — same operational exception as Appointment.
 
+## Customer Requests
+
+`CustomerRequest` is a structured customer inquiry — "stuck on my BMW X5, can I come in tomorrow after 15:00?" — captured *before* any Appointment exists, so a future AI administrator (not built yet) will have a safe, well-defined business entity to work through instead of touching Customer/Vehicle/Appointment/ServiceRecord rows directly. Only Customer is required; Vehicle, Service, and Appointment are all optional and independently verified.
+
+- Fields: `customerId` (required), `vehicleId`/`serviceId`/`appointmentId` (all optional), `source` (`PHONE`/`WEBSITE`/`MANUAL`/`OTHER`, defaults `MANUAL`), `status` (see below), `subject` (required, 2–200 chars), `description` (optional, ≤10,000 chars), `requestedDate` (optional), `requestedTimeFrom`/`requestedTimeTo` (optional, `"HH:mm"`), `notes` (optional, ≤5,000 chars).
+- **`requestedDate` is a wanted local *day*, never a specific instant** — it is deliberately *not* `Appointment.startAt`. The API accepts an ISO 8601 datetime, but the server immediately normalizes it to the Business-local calendar date it falls on (via the same `toBusinessLocalDateTime` used for Appointments) and stores that date as UTC midnight — the original time-of-day submitted never survives. `requestedTimeFrom`/`requestedTimeTo` are plain `"HH:mm"` wall-clock strings, same convention as `BusinessWorkingHours`, not UTC values; if both are given, `requestedTimeFrom` must be strictly before `requestedTimeTo` (`400` otherwise) — giving only one of the two is fine.
+- **Ownership**: `customerId`/`vehicleId`/`serviceId`/`appointmentId` are all re-verified server-side against the current tenant+business (404 if foreign-tenant); a given Vehicle must belong to the given Customer (400 if not); a given Appointment's customer must match exactly, and its vehicle/service must match too *if* the request itself specifies them (400 on any mismatch). **Unlike Appointment/ServiceRecord, a CustomerRequest's Vehicle is not required to be active** — it's just an inquiry, which can legitimately be about a vehicle no longer in daily use; Service, like everywhere else, must be active whenever it's part of what's being set or changed (400 if not).
+- **A new CustomerRequest requires an active Customer** (400 otherwise) — same rule, and same create-only scope, as Lead: updating an existing request (even re-pointing it at a different Customer) never re-requires that customer to be active, so staff can always keep managing a request that's already open.
+- **Historical editing**: deactivating a Customer/Service, or changing an Appointment, never touches existing CustomerRequests — no cascade, no auto status change. A plain field edit never re-checks ownership/active state; only a PATCH that actually changes a relation does.
+- **Status**: `NEW → IN_PROGRESS ⇄ WAITING_CUSTOMER`, `IN_PROGRESS → QUALIFIED → CONVERTED`, and `CLOSED`/`CANCELLED` reachable from `NEW`/`IN_PROGRESS`/`WAITING_CUSTOMER`/`QUALIFIED`. `CONVERTED`, `CLOSED`, and `CANCELLED` are terminal — no transition out of any of them is ever allowed (`400`). Re-submitting the current status is a no-op (allowed, no history entry). A request can only become `CONVERTED` if it has a linked `appointmentId` (400 otherwise), and a `CONVERTED` request can never have its `appointmentId` cleared, even by a PATCH that isn't otherwise touching status. `POST` always creates `status: NEW` regardless of whether an `appointmentId` was supplied at creation — connecting the appointment and moving the status forward are always two separate, explicit actions; there are no hidden automatic transitions.
+- **Status history**: every status change (including the initial `null → NEW` at creation) is recorded in `CustomerRequestStatusHistory` — `fromStatus`, `toStatus`, `changedByUserId`, `createdAt` — written atomically with the status-changing update (an interactive Prisma transaction; if the update matches zero rows, e.g. a foreign-tenant id, no history row is written either). The history is read-only — there is no API to edit or delete it — and is only included on `GET /api/customer-requests/:id` (oldest first), never on the list endpoint.
+- **No hard delete, ever.** `DELETE /api/customer-requests/:id` is `405`; closing one out means `PATCH { status: "CLOSED" }` or `{ status: "CANCELLED" }`.
+- `GET /api/customer-requests` is paginated, sorted `createdAt DESC`, and supports `status=`, `source=`, `customerId=`, `vehicleId=`, `serviceId=`, `appointmentId=`, and `search=` (matches `subject`/`description`, case-insensitive).
+- **Manager has full read/write/status-change access** — same operational exception as Appointment/Service History.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -267,8 +284,10 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 | Create / update an appointment (incl. status) | ✅ | ✅ | ✅ |
 | List/read service history (active or archived) | ✅ | ✅ | ✅ |
 | Create / update / archive / restore a service record | ✅ | ✅ | ✅ |
+| List/read customer requests                    | ✅ | ✅ | ✅ |
+| Create / update a customer request (incl. status) | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment and Service History are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments) and [Service History](#service-history)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, and Customer Requests are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), and [Customer Requests](#customer-requests)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -353,6 +372,10 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | GET    | `/api/service-history/:id` | any authenticated       | 404 if unknown or another tenant's; archived records included |
 | POST   | `/api/service-history`     | owner, admin, **manager** | `appointmentId` optional but must match customer/vehicle/service if given; mileage must not decrease |
 | PATCH  | `/api/service-history/:id` | owner, admin, **manager** | partial update, ≥1 field; archive/restore via `{ isArchived }`; no DELETE — always `405` |
+| GET    | `/api/customer-requests`     | any authenticated       | paginated, sorted `createdAt DESC`; `?status=`, `?source=`, `?customerId=`, `?vehicleId=`, `?serviceId=`, `?appointmentId=`, `?search=` |
+| GET    | `/api/customer-requests/:id` | any authenticated       | 404 if unknown or another tenant's; includes `statusHistory` (oldest first) |
+| POST   | `/api/customer-requests`     | owner, admin, **manager** | always creates `status: NEW`; `vehicleId`/`serviceId`/`appointmentId` all optional but cross-checked if given |
+| PATCH  | `/api/customer-requests/:id` | owner, admin, **manager** | partial update, ≥1 field, incl. `status` (transition-checked); no DELETE — always `405` |
 
 ## Security
 
@@ -424,6 +447,19 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - Settings UI: `/settings/service-history` — Customer→Vehicle cascading select, active-services-only select, an Appointment select filtered to ones actually matching the chosen Customer/Vehicle/Service, archive/restore controls; a "History" button on each `/settings/vehicles` row deep-links here with `?vehicleId=`.
 - Manager can create, update, archive, and restore — same operational exception as Appointment.
 - 65 new unit tests (447 total): schema validation, service-layer ownership/active-state/appointment-consistency/mileage checks (incl. archive-skips-validation and restore-re-validates), and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. the max-mileage query's exact shape).
+
+**Prompt 07 — Customer Request Foundation**
+- `CustomerRequest` model: customerId (required) + optional vehicleId/serviceId/appointmentId, source, status, subject, description, requestedDate, requestedTimeFrom/requestedTimeTo, notes — a structured inquiry, captured before any Appointment exists, so a future AI administrator has a safe business entity to work through instead of touching operational data directly.
+- `CustomerRequestStatusHistory` model: a full, read-only audit trail (`fromStatus`/`toStatus`/`changedByUserId`/`createdAt`) written atomically with every status change via an interactive Prisma transaction — new to this codebase (the project's one prior `$transaction` use, `workingHoursRepository.replaceAll`, uses the simpler array form, which can't express "only write the history row if the guarded update actually matched a row").
+- `requestedDate` is a wanted local *day*, never a specific instant: accepted as ISO 8601, normalized server-side to the Business-local calendar date via `toBusinessLocalDateTime`, and stored as UTC midnight of that date — never treated as `Appointment.startAt`.
+- Explicit status transition allow-list (`NEW → IN_PROGRESS ⇄ WAITING_CUSTOMER → QUALIFIED → CONVERTED`, plus `CLOSED`/`CANCELLED` from any non-terminal status); `CONVERTED`/`CLOSED`/`CANCELLED` are terminal; `CONVERTED` requires a linked `appointmentId` and can never lose it afterward.
+- Ownership/active-state re-checked only for relations actually being changed (same principle as Appointment/ServiceRecord); unlike them, a CustomerRequest's Vehicle is deliberately **not** required to be active — only Customer (create-only, mirroring Lead) and Service are.
+- No hard delete ever — `DELETE /api/customer-requests/:id` is `405`; closing one out means `PATCH { status: "CLOSED" }`/`{ status: "CANCELLED" }`.
+- `customerRequestService`/`customerRequestRepository` follow the established pattern; Prisma FKs use `Restrict` (not `Cascade`) on Customer/Vehicle/Service/Appointment and `SetNull` on the history's `changedByUserId`, matching the project's established conventions.
+- Settings UI: `/settings/customer-requests` — search, status/source filters, pagination, Customer→Vehicle cascading select, active-services-only select, an Appointment select on the edit form, and a read-only status-history trail shown alongside the edit form.
+- Manager has full read/write/status-change access — same operational exception as Appointment/Service History.
+- No AI, messaging channels, or CRM pipeline added — this is a structured data foundation only, exactly as scoped.
+- 91 new unit tests (538 total): schema validation, service-layer ownership/active-state/appointment-consistency/time-range/status-transition/status-history-path checks, and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. proving a foreign-tenant status-changing update never commits a history row).
 
 ## Not implemented yet
 

@@ -75,6 +75,23 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
+enum CustomerRequestSource {
+  PHONE
+  WEBSITE
+  MANUAL
+  OTHER
+}
+
+enum CustomerRequestStatus {
+  NEW
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  QUALIFIED
+  CONVERTED
+  CLOSED
+  CANCELLED
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -82,16 +99,18 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users          User[]
-  businesses     Business[]
-  services       Service[]
-  knowledgeItems KnowledgeItem[]
-  businessRules  BusinessRule[]
-  customers      Customer[]
-  vehicles       Vehicle[]
-  leads          Lead[]
-  appointments   Appointment[]
-  serviceRecords ServiceRecord[]
+  users                          User[]
+  businesses                     Business[]
+  services                       Service[]
+  knowledgeItems                 KnowledgeItem[]
+  businessRules                  BusinessRule[]
+  customers                      Customer[]
+  vehicles                       Vehicle[]
+  leads                          Lead[]
+  appointments                   Appointment[]
+  serviceRecords                 ServiceRecord[]
+  customerRequests               CustomerRequest[]
+  customerRequestStatusHistories CustomerRequestStatusHistory[]
 
   @@map("tenants")
 }
@@ -106,8 +125,9 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sessions Session[]
+  tenant                         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions                       Session[]
+  customerRequestStatusHistories CustomerRequestStatusHistory[]
 
   @@index([tenantId])
   @@map("users")
@@ -127,16 +147,18 @@ model Business {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant         Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  workingHours   BusinessWorkingHours[]
-  services       Service[]
-  knowledgeItems KnowledgeItem[]
-  businessRules  BusinessRule[]
-  customers      Customer[]
-  vehicles       Vehicle[]
-  leads          Lead[]
-  appointments   Appointment[]
-  serviceRecords ServiceRecord[]
+  tenant                         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workingHours                   BusinessWorkingHours[]
+  services                       Service[]
+  knowledgeItems                 KnowledgeItem[]
+  businessRules                  BusinessRule[]
+  customers                      Customer[]
+  vehicles                       Vehicle[]
+  leads                          Lead[]
+  appointments                   Appointment[]
+  serviceRecords                 ServiceRecord[]
+  customerRequests               CustomerRequest[]
+  customerRequestStatusHistories CustomerRequestStatusHistory[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -177,11 +199,12 @@ model Service {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  leads          Lead[]
-  appointments   Appointment[]
-  serviceRecords ServiceRecord[]
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  leads            Lead[]
+  appointments     Appointment[]
+  serviceRecords   ServiceRecord[]
+  customerRequests CustomerRequest[]
 
   @@index([tenantId])
   @@index([businessId])
@@ -250,12 +273,13 @@ model Customer {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  vehicles       Vehicle[]
-  leads          Lead[]
-  appointments   Appointment[]
-  serviceRecords ServiceRecord[]
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  vehicles         Vehicle[]
+  leads            Lead[]
+  appointments     Appointment[]
+  serviceRecords   ServiceRecord[]
+  customerRequests CustomerRequest[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -282,14 +306,15 @@ model Vehicle {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict, not Cascade: a domain record (Vehicle) is never deleted
   // just because its Customer is soft-deleted elsewhere in the app.
-  customer       Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  leads          Lead[]
-  appointments   Appointment[]
-  serviceRecords ServiceRecord[]
+  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  leads            Lead[]
+  appointments     Appointment[]
+  serviceRecords   ServiceRecord[]
+  customerRequests CustomerRequest[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, customerId])
@@ -354,7 +379,8 @@ model Appointment {
   vehicle  Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
-  serviceRecords ServiceRecord[]
+  serviceRecords   ServiceRecord[]
+  customerRequests CustomerRequest[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, startAt])
@@ -423,6 +449,87 @@ model ServiceRecord {
   @@index([serviceId, performedAt])
   @@index([appointmentId])
   @@map("service_records")
+}
+
+model CustomerRequest {
+  id            String  @id @default(uuid())
+  tenantId      String
+  businessId    String
+  customerId    String
+  vehicleId     String?
+  serviceId     String?
+  // Optional link to the Appointment this request turned into (see
+  // CONVERTED in CustomerRequestStatus). Can also be set before the status
+  // reflects it — connecting the appointment and changing the status are
+  // two deliberate, separate actions (see assertRelations/§17 in
+  // customerRequestService.ts).
+  appointmentId String?
+
+  source CustomerRequestSource @default(MANUAL)
+  status CustomerRequestStatus @default(NEW)
+
+  subject     String
+  description String?
+
+  // The customer's wanted local *date* — never a specific instant, never
+  // Appointment.startAt. Normalized to UTC midnight of the calendar date it
+  // falls on in Business.timezone (the app's sole timezone source) before
+  // being stored — see normalizeRequestedDate() in customerRequestService.ts.
+  requestedDate     DateTime?
+  // "HH:mm", zero-padded, same convention as BusinessWorkingHours.openTime/
+  // closeTime — a wall-clock time in Business.timezone, not a Date/UTC value.
+  requestedTimeFrom String?
+  requestedTimeTo   String?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade, on every domain relation below — same principle
+  // as Lead/Appointment/ServiceRecord: a CustomerRequest is a historical
+  // record of an inquiry and must survive the Customer/Vehicle/Service/
+  // Appointment it references being deactivated, changed, or (outside the
+  // app's normal soft-delete workflow) removed.
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle     Vehicle?     @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  service     Service?     @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+
+  statusHistory CustomerRequestStatusHistory[]
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@index([tenantId, businessId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([vehicleId, createdAt])
+  @@index([appointmentId])
+  @@map("customer_requests")
+}
+
+model CustomerRequestStatusHistory {
+  id                String                 @id @default(uuid())
+  tenantId          String
+  businessId        String
+  customerRequestId String
+  fromStatus        CustomerRequestStatus?
+  toStatus          CustomerRequestStatus
+  changedByUserId   String?
+  createdAt         DateTime               @default(now())
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business        Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customerRequest CustomerRequest @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
+  // SetNull, not Restrict: the audit trail is a permanent record and must
+  // survive a User being removed, even though there is no user-delete flow
+  // in the app today — same principle as Lead.vehicleId/serviceId's SetNull.
+  changedByUser   User?           @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, businessId, customerRequestId, createdAt])
+  @@index([customerRequestId, createdAt])
+  @@map("customer_request_status_history")
 }
 
 model Session {

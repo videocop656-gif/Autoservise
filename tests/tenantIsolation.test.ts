@@ -24,36 +24,62 @@ const {
   serviceRecordCountMock,
   serviceRecordUpdateManyMock,
   serviceRecordAggregateMock,
+  customerRequestFindFirstMock,
+  customerRequestFindManyMock,
+  customerRequestCountMock,
+  customerRequestUpdateManyMock,
+  customerRequestStatusHistoryCreateMock,
   transactionMock,
-} = vi.hoisted(() => ({
-  businessFindManyMock: vi.fn(),
-  businessFindFirstMock: vi.fn(),
-  businessUpdateManyMock: vi.fn(),
-  serviceFindManyMock: vi.fn(),
-  serviceFindFirstMock: vi.fn(),
-  serviceUpdateManyMock: vi.fn(),
-  knowledgeFindFirstMock: vi.fn(),
-  knowledgeUpdateManyMock: vi.fn(),
-  ruleFindFirstMock: vi.fn(),
-  ruleUpdateManyMock: vi.fn(),
-  customerFindFirstMock: vi.fn(),
-  customerUpdateManyMock: vi.fn(),
-  vehicleFindFirstMock: vi.fn(),
-  vehicleUpdateManyMock: vi.fn(),
-  leadFindFirstMock: vi.fn(),
-  leadUpdateManyMock: vi.fn(),
-  appointmentFindFirstMock: vi.fn(),
-  appointmentUpdateManyMock: vi.fn(),
-  serviceRecordFindFirstMock: vi.fn(),
-  serviceRecordFindManyMock: vi.fn(),
-  serviceRecordCountMock: vi.fn(),
-  serviceRecordUpdateManyMock: vi.fn(),
-  serviceRecordAggregateMock: vi.fn(),
-  transactionMock: vi.fn(async (ops: unknown[]) => ops),
-}))
+  txTargetRef,
+} = vi.hoisted(() => {
+  const txTargetRef: { current: unknown } = { current: null }
+  return {
+    businessFindManyMock: vi.fn(),
+    businessFindFirstMock: vi.fn(),
+    businessUpdateManyMock: vi.fn(),
+    serviceFindManyMock: vi.fn(),
+    serviceFindFirstMock: vi.fn(),
+    serviceUpdateManyMock: vi.fn(),
+    knowledgeFindFirstMock: vi.fn(),
+    knowledgeUpdateManyMock: vi.fn(),
+    ruleFindFirstMock: vi.fn(),
+    ruleUpdateManyMock: vi.fn(),
+    customerFindFirstMock: vi.fn(),
+    customerUpdateManyMock: vi.fn(),
+    vehicleFindFirstMock: vi.fn(),
+    vehicleUpdateManyMock: vi.fn(),
+    leadFindFirstMock: vi.fn(),
+    leadUpdateManyMock: vi.fn(),
+    appointmentFindFirstMock: vi.fn(),
+    appointmentUpdateManyMock: vi.fn(),
+    serviceRecordFindFirstMock: vi.fn(),
+    serviceRecordFindManyMock: vi.fn(),
+    serviceRecordCountMock: vi.fn(),
+    serviceRecordUpdateManyMock: vi.fn(),
+    serviceRecordAggregateMock: vi.fn(),
+    customerRequestFindFirstMock: vi.fn(),
+    customerRequestFindManyMock: vi.fn(),
+    customerRequestCountMock: vi.fn(),
+    customerRequestUpdateManyMock: vi.fn(),
+    customerRequestStatusHistoryCreateMock: vi.fn(),
+    // $transaction supports two call shapes in this codebase: the array
+    // form (workingHoursRepository.replaceAll, pre-existing) just returns
+    // the array of operations unchanged; the interactive-callback form
+    // (new, customerRequestRepository) invokes the callback with the same
+    // mocked prisma object as `tx` — txTargetRef is filled in below, once
+    // the mock object exists (vi.mock's factory runs after this).
+    transactionMock: vi.fn(async (arg: unknown) => {
+      if (typeof arg === 'function') {
+        return (arg as (tx: unknown) => unknown)(txTargetRef.current)
+      }
+      return arg
+    }),
+    txTargetRef,
+  }
+})
 
-vi.mock('../src/server/db/prisma', () => ({
-  prisma: {
+vi.mock('../src/server/db/prisma', () => {
+  const prismaMock = {
     business: { findMany: businessFindManyMock, findFirst: businessFindFirstMock, updateMany: businessUpdateManyMock },
     service: { findMany: serviceFindManyMock, findFirst: serviceFindFirstMock, updateMany: serviceUpdateManyMock },
     knowledgeItem: { findFirst: knowledgeFindFirstMock, updateMany: knowledgeUpdateManyMock },
@@ -69,10 +95,19 @@ vi.mock('../src/server/db/prisma', () => ({
       updateMany: serviceRecordUpdateManyMock,
       aggregate: serviceRecordAggregateMock,
     },
+    customerRequest: {
+      findFirst: customerRequestFindFirstMock,
+      findMany: customerRequestFindManyMock,
+      count: customerRequestCountMock,
+      updateMany: customerRequestUpdateManyMock,
+    },
+    customerRequestStatusHistory: { create: customerRequestStatusHistoryCreateMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
-  },
-}))
+  }
+  txTargetRef.current = prismaMock
+  return { prisma: prismaMock }
+})
 
 import { businessRepository } from '../src/server/repositories/businessRepository'
 import { serviceRepository } from '../src/server/repositories/serviceRepository'
@@ -84,6 +119,7 @@ import { vehicleRepository } from '../src/server/repositories/vehicleRepository'
 import { leadRepository } from '../src/server/repositories/leadRepository'
 import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
 import { serviceRecordRepository } from '../src/server/repositories/serviceRecordRepository'
+import { customerRequestRepository } from '../src/server/repositories/customerRequestRepository'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -110,6 +146,11 @@ beforeEach(() => {
   serviceRecordCountMock.mockResolvedValue(0)
   serviceRecordUpdateManyMock.mockResolvedValue({ count: 0 })
   serviceRecordAggregateMock.mockResolvedValue({ _max: { mileage: null } })
+  customerRequestFindFirstMock.mockResolvedValue(null)
+  customerRequestFindManyMock.mockResolvedValue([])
+  customerRequestCountMock.mockResolvedValue(0)
+  customerRequestUpdateManyMock.mockResolvedValue({ count: 0 })
+  customerRequestStatusHistoryCreateMock.mockResolvedValue({})
 })
 
 describe('tenant isolation — Business', () => {
@@ -472,5 +513,79 @@ describe('tenant isolation — ServiceRecord', () => {
     expect(serviceRecordFindManyMock).toHaveBeenCalledWith(
       expect.objectContaining({ where: { businessId: 'business-a', isArchived: false, tenantId: 'tenant-a' } })
     )
+  })
+})
+
+describe('tenant isolation — CustomerRequest', () => {
+  it('tenant B cannot GET tenant A customer request', async () => {
+    customerRequestFindFirstMock.mockResolvedValue(null)
+    const result = await customerRequestRepository.findById('tenant-b', 'business-b', 'request-owned-by-tenant-a')
+
+    expect(customerRequestFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'request-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot GET tenant A customer request via the with-history lookup either, and the history include has no cross-tenant filter to leak through', async () => {
+    customerRequestFindFirstMock.mockResolvedValue(null)
+    const result = await customerRequestRepository.findByIdWithHistory('tenant-b', 'business-b', 'request-owned-by-tenant-a')
+
+    expect(customerRequestFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'request-owned-by-tenant-a', tenantId: 'tenant-b' },
+      include: {
+        statusHistory: {
+          orderBy: { createdAt: 'asc' },
+          include: { changedByUser: { select: { name: true } } },
+        },
+      },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot PATCH tenant A customer request (plain update path)', async () => {
+    customerRequestUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await customerRequestRepository.updateById('tenant-b', 'business-b', 'request-owned-by-tenant-a', {
+      notes: 'Hijacked',
+    })
+
+    expect(customerRequestUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'request-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { notes: 'Hijacked' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('a foreign-tenant status-changing update is rolled back: the updateMany is scoped and a 0-match result means no history row is ever committed', async () => {
+    customerRequestUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await customerRequestRepository.updateWithStatusHistory(
+      'tenant-b',
+      'business-b',
+      'request-owned-by-tenant-a',
+      { status: 'IN_PROGRESS' },
+      { fromStatus: 'NEW', toStatus: 'IN_PROGRESS', changedByUserId: 'u1' }
+    )
+
+    expect(customerRequestUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'request-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { status: 'IN_PROGRESS' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('list queries are always scoped to both tenantId and businessId', async () => {
+    await customerRequestRepository.list('tenant-a', 'business-a', { skip: 0, take: 20 })
+
+    expect(customerRequestFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-a', tenantId: 'tenant-a' } })
+    )
+  })
+
+  it('search queries are scoped alongside the search filter', async () => {
+    await customerRequestRepository.list('tenant-a', 'business-a', { search: 'стук', skip: 0, take: 20 })
+
+    const call = customerRequestFindManyMock.mock.calls[0]![0] as { where: { tenantId: string; OR: unknown } }
+    expect(call.where.tenantId).toBe('tenant-a')
+    expect(call.where.OR).toBeDefined()
   })
 })

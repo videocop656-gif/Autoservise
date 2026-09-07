@@ -9,6 +9,8 @@ import type {
   Lead,
   Appointment,
   ServiceRecord,
+  CustomerRequest,
+  CustomerRequestStatusHistory,
 } from '@prisma/client'
 
 /**
@@ -293,5 +295,74 @@ export function toServiceRecordDto(record: ServiceRecord): ServiceRecordDto {
     isArchived: record.isArchived,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+  }
+}
+
+export interface CustomerRequestStatusHistoryDto {
+  fromStatus: CustomerRequestStatusHistory['fromStatus']
+  toStatus: CustomerRequestStatusHistory['toStatus']
+  // The raw user id is included for consistency with every other DTO
+  // (which always return foreign ids, e.g. customerId/vehicleId) — it's not
+  // sensitive, just an internal reference. changedByUserName is an added
+  // display convenience specific to this history trail: unlike Customer/
+  // Vehicle/Service, there is no /api/users endpoint the frontend could use
+  // to resolve a user id to a name on its own.
+  changedByUserId: string | null
+  changedByUserName: string | null
+  createdAt: Date
+}
+
+export interface CustomerRequestDto {
+  id: string
+  customerId: string
+  vehicleId: string | null
+  serviceId: string | null
+  appointmentId: string | null
+  source: CustomerRequest['source']
+  status: CustomerRequest['status']
+  subject: string
+  description: string | null
+  requestedDate: Date | null
+  requestedTimeFrom: string | null
+  requestedTimeTo: string | null
+  notes: string | null
+  createdAt: Date
+  updatedAt: Date
+  // Only present on the single-GET response (spec §22); list items omit it.
+  statusHistory?: CustomerRequestStatusHistoryDto[]
+}
+
+type CustomerRequestWithOptionalHistory = CustomerRequest & {
+  statusHistory?: (CustomerRequestStatusHistory & { changedByUser?: { name: string } | null })[]
+}
+
+export function toCustomerRequestDto(request: CustomerRequestWithOptionalHistory): CustomerRequestDto {
+  return {
+    id: request.id,
+    customerId: request.customerId,
+    vehicleId: request.vehicleId,
+    serviceId: request.serviceId,
+    appointmentId: request.appointmentId,
+    source: request.source,
+    status: request.status,
+    subject: request.subject,
+    description: request.description,
+    requestedDate: request.requestedDate,
+    requestedTimeFrom: request.requestedTimeFrom,
+    requestedTimeTo: request.requestedTimeTo,
+    notes: request.notes,
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    ...(request.statusHistory
+      ? {
+          statusHistory: request.statusHistory.map((h) => ({
+            fromStatus: h.fromStatus,
+            toStatus: h.toStatus,
+            changedByUserId: h.changedByUserId,
+            changedByUserName: h.changedByUser?.name ?? null,
+            createdAt: h.createdAt,
+          })),
+        }
+      : {}),
   }
 }
