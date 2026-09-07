@@ -3,10 +3,11 @@
 SaaS-приложение для автосервисов. This covers **Prompt 01 (Foundation)** —
 auth, multi-tenant, DB — **Prompt 02 (Business Profile + Service Catalog)**,
 **Prompt 03 (Knowledge Base + Business Rules)**, **Prompt 04 (Customers,
-Vehicles & Leads)**, and **Prompt 05 (Appointments & Booking Foundation)**:
-who is booked, on which vehicle, for which service, when, and in what
-status. Still no AI, no communication channels (Telegram/WhatsApp/chat), no
-full CRM pipeline, no external calendar sync, and no final design.
+Vehicles & Leads)**, **Prompt 05 (Appointments & Booking Foundation)**, and
+**Prompt 06 (Service History Foundation)**: what was actually done to which
+vehicle, when, at what mileage, and for how much. Still no AI, no
+communication channels (Telegram/WhatsApp/chat), no full CRM pipeline, no
+external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -226,6 +227,22 @@ A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time s
 - `GET /api/appointments` is paginated, always sorted `startAt ASC`, and supports `status=`, `customerId=`, `vehicleId=`, `serviceId=`, `dateFrom=`/`dateTo=` (filtering `startAt`, half-open `[dateFrom, dateTo)`), and `includeCancelled=true` (default `false` — an explicit `status=` filter always overrides this).
 - **Manager can create and update Appointments** — this is the one entity so far where manager isn't read-only, because booking/rescheduling/status changes are day-to-day operational work, not a Settings change. Manager still can't bypass tenant isolation or touch anything DELETE-shaped (there isn't one).
 
+## Service History
+
+`ServiceRecord` is the operational record of work actually performed on a vehicle — what a `Lead`/`Appointment` lead up to, but recorded as a historical fact rather than a plan. Customer, Vehicle, and Service are all required, same as Appointment; `appointmentId` is optional, covering two cases:
+
+- **Linked to an Appointment** — the record documents work that grew out of a specific booking; its customer/vehicle/service must match that Appointment's exactly (`400` on any mismatch, `404` if the Appointment is foreign-tenant).
+- **Historical, unlinked** — for backfilling a shop's service history from before this app was in use. `appointmentId` is simply omitted.
+
+Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` — same convention as Appointment, no separate timezone stored), `mileage` (optional, km, 0–2,000,000), `totalPrice` (`Decimal(12,2)`, required) + `currency` (defaults from `Business.currency` at creation, snapshotted independently — same pattern as Service), `workDescription` (required, 1–10,000 chars), `partsDescription`/`recommendations` (optional, ≤10,000 chars), `notes` (optional, ≤5,000 chars), `isArchived`.
+
+- **Ownership & active state**: identical rule to Appointment — customer/vehicle/service re-verified server-side (404 if foreign-tenant, 400 if the vehicle belongs to a different customer or any of the three is inactive) for a *new* record or when a reference is *changed*; a plain edit that doesn't touch these fields is never blocked by a later deactivation, so history stays editable forever.
+- **Mileage must never decrease** across a vehicle's non-archived records: creating or updating a record to a mileage lower than that vehicle's current highest non-archived mileage is `400`. Records with `mileage: null`, and every *archived* record, are excluded from that comparison — and a record never conflicts with its own prior value when being updated. The check re-applies on **restore** (`isArchived: false`) but not on **archive** (`isArchived: true`) — archiving a record never needs to satisfy a mileage ordering it's about to stop participating in.
+- **No hard delete, ever.** `DELETE /api/service-history/:id` is `405`. Hiding a record uses `isArchived` exclusively — no separate status, no `deletedAt`/`archivedAt`. A brand-new record is always created with `isArchived: false`; the create endpoint doesn't accept the field at all. Archive and restore are both just `PATCH { isArchived: true|false }` — archiving/restoring never touches any other field, and an archived record stays fully readable by id (`GET /api/service-history/:id`), just hidden from the default list.
+- **Deactivating a Customer/Vehicle/Service, or changing/cancelling an Appointment, never archives or otherwise modifies existing ServiceRecords** — same "history survives" principle as Lead and Appointment.
+- `GET /api/service-history` is paginated, sorted `performedAt DESC, createdAt DESC`, hides archived records by default (`includeArchived=true` to include them), and supports `customerId=`, `vehicleId=`, `serviceId=`, `dateFrom=`/`dateTo=` (filtering `performedAt`, half-open `[dateFrom, dateTo)`) — `?vehicleId=...` is this app's vehicle service-history view, linked from a "History" button on each row of `/settings/vehicles`.
+- **Manager can create, update, archive, and restore** — same operational exception as Appointment.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -248,8 +265,10 @@ A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time s
 | Create / update a lead (incl. status)     | ✅ | ✅ | ❌ |
 | List/read appointments                    | ✅ | ✅ | ✅ |
 | Create / update an appointment (incl. status) | ✅ | ✅ | ✅ |
+| List/read service history (active or archived) | ✅ | ✅ | ✅ |
+| Create / update / archive / restore a service record | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment is the deliberate exception: manager has full create/update access there (see [Appointments](#appointments)), because booking work is operational, not a Settings change — but still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment and Service History are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments) and [Service History](#service-history)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -330,6 +349,10 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | GET    | `/api/appointments/:id`  | any authenticated       | 404 if unknown or another tenant's |
 | POST   | `/api/appointments`      | owner, admin, **manager** | `status` optional, only `SCHEDULED` accepted; working-hours + conflict + ownership/active checks all apply |
 | PATCH  | `/api/appointments/:id`  | owner, admin, **manager** | partial update, ≥1 field, incl. `status` (transition-checked); no DELETE — use `status: "CANCELLED"` |
+| GET    | `/api/service-history`     | any authenticated       | paginated, sorted `performedAt DESC, createdAt DESC`; `?customerId=`, `?vehicleId=`, `?serviceId=`, `?dateFrom=`, `?dateTo=`, `?includeArchived=true` |
+| GET    | `/api/service-history/:id` | any authenticated       | 404 if unknown or another tenant's; archived records included |
+| POST   | `/api/service-history`     | owner, admin, **manager** | `appointmentId` optional but must match customer/vehicle/service if given; mileage must not decrease |
+| PATCH  | `/api/service-history/:id` | owner, admin, **manager** | partial update, ≥1 field; archive/restore via `{ isArchived }`; no DELETE — always `405` |
 
 ## Security
 
@@ -390,6 +413,17 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - `appointmentService`/`appointmentRepository` follow the established pattern; `ApiError` gained an optional `details` field (used for `conflictingAppointmentId`) without changing the existing error contract.
 - Settings UI: `/settings/appointments` — separate Date/Start time/End time inputs (deliberately not a native `datetime-local`, so the Business's timezone is used, never the browser's), customer→vehicle cascading select, inline quick status change.
 - 83 new unit tests (382 total), incl. explicit DST-conversion tests (`America/New_York`, winter vs. summer) and every listed valid/invalid status transition.
+
+**Prompt 06 — Service History Foundation**
+- `ServiceRecord` model: customerId/vehicleId/serviceId (required) + optional appointmentId, performedAt (UTC), mileage, totalPrice (`Decimal(12,2)`) + currency, workDescription/partsDescription/recommendations/notes, isArchived — no separate status field, presence of the record itself is the fact of service having been performed.
+- Non-decreasing mileage per vehicle across non-archived records, checked on create, update, and restore (never on archive); archived records and `null` mileage never participate; a record never conflicts with its own prior value.
+- Appointment consistency: a linked Appointment's customer/vehicle/service must match the ServiceRecord's exactly (400 on mismatch, 404 if foreign-tenant); omitting `appointmentId` documents pre-app historical work instead.
+- No hard delete ever — `DELETE /api/service-history/:id` is `405`; archive/restore are both `PATCH { isArchived }`, changing nothing else; an archived record stays readable by id, only hidden from the default list.
+- Ownership/active-state re-checked only for relations actually being changed (same principle as Appointment), so a plain edit — or an archive/restore — is never blocked by a Customer/Vehicle/Service that was deactivated afterward.
+- `serviceRecordService`/`serviceRecordRepository` follow the established pattern; Prisma FKs use `Restrict` (not `Cascade`) on Customer/Vehicle/Service/Appointment, matching Lead/Appointment's own treatment of the same entities, so history is never auto-deleted.
+- Settings UI: `/settings/service-history` — Customer→Vehicle cascading select, active-services-only select, an Appointment select filtered to ones actually matching the chosen Customer/Vehicle/Service, archive/restore controls; a "History" button on each `/settings/vehicles` row deep-links here with `?vehicleId=`.
+- Manager can create, update, archive, and restore — same operational exception as Appointment.
+- 65 new unit tests (447 total): schema validation, service-layer ownership/active-state/appointment-consistency/mileage checks (incl. archive-skips-validation and restore-re-validates), and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. the max-mileage query's exact shape).
 
 ## Not implemented yet
 

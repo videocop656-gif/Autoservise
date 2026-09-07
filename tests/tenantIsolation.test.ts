@@ -19,6 +19,11 @@ const {
   leadUpdateManyMock,
   appointmentFindFirstMock,
   appointmentUpdateManyMock,
+  serviceRecordFindFirstMock,
+  serviceRecordFindManyMock,
+  serviceRecordCountMock,
+  serviceRecordUpdateManyMock,
+  serviceRecordAggregateMock,
   transactionMock,
 } = vi.hoisted(() => ({
   businessFindManyMock: vi.fn(),
@@ -39,6 +44,11 @@ const {
   leadUpdateManyMock: vi.fn(),
   appointmentFindFirstMock: vi.fn(),
   appointmentUpdateManyMock: vi.fn(),
+  serviceRecordFindFirstMock: vi.fn(),
+  serviceRecordFindManyMock: vi.fn(),
+  serviceRecordCountMock: vi.fn(),
+  serviceRecordUpdateManyMock: vi.fn(),
+  serviceRecordAggregateMock: vi.fn(),
   transactionMock: vi.fn(async (ops: unknown[]) => ops),
 }))
 
@@ -52,6 +62,13 @@ vi.mock('../src/server/db/prisma', () => ({
     vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock },
     lead: { findFirst: leadFindFirstMock, updateMany: leadUpdateManyMock },
     appointment: { findFirst: appointmentFindFirstMock, updateMany: appointmentUpdateManyMock },
+    serviceRecord: {
+      findFirst: serviceRecordFindFirstMock,
+      findMany: serviceRecordFindManyMock,
+      count: serviceRecordCountMock,
+      updateMany: serviceRecordUpdateManyMock,
+      aggregate: serviceRecordAggregateMock,
+    },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
   },
@@ -66,6 +83,7 @@ import { customerRepository } from '../src/server/repositories/customerRepositor
 import { vehicleRepository } from '../src/server/repositories/vehicleRepository'
 import { leadRepository } from '../src/server/repositories/leadRepository'
 import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
+import { serviceRecordRepository } from '../src/server/repositories/serviceRecordRepository'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -87,6 +105,11 @@ beforeEach(() => {
   leadUpdateManyMock.mockResolvedValue({ count: 0 })
   appointmentFindFirstMock.mockResolvedValue(null)
   appointmentUpdateManyMock.mockResolvedValue({ count: 0 })
+  serviceRecordFindFirstMock.mockResolvedValue(null)
+  serviceRecordFindManyMock.mockResolvedValue([])
+  serviceRecordCountMock.mockResolvedValue(0)
+  serviceRecordUpdateManyMock.mockResolvedValue({ count: 0 })
+  serviceRecordAggregateMock.mockResolvedValue({ _max: { mileage: null } })
 })
 
 describe('tenant isolation — Business', () => {
@@ -394,5 +417,60 @@ describe('tenant isolation — Appointment', () => {
 
     const call = appointmentFindFirstMock.mock.calls[0]![0] as { where: { id: { not: string } } }
     expect(call.where.id).toEqual({ not: 'self-id' })
+  })
+})
+
+describe('tenant isolation — ServiceRecord', () => {
+  it('tenant B cannot GET tenant A service record', async () => {
+    serviceRecordFindFirstMock.mockResolvedValue(null)
+    const result = await serviceRecordRepository.findById('tenant-b', 'business-b', 'record-owned-by-tenant-a')
+
+    expect(serviceRecordFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'record-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot PATCH (incl. archive/restore) tenant A service record', async () => {
+    serviceRecordUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await serviceRecordRepository.updateById('tenant-b', 'business-b', 'record-owned-by-tenant-a', {
+      isArchived: true,
+    })
+
+    expect(serviceRecordUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'record-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { isArchived: true },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('the max-mileage lookup is scoped to tenantId + businessId + vehicleId and excludes archived records', async () => {
+    await serviceRecordRepository.findMaxActiveMileage('tenant-a', 'business-a', 'vehicle-a')
+
+    expect(serviceRecordAggregateMock).toHaveBeenCalledWith({
+      where: {
+        businessId: 'business-a',
+        vehicleId: 'vehicle-a',
+        tenantId: 'tenant-a',
+        isArchived: false,
+        mileage: { not: null },
+      },
+      _max: { mileage: true },
+    })
+  })
+
+  it('the max-mileage lookup excludes the record being updated when excludeId is given', async () => {
+    await serviceRecordRepository.findMaxActiveMileage('tenant-a', 'business-a', 'vehicle-a', 'self-id')
+
+    const call = serviceRecordAggregateMock.mock.calls[0]![0] as { where: { id: { not: string } } }
+    expect(call.where.id).toEqual({ not: 'self-id' })
+  })
+
+  it('list queries are always scoped to both tenantId and businessId, and hide archived records by default', async () => {
+    await serviceRecordRepository.list('tenant-a', 'business-a', { includeArchived: false, skip: 0, take: 20 })
+
+    expect(serviceRecordFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-a', isArchived: false, tenantId: 'tenant-a' } })
+    )
   })
 })

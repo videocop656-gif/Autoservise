@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Pencil, Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Pencil, Plus, History } from 'lucide-react'
 import Nav from '../../components/Nav'
 import Pagination from '../../components/Pagination'
 import { Button } from '../../components/ui/button'
@@ -243,18 +244,25 @@ export default function VehiclesSettingsPage() {
                     {vehicle.licensePlate ?? '—'} · {customerLabel(vehicle.customerId)}
                   </p>
                 </div>
-                {canManage && (
-                  <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => openEditForm(vehicle)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    {vehicle.isActive && (
-                      <Button variant="outline" size="sm" onClick={() => handleDeactivate(vehicle.id)}>
-                        Deactivate
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link to={`/settings/service-history?vehicleId=${vehicle.id}`} title="Service history">
+                      <History className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                  {canManage && (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => openEditForm(vehicle)}>
+                        <Pencil className="h-4 w-4" />
                       </Button>
-                    )}
-                  </div>
-                )}
+                      {vehicle.isActive && (
+                        <Button variant="outline" size="sm" onClick={() => handleDeactivate(vehicle.id)}>
+                          Deactivate
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             ))}
 

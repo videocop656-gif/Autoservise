@@ -8,6 +8,7 @@ import type {
   Vehicle,
   Lead,
   Appointment,
+  ServiceRecord,
 } from '@prisma/client'
 
 /**
@@ -252,5 +253,45 @@ export function toAppointmentDto(appointment: Appointment): AppointmentDto {
     notes: appointment.notes,
     createdAt: appointment.createdAt,
     updatedAt: appointment.updatedAt,
+  }
+}
+
+export interface ServiceRecordDto {
+  id: string
+  customerId: string
+  vehicleId: string
+  serviceId: string
+  appointmentId: string | null
+  performedAt: Date
+  mileage: number | null
+  totalPrice: string
+  currency: string
+  workDescription: string
+  partsDescription: string | null
+  recommendations: string | null
+  notes: string | null
+  isArchived: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toServiceRecordDto(record: ServiceRecord): ServiceRecordDto {
+  return {
+    id: record.id,
+    customerId: record.customerId,
+    vehicleId: record.vehicleId,
+    serviceId: record.serviceId,
+    appointmentId: record.appointmentId,
+    performedAt: record.performedAt,
+    mileage: record.mileage,
+    totalPrice: record.totalPrice.toFixed(2),
+    currency: record.currency,
+    workDescription: record.workDescription,
+    partsDescription: record.partsDescription,
+    recommendations: record.recommendations,
+    notes: record.notes,
+    isArchived: record.isArchived,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   }
 }

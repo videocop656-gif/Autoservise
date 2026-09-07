@@ -11,6 +11,7 @@ import CustomersSettingsPage from './pages/settings/CustomersSettingsPage'
 import VehiclesSettingsPage from './pages/settings/VehiclesSettingsPage'
 import LeadsSettingsPage from './pages/settings/LeadsSettingsPage'
 import AppointmentsSettingsPage from './pages/settings/AppointmentsSettingsPage'
+import ServiceHistorySettingsPage from './pages/settings/ServiceHistorySettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -95,6 +96,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <AppointmentsSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/service-history"
+        element={
+          <ProtectedRoute>
+            <ServiceHistorySettingsPage />
           </ProtectedRoute>
         }
       />

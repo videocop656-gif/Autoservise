@@ -91,6 +91,7 @@ model Tenant {
   vehicles       Vehicle[]
   leads          Lead[]
   appointments   Appointment[]
+  serviceRecords ServiceRecord[]
 
   @@map("tenants")
 }
@@ -135,6 +136,7 @@ model Business {
   vehicles       Vehicle[]
   leads          Lead[]
   appointments   Appointment[]
+  serviceRecords ServiceRecord[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -175,10 +177,11 @@ model Service {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  leads        Lead[]
-  appointments Appointment[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  leads          Lead[]
+  appointments   Appointment[]
+  serviceRecords ServiceRecord[]
 
   @@index([tenantId])
   @@index([businessId])
@@ -247,11 +250,12 @@ model Customer {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  vehicles     Vehicle[]
-  leads        Lead[]
-  appointments Appointment[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  vehicles       Vehicle[]
+  leads          Lead[]
+  appointments   Appointment[]
+  serviceRecords ServiceRecord[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -278,13 +282,14 @@ model Vehicle {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict, not Cascade: a domain record (Vehicle) is never deleted
   // just because its Customer is soft-deleted elsewhere in the app.
-  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  leads        Lead[]
-  appointments Appointment[]
+  customer       Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  leads          Lead[]
+  appointments   Appointment[]
+  serviceRecords ServiceRecord[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, customerId])
@@ -349,12 +354,75 @@ model Appointment {
   vehicle  Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
+  serviceRecords ServiceRecord[]
+
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, startAt])
   @@index([tenantId, businessId, customerId])
   @@index([tenantId, businessId, vehicleId])
   @@index([tenantId, businessId, status])
   @@map("appointments")
+}
+
+model ServiceRecord {
+  id            String  @id @default(uuid())
+  tenantId      String
+  businessId    String
+  customerId    String
+  vehicleId     String
+  serviceId     String
+  // Optional: a ServiceRecord can document historical work performed
+  // before this app was used, with no Appointment behind it (see §9).
+  appointmentId String?
+
+  // Stored in UTC, same convention as Appointment.startAt/endAt.
+  // Displayed to the client in Business.timezone; no separate timezone
+  // field is stored here.
+  performedAt DateTime
+
+  // Kilometers, same unit/bounds as Vehicle.mileage. Enforced
+  // non-decreasing per vehicle among non-archived records — see
+  // assertMileageIsNotDecreasing() in serviceRecordService.ts.
+  mileage Int?
+
+  // Money as Decimal, never Float — same principle as Service.priceFrom/
+  // priceTo, serialized to the API as a fixed-point string.
+  totalPrice Decimal @db.Decimal(12, 2)
+  currency   String
+
+  workDescription  String  @db.Text
+  partsDescription String? @db.Text
+  recommendations  String? @db.Text
+  notes            String? @db.Text
+
+  // The only mutable business state on a ServiceRecord. There is no
+  // separate status field and no hard delete — a completed service visit
+  // is a historical fact; archiving only hides it from the default list.
+  isArchived Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade, on every domain relation below — matching
+  // Lead/Appointment's treatment of the same entities: a ServiceRecord is
+  // permanent history and must survive the Customer/Vehicle/Service/
+  // Appointment it references being deactivated, changed, or (outside the
+  // app's normal soft-delete workflow) removed.
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle     Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  service     Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, performedAt])
+  @@index([tenantId, businessId, isArchived])
+  @@index([vehicleId, performedAt])
+  @@index([customerId, performedAt])
+  @@index([serviceId, performedAt])
+  @@index([appointmentId])
+  @@map("service_records")
 }
 
 model Session {
