@@ -15,6 +15,7 @@ import ServiceHistorySettingsPage from './pages/settings/ServiceHistorySettingsP
 import CustomerRequestsSettingsPage from './pages/settings/CustomerRequestsSettingsPage'
 import ConversationsSettingsPage from './pages/settings/ConversationsSettingsPage'
 import AiSettingsPage from './pages/settings/AiSettingsPage'
+import EscalationsSettingsPage from './pages/settings/EscalationsSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -131,6 +132,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <AiSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/escalations"
+        element={
+          <ProtectedRoute>
+            <EscalationsSettingsPage />
           </ProtectedRoute>
         }
       />

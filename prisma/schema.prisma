@@ -119,6 +119,24 @@ enum MessageSenderType {
   SYSTEM
 }
 
+enum AiEscalationStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+// LOW/HIGH/URGENT exist for future use (see escalationService.ts's
+// derivePriority() — Prompt 12 deliberately maps every AI-created
+// escalation to NORMAL, since no safe, tested signal for elevating
+// priority exists yet; see AI_BEHAVIOR_CONTRACT.md).
+enum AiEscalationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -140,6 +158,7 @@ model Tenant {
   customerRequestStatusHistories CustomerRequestStatusHistory[]
   conversations                  Conversation[]
   messages                       Message[]
+  aiEscalations                  AiEscalation[]
 
   @@map("tenants")
 }
@@ -157,6 +176,7 @@ model User {
   tenant                         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessions                       Session[]
   customerRequestStatusHistories CustomerRequestStatusHistory[]
+  assignedEscalations            AiEscalation[]
 
   @@index([tenantId])
   @@map("users")
@@ -190,6 +210,7 @@ model Business {
   customerRequestStatusHistories CustomerRequestStatusHistory[]
   conversations                  Conversation[]
   messages                       Message[]
+  aiEscalations                  AiEscalation[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -312,6 +333,7 @@ model Customer {
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
   conversations    Conversation[]
+  escalations      AiEscalation[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -613,7 +635,8 @@ model Conversation {
   customer        Customer?        @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerRequest CustomerRequest? @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
 
-  messages Message[]
+  messages    Message[]
+  escalations AiEscalation[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -648,6 +671,88 @@ model Message {
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
   @@map("messages")
+}
+
+// The persisted form of the AI's `needsHuman: true` signal (Prompt 09) —
+// turns a transient result field into a real, tenant-isolated handoff
+// workflow. Created/reused by escalationService.ts only; the AI itself
+// never gets Prisma access and never resolves/cancels/assigns one (see
+// AI_BEHAVIOR_CONTRACT.md §10).
+model AiEscalation {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  // The permanent, immutable reference to which Conversation this
+  // escalation is about — never changes after creation.
+  conversationId String
+  // Denormalized from Conversation.customerId at creation time (nullable,
+  // same as Conversation's own field) — a Conversation can still be
+  // escalated before a customer is identified.
+  customerId String?
+
+  status   AiEscalationStatus
+  priority AiEscalationPriority @default(NORMAL)
+
+  // Always server-derived from the validated AI result (never client- or
+  // model-supplied as free text) — see escalationService.ts's
+  // deriveReason(). Bounded length, enforced in the Zod-validated internal
+  // input type, not by an untrusted API body.
+  reason String
+  // Optional staff-facing convenience text — never the raw provider
+  // response, never chain-of-thought, never a prompt. Null when no safe
+  // summary is available.
+  summary String?
+
+  assignedUserId String?
+
+  // Mirrors `conversationId` while status is OPEN/IN_PROGRESS, and is
+  // forced back to null the moment the escalation leaves that active
+  // window (RESOLVED/CANCELLED). Combined with the @@unique below, this is
+  // a standard nullable-column technique that gives Postgres a REAL,
+  // database-enforced "at most one active escalation per conversation"
+  // guarantee — Postgres treats every NULL as distinct from every other
+  // NULL, so any number of RESOLVED/CANCELLED rows for the same
+  // conversation can coexist, but at most one row can ever hold this
+  // conversation as active at a time. Prisma's schema DSL cannot express a
+  // partial/filtered unique index directly, so this is the safe,
+  // fully-declarative equivalent — see escalationService.ts's
+  // createOrReuseActive() for how a concurrent duplicate is handled (the
+  // constraint is the actual authority; an application-level check is only
+  // a fast path). Never read or written directly outside this file's
+  // repository — always kept in lockstep with `status`.
+  activeConversationId String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  // Set only when status transitions to RESOLVED, server-side, from
+  // server time — never a client-supplied value. CANCELLED deliberately
+  // does NOT set this field (see escalationService.ts's STEP 23 note) —
+  // resolvedAt means "actually resolved," not "closed for any reason."
+  resolvedAt DateTime?
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade: an escalation is a historical record of a human
+  // handoff and must survive its Conversation/Customer being removed
+  // outside the app's normal workflow (neither has a hard-delete path
+  // today) — same principle as every other domain relation in this schema.
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // SetNull, not Restrict: the escalation itself must survive a User being
+  // removed, even though there is no user-delete flow in the app today —
+  // same principle as CustomerRequestStatusHistory.changedByUserId.
+  assignedUser User?        @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, businessId, activeConversationId])
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@index([tenantId, businessId, priority])
+  @@index([conversationId])
+  @@index([customerId])
+  @@index([assignedUserId])
+  @@index([createdAt])
+  @@map("ai_escalations")
 }
 
 model Session {

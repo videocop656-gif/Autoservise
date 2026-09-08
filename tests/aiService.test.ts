@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { makeAuthContext } from './helpers/fixtures'
 
-const { convFindByIdMock, listByConversationMock, buildAiContextMock, executeToolMock } = vi.hoisted(() => ({
+const {
+  convFindByIdMock,
+  listByConversationMock,
+  buildAiContextMock,
+  executeToolMock,
+  escalationFindActiveMock,
+  escalationCreateMock,
+} = vi.hoisted(() => ({
   convFindByIdMock: vi.fn(),
   listByConversationMock: vi.fn(),
   buildAiContextMock: vi.fn(),
   executeToolMock: vi.fn(),
+  escalationFindActiveMock: vi.fn(),
+  escalationCreateMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/conversationRepository', () => ({
@@ -21,10 +30,23 @@ vi.mock('../src/server/ai/tools/registry', () => ({
   TOOL_DEFINITIONS: [{ name: 'check_availability', description: 'x', parameters: {} }],
   executeTool: executeToolMock,
 }))
+vi.mock('../src/server/repositories/escalationRepository', () => ({
+  escalationRepository: {
+    findActiveByConversation: escalationFindActiveMock,
+    create: escalationCreateMock,
+    findById: vi.fn(),
+    findByIdWithDetail: vi.fn(),
+    list: vi.fn(),
+    claim: vi.fn(),
+    resolve: vi.fn(),
+    cancel: vi.fn(),
+  },
+}))
 
 import { analyzeMessage } from '../src/server/services/aiService'
 import { AiProviderError } from '../src/server/ai/provider'
 import { EMPTY_AI_ENTITIES } from '../src/server/ai/types'
+import { ApiError } from '../src/server/lib/errors'
 import type { AiProvider, AiGenerationResult } from '../src/server/ai/provider'
 
 const CONTEXT = {
@@ -79,12 +101,34 @@ function makeInfiniteToolCaller(): AiProvider {
 
 const baseInput = { conversationId: 'conv1', message: 'Сколько стоит замена масла?' }
 
+function makeEscalationRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'esc1',
+    tenantId: 't1',
+    businessId: 'b1',
+    conversationId: 'conv1',
+    customerId: null,
+    status: 'OPEN',
+    priority: 'NORMAL',
+    reason: 'x',
+    summary: 'y',
+    assignedUserId: null,
+    activeConversationId: 'conv1',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    resolvedAt: null,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   convFindByIdMock.mockResolvedValue(makeConversation())
   listByConversationMock.mockResolvedValue([])
   buildAiContextMock.mockResolvedValue(CONTEXT)
   executeToolMock.mockResolvedValue({ success: true, tool: 'check_availability', data: { available: true, slots: [] } })
+  escalationFindActiveMock.mockResolvedValue(null)
+  escalationCreateMock.mockResolvedValue(makeEscalationRow())
 })
 
 describe('analyzeMessage — permissions', () => {
@@ -207,6 +251,10 @@ describe('analyzeMessage — tool-calling loop', () => {
     expect(result.reason).toContain('AI_TOOL_LIMIT_EXCEEDED')
     // At most MAX_TOOL_CALLS (3) tool executions actually ran — proves the loop is bounded.
     expect(executeToolMock.mock.calls.length).toBeLessThanOrEqual(3)
+    // Spec §"TESTS" item 39 (same category as a malformed result — no
+    // trustworthy validated output exists to build an escalation from).
+    expect(result.escalation).toBeUndefined()
+    expect(escalationCreateMock).not.toHaveBeenCalled()
   })
 
   it('allows exactly 3 tool calls across rounds, then requires a final answer on the next round', async () => {
@@ -276,6 +324,14 @@ describe('analyzeMessage — malformed provider result', () => {
     const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
     expect(result.needsHuman).toBe(true)
   })
+
+  it('never creates an escalation for a malformed/unparseable result (spec §"TESTS" item 39)', async () => {
+    const provider = makeStubProvider({ intent: 'NOT_A_REAL_INTENT', confidence: 2, answer: '' })
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.escalation).toBeUndefined()
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+    expect(escalationFindActiveMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('analyzeMessage — confidence policy integration', () => {
@@ -283,6 +339,13 @@ describe('analyzeMessage — confidence policy integration', () => {
     const provider = makeStubProvider(validRaw({ confidence: 0.2, needsHuman: false }))
     const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
     expect(result.needsHuman).toBe(true)
+  })
+
+  it('a genuine confidence-forced needsHuman DOES create an escalation — this is a real, trustworthy signal, not a rejection', async () => {
+    const provider = makeStubProvider(validRaw({ confidence: 0.2, needsHuman: false }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.escalation).toEqual({ id: 'esc1', status: 'OPEN' })
+    expect(escalationCreateMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -292,5 +355,92 @@ describe('analyzeMessage — fabricated action safety', () => {
     const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
     expect(result.needsHuman).toBe(true)
     expect(result.answer).not.toContain('записал вас')
+  })
+
+  it('a safety-layer rejection does NOT create an escalation (spec §"TESTS" item 40) — the safety layer already fully contained the problem', async () => {
+    const provider = makeStubProvider(validRaw({ answer: 'Я записал вас на завтра в 15:00.', needsHuman: false }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.reason).toContain('AI_SAFETY_REJECTION')
+    expect(result.escalation).toBeUndefined()
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('analyzeMessage — Human Escalation integration (Prompt 12)', () => {
+  it('needsHuman = false never creates or reuses an escalation', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: false }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.escalation).toBeUndefined()
+    expect(escalationFindActiveMock).not.toHaveBeenCalled()
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('needsHuman = true creates a new escalation and returns a safe {id, status} reference', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: true, reason: 'Vehicle symptom needs a human' }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.escalation).toEqual({ id: 'esc1', status: 'OPEN' })
+    expect(escalationCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv1', reason: 'Vehicle symptom needs a human' })
+    )
+  })
+
+  it('the escalation reference never leaks tenantId/businessId or any other internal field', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(Object.keys(result.escalation!)).toEqual(['id', 'status'])
+  })
+
+  it('a second needsHuman=true analysis for the same conversation reuses the existing active escalation, never creating a second one', async () => {
+    const existing = makeEscalationRow({ id: 'esc-existing', status: 'IN_PROGRESS' })
+    escalationFindActiveMock.mockResolvedValue(existing)
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.escalation).toEqual({ id: 'esc-existing', status: 'IN_PROGRESS' })
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('provider failure (AI_PROVIDER_UNAVAILABLE) never creates an escalation — the request never even produces an AiResult', async () => {
+    const provider = makeFailingProvider(new AiProviderError('AI_PROVIDER_UNAVAILABLE', 'network down'))
+    await expect(analyzeMessage(makeAuthContext('owner'), baseInput, { provider })).rejects.toMatchObject({ statusCode: 502 })
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+    expect(escalationFindActiveMock).not.toHaveBeenCalled()
+  })
+
+  it('configuration failure (AI_CONFIGURATION_ERROR) never creates an escalation', async () => {
+    const provider = makeFailingProvider(new AiProviderError('AI_CONFIGURATION_ERROR', 'no key'))
+    await expect(analyzeMessage(makeAuthContext('owner'), baseInput, { provider })).rejects.toMatchObject({ statusCode: 500 })
+    expect(escalationCreateMock).not.toHaveBeenCalled()
+    expect(escalationFindActiveMock).not.toHaveBeenCalled()
+  })
+
+  it('a genuine escalation-creation failure propagates as a controlled error, never a silent success', async () => {
+    escalationCreateMock.mockRejectedValue(new ApiError(500, 'ESCALATION_CREATION_FAILED', 'Failed to create escalation'))
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    await expect(analyzeMessage(makeAuthContext('owner'), baseInput, { provider })).rejects.toMatchObject({
+      statusCode: 500,
+      code: 'ESCALATION_CREATION_FAILED',
+    })
+  })
+
+  it('a successful escalation reference lets staff see it was actually escalated, distinct from a merely-flagged result', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.needsHuman).toBe(true)
+    expect(result.escalation?.id).toBe('esc1')
+  })
+
+  it('derives the escalation customerId from the Conversation itself, not from client input', async () => {
+    convFindByIdMock.mockResolvedValue(makeConversation({ customerId: 'cust-from-conversation' }))
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(escalationCreateMock).toHaveBeenCalledWith(expect.objectContaining({ customerId: 'cust-from-conversation' }))
+  })
+
+  it('AI cannot resolve, cancel, or claim an escalation — analyzeMessage never calls any of those repository methods', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    // Only findActiveByConversation (idempotency check) and create are ever exercised by the AI path.
+    expect(escalationFindActiveMock).toHaveBeenCalled()
+    expect(escalationCreateMock).toHaveBeenCalled()
   })
 })

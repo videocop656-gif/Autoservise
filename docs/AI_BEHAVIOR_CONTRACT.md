@@ -1,23 +1,28 @@
 # AI Administrator — Behavior Contract
 
-> **Updated after Prompt 11.** `Conversation`/`Message` (Prompt 08), a
+> **Updated after Prompt 12.** `Conversation`/`Message` (Prompt 08), a
 > first AI Core — intent classification, entity extraction, a draft
 > answer, and the `needsHuman`/`reason` escalation signal (Prompt 09) — a
 > real, whitelisted AI Tool Layer (Prompt 10: `check_availability`,
 > `create_appointment`, `reschedule_appointment`, `cancel_appointment`,
 > behind a server-controlled tool-calling loop and an explicit two-phase
-> confirmation gate) — and now grounded, read-only AI Customer Support
-> (Prompt 11: Service History enters the AI context; price/warranty/
-> service/knowledge/history answers are grounded in real data instead of
-> generic deflection; two new deterministic safety checks catch a
-> fabricated diagnosis or a fabricated escalation claim) all now exist in
-> this repository, confirmed against `prisma/schema.prisma`, `api/`, and
-> `src/`. What's still entirely unimplemented, and remains this document's
-> actual "future spec" portion: `findCustomer`/`findVehicle`/CRM-write
-> tools beyond Appointment, automatic Customer/Vehicle creation, escalation
-> as a real queue/entity, AI decision logging/auditability, and every
-> external channel. See `DEVELOPMENT_ROADMAP.md` Prompts 12–13 for where
-> those land. This document remains binding on whoever implements them.
+> confirmation gate) — grounded, read-only AI Customer Support (Prompt 11:
+> Service History enters the AI context; price/warranty/service/knowledge/
+> history answers are grounded in real data instead of generic deflection;
+> two new deterministic safety checks catch a fabricated diagnosis or a
+> fabricated escalation claim) — and now a real Human Escalation workflow
+> (Prompt 12: a `needsHuman: true` result creates or idempotently reuses a
+> real, tenant-isolated `AiEscalation` row; staff claim/resolve/cancel it
+> through `/api/escalations/*`; the AI itself can never change its state)
+> all now exist in this repository, confirmed against
+> `prisma/schema.prisma`, `api/`, and `src/`. What's still entirely
+> unimplemented, and remains this document's actual "future spec" portion:
+> `findCustomer`/`findVehicle`/CRM-write tools beyond Appointment, automatic
+> Customer/Vehicle creation, explicit escalation reassignment beyond
+> self-claiming, external notification of a human of any kind, AI decision
+> logging/auditability, and every external channel. See
+> `DEVELOPMENT_ROADMAP.md` Prompt 13 onward for where those land. This
+> document remains binding on whoever implements them.
 
 ## 1. Core Principle
 
@@ -199,17 +204,49 @@ Escalate when:
 - the customer explicitly asks for a human;
 - (Prompt 11) a customer-support question cannot be grounded in any real source (Service/Knowledge Base/Business Rule/Service History) — an honest "I don't have enough information" plus `needsHuman: true`, never a guess.
 
-**"Escalate" today means only `needsHuman: true` on the result — never a
-claimed action.** No escalation entity, queue, or notification mechanism
-exists yet (Roadmap 12), so the AI must never say "I've forwarded this to
-a manager" or "a manager has been notified" — that would be a fabricated
-action claim, the same category `applyFabricatedActionCheck` already
-catches for booking. A new dedicated check
-(`applyFabricatedEscalationCheck`, Prompt 11) catches this specific claim
-as a defense-in-depth backstop. The correct phrasing is "для точного
-ответа потребуется уточнение со стороны администратора сервиса" — a
-statement that a human's involvement is needed, not a claim that it has
-already happened.
+**As of Prompt 12, "escalate" is a real, persisted, tenant-isolated
+workflow — not just a flag.** Whenever `analyzeMessage()` produces a
+final, genuinely-validated result with `needsHuman: true`, it creates or
+reuses (idempotently, per Conversation — see §"Idempotency" in
+`DEVELOPMENT_ROADMAP.md` Prompt 12) a real `AiEscalation` row that an
+owner/admin/manager actually sees, claims, and resolves on
+`/settings/escalations`. "Genuinely-validated" specifically excludes two
+cases even though both technically set `needsHuman: true`: a malformed/
+unparseable provider result or an exceeded tool-call limit (there is no
+trustworthy validated output to build an escalation from — only a
+hand-built "we couldn't do this" fallback), and a safety-layer
+*rejection* (the model tried to claim a fabricated booking/diagnosis/
+escalation and the safety layer already fully caught and neutralized it —
+that is a model-behavior problem contained in-flight, not itself new
+evidence a human must review this conversation). Neither of these creates
+an escalation; both still return the honest `needsHuman: true` on the
+`analyze` response.
+
+**The AI can create or reuse an escalation, but can never change its
+state afterward** — it cannot resolve, cancel, claim, assign, or
+re-prioritize one. Only authenticated staff can, through
+`/api/escalations/:id/claim`, `/resolve`, `/cancel` — each independently
+re-checking the caller's role server-side.
+
+**The AI must never say "Ваш вопрос передан администратору" (or "I've
+forwarded this to a manager") unless the escalation actually exists** —
+that would be a fabricated action claim, the same category
+`applyFabricatedActionCheck` already catches for booking.
+`applyFabricatedEscalationCheck` (Prompt 11) remains exactly as strict as
+before and is not loosened just because a real backing mechanism now
+exists — the model still never has authoritative confirmation of success
+at the moment it drafts an answer (escalation creation happens afterward,
+server-side, in `aiService.ts`, not something the provider call itself can
+know about). The safe, correct phrasing remains "для точного ответа
+потребуется уточнение со стороны администратора сервиса" — a statement
+that a human's involvement is needed, not a claim that it has already
+happened. If a genuine escalation-creation failure occurs (a real database
+error, after the idempotency fast path and its own concurrency-recovery
+path both fail), `analyze` returns a controlled `500
+ESCALATION_CREATION_FAILED` rather than silently reporting `needsHuman:
+true` with no escalation reference — the caller (and, downstream, a
+customer-facing product built on this API) must never be left believing a
+handoff happened when it didn't.
 
 ## 11. AI Tools
 
@@ -246,6 +283,16 @@ The AI never gets direct database access. No dynamic tool registration
 exists or is planned — the whitelist above (`AI_TOOL_NAMES` in
 `src/server/ai/types.ts`) is the complete, closed set; a model requesting
 any other name is rejected by the tool registry before anything executes.
+
+**Human Escalation (Prompt 12) is deliberately not a tool.** The model
+never requests it, never sees it in its tool list, and cannot influence
+*whether* one is created beyond its own honest `needsHuman` judgment
+(which the safety layer independently double-checks and can only ever
+strengthen, never weaken). `aiService.ts` itself calls
+`escalationService.createOrReuseActiveEscalation()` directly once it has
+a final, validated result — this is an application-layer consequence of
+the result, the same way `applySafetyLayer()` is, not a capability handed
+to the model.
 
 ## 12. Tool Safety
 
@@ -303,6 +350,15 @@ The future system must be able to answer, for any AI-driven action:
 - What action was actually performed?
 - Was human escalation required?
 
+**As of Prompt 12**, the last question has a real, partial answer for the
+one specific case an `AiEscalation` row represents: its `reason` field
+records why a human was needed, `createdAt`/`updatedAt`/`resolvedAt` and
+`status` record what happened to that specific handoff and when, and
+`assignedUserId` records who handled it. This is not the general AI
+decision log this section still calls for (no record of every intent
+classification, every tool call and its result, or every draft answer
+exists yet) — that remains Roadmap 13's job in full.
+
 ## 15. Human Override
 
 A manager/owner must always be able to:
@@ -316,27 +372,40 @@ A manager/owner must always be able to:
 
 Nothing the AI does may be irreversible or hidden from staff.
 
+**As of Prompt 12**, "close out an escalation" is real: any owner/admin/
+manager can resolve or cancel an `AiEscalation` (`/api/escalations/:id/resolve|cancel`)
+regardless of who — or whether anyone — claimed it first, and claiming
+itself never locks a second staff member out of eventually resolving or
+cancelling it (only claiming itself is exclusive, to prevent two people
+silently working the same case).
+
 ## 16. Development Boundary
 
-As of Prompt 11, this document is **almost entirely** a specification of
-already-implemented behavior — §§1–4, 6–9, 11–13, 15's core principles now
-have real code behind them (a real Tool Layer, real confirmation gating,
-real tenant/entity scoping, grounded customer-support answers, real
-diagnosis/escalation-claim safety checks) — and **partly** still
-future-only (§5's multiple-match search, §7's pricing *changes* [reading a
-price is implemented; changing one is not], §10's escalation queue: no
-tool exists yet for any of these, so those specific rules have no code to
-violate yet — they remain binding on whoever builds Prompt 12+).
+As of Prompt 12, this document is **almost entirely** a specification of
+already-implemented behavior — §§1–4, 6–13, 15's core principles now have
+real code behind them (a real Tool Layer, real confirmation gating, real
+tenant/entity scoping, grounded customer-support answers, real diagnosis/
+escalation-claim safety checks, and now a real, persisted, tenant-isolated
+Human Escalation workflow with a full status machine) — and **partly**
+still future-only (§5's multiple-match search, §7's pricing *changes*
+[reading a price is implemented; changing one is not], §10's explicit
+reassignment beyond self-claiming and any external notification of a
+human, §14's full AI decision log beyond the one `AiEscalation` record):
+no tool or mechanism exists yet for any of these, so those specific rules
+have no code to violate yet — they remain binding on whoever builds
+Prompt 13+.
 
 Do not add: embeddings; a vector database; RAG; an autonomous or
 multi-agent framework; a fifth AI tool or any dynamically-registered tool;
 conversation memory beyond the existing bounded message history; external
 channel integrations (Telegram/WhatsApp/phone/website chat); AI decision
-logging or an audit trail; an escalation entity, queue, or UI; automatic
-Customer/Vehicle/Service creation.
+logging or an audit trail beyond the one `AiEscalation` record; external
+notification of a human of any kind (email/SMS/push/Telegram); explicit
+escalation reassignment beyond self-claiming; automatic Customer/Vehicle/
+Service creation.
 
 These arrive only at their corresponding stage in
-`DEVELOPMENT_ROADMAP.md` (Prompt 12 and onward) — none of them exist in
+`DEVELOPMENT_ROADMAP.md` (Prompt 13 and onward) — none of them exist in
 this repository today.
 
 ## Documentation Source of Truth

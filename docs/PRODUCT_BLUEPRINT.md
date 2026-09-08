@@ -79,17 +79,18 @@ What each layer is for:
 - **Identify Customer / Identify Vehicle** — resolving the request to a real `Customer`/`Vehicle` row in this tenant's data, never a guess. **Partially implemented** (Prompt 09–10): the AI context builder resolves a Customer/Vehicle already linked to the Conversation, and every booking tool re-validates that id against real tenant-scoped data — but the AI still never *searches for or picks among* several possible matches, and it never creates a Customer/Vehicle on its own; that remains future Tool Layer work.
 - **Understand Intent** — classifying what the customer actually wants. **Implemented today** (Prompt 09): `POST /api/ai/analyze` classifies every message into one of twelve fixed intents (`PRICE_INQUIRY`, `BOOKING_REQUEST`, `VEHICLE_PROBLEM`, etc.) with a `confidence` score.
 - **Knowledge + Business Rules + Service History** — the only allowed sources of business-specific fact (see `AI_BEHAVIOR_CONTRACT.md` §2). **Implemented today** (Prompt 09 for Knowledge/Rules, Prompt 11 for Service History): all three are part of the AI context, sourced with the same priority order the behavior contract specifies — Business Rules first, then Services/Knowledge, then Service History as the authoritative record of what actually happened in the past (never contradicted by a generic Knowledge Base statement).
-- **AI Decision** — a structured choice among the actions listed, never free-form unconstrained behavior. **Partially implemented** (Prompt 10): "Offer Appointment" (`check_availability`), "Create Appointment", "Update Appointment" (`reschedule_appointment`), and "Cancel Appointment" now exist as real, whitelisted tools behind a server-controlled tool-calling loop, each gated by explicit customer confirmation before it runs. "Ask Clarifying Question" and "Escalate to Human" remain a plain draft-answer/`needsHuman` flag, not a dedicated tool.
-- **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said; the "Action Log" half (a record of what an AI *decided and did*) remains future work — Roadmap 13.
+- **AI Decision** — a structured choice among the actions listed, never free-form unconstrained behavior. **Partially implemented** (Prompt 10, 12): "Offer Appointment" (`check_availability`), "Create Appointment", "Update Appointment" (`reschedule_appointment`), and "Cancel Appointment" exist as real, whitelisted tools behind a server-controlled tool-calling loop, each gated by explicit customer confirmation before it runs. "Escalate to Human" is now real too (Prompt 12) — a persisted `AiEscalation` row a staff member actually sees and acts on, not just a flag — but "Ask Clarifying Question" remains a plain draft-answer behavior, not a dedicated tool.
+- **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said. The "Action Log" half is now **partially implemented**: Prompt 12's `AiEscalation` is a real record of one specific AI decision (needing human help) and what happened to it (claimed/resolved/cancelled, by whom, when) — but a general log of *every* AI decision/tool call/answer remains future work (Roadmap 13, AI Logs).
 
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 11 complete).
+`api/`/`src/` trees at the time of writing (Prompt 12 complete).
 
 - **AI provider**: OpenAI (official `openai` npm SDK), accessed exclusively server-side through a provider-abstraction interface (`AiProvider`) — `src/server/ai/`. Falls back automatically to a deterministic, no-network mock provider when `OPENAI_API_KEY` isn't configured (true in this environment), so the AI Core stays fully exercisable without a real key.
 - **AI Tool Layer** (`src/server/ai/tools/`): the only path from the AI provider to booking data. Four whitelisted tools, each Zod-validated, each re-authorized against `AuthContext` (never model-supplied ids) and an `AiToolAllowedEntities` allow-list (the conversation's own known customer/vehicle/appointments), each calling the existing `appointmentService.ts` — never Prisma directly. A tool result is always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?}`.
 - **AI Customer Support** (Prompt 11): read-only, no new tool — `contextBuilder.ts` additionally loads the known vehicle's recent Service History, and the safety layer (`safety.ts`) gained two more deterministic checks (`applyDefinitiveDiagnosisCheck`, `applyFabricatedEscalationCheck`) alongside Prompt 09's fabricated-action check.
+- **Human Escalation** (Prompt 12): `src/server/services/escalationService.ts` + `escalationRepository.ts` — the only path from `aiService.ts` to the new `AiEscalation` table, called only when a fully-validated, non-safety-rejected `needsHuman: true` result exists. Idempotency is a real Postgres unique constraint (`AiEscalation.activeConversationId` + `@@unique([tenantId, businessId, activeConversationId])`), not just an application-level check. AI creates or reuses; only staff (`/api/escalations/:id/claim|resolve|cancel`) can change its state afterward.
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -99,7 +100,7 @@ Verified directly against `package.json`, `prisma/schema.prisma`, and the
 - **Auth**: fully custom — email + Argon2id password hashing, cryptographically random session tokens (HMAC-SHA256-hashed before storage), server-side `Session` table, HttpOnly/SameSite cookies. No Supabase Auth, no Clerk/Auth0, no JWT-in-localStorage.
 - **Multi-tenant**: every domain table carries `tenantId` + `businessId`; see Section 4.
 
-**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–11, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
+**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–12, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
 
 ## 4. Multi-Tenancy
 
@@ -137,6 +138,7 @@ Business Data
 - `CustomerRequestStatusHistory`
 - `Conversation`
 - `Message`
+- `AiEscalation`
 
 `CustomerRequest`/`CustomerRequestStatusHistory` were completed in Prompt 07,
 and `Conversation`/`Message` in Prompt 08 (see `DEVELOPMENT_ROADMAP.md`) —
@@ -164,11 +166,24 @@ zero new migrations.** `contextBuilder.ts` now additionally reads
 unchanged) to populate `serviceHistory` — no new history table, no
 duplication of `ServiceRecord` data anywhere.
 
+**Prompt 12 (Human Escalation) is the first AI-related stage to add a real
+Prisma model.** `AiEscalation` (migration `20260908155027_ai_escalation_foundation`)
+persists the AI Core's `needsHuman: true` signal as a real, tenant-scoped
+row: `status` (`AiEscalationStatus`: `OPEN`/`IN_PROGRESS`/`RESOLVED`/`CANCELLED`),
+`priority` (`AiEscalationPriority`: `LOW`/`NORMAL`/`HIGH`/`URGENT` — only
+`NORMAL` is ever assigned today), `reason`/`summary` (server-derived,
+bounded strings — never raw model or client text), `conversationId`
+(required), `customerId`/`assignedUserId` (optional), and
+`activeConversationId` — a nullable mirror of `conversationId` that exists
+purely to carry a `@@unique([tenantId, businessId, activeConversationId])`
+constraint, giving Postgres a real "at most one active escalation per
+conversation" guarantee without a partial/filtered index (which Prisma's
+schema DSL cannot express directly).
+
 **Planned, not yet in the schema** (no such Prisma models exist today):
 
 - `AI Action` (or similarly-named decision/tool-call record)
 - `AI Log`
-- `Escalation`
 
 ## 6. CRM Structure
 
@@ -233,7 +248,8 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | **Operations** | Appointments, Appointment detail, Service History, Service Record detail | Implemented (`/settings/appointments`, `/settings/service-history`) |
 | **Configuration** | Services, Knowledge Base, Business Rules, Business Settings, Working Hours | Implemented (`/settings/services`, `/settings/knowledge`, `/settings/rules`, `/settings/business`, `/settings/hours`) |
 | **Users / Team** | Team management, invitations | **Future** — roles exist (`owner`/`admin`/`manager`, set at registration/via DB only), but there is no team/invitation UI or API today |
-| **AI Operations** | AI Core + Booking Tools test tool (`/settings/ai`: select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft/needsHuman, and — since Prompt 10 — any real tool executions: availability slots, or the resulting appointment's id/status/start/end) | Implemented (`/settings/ai`) — a testing tool, not an operations dashboard; tool execution is real (a clearly-labeled warning banner says so), but sending a message to the customer stays disabled. AI Escalations and AI Conversation/Logs remain **Future** — no escalation or logging entities exist yet |
+| **AI Operations** | AI Core + Booking Tools test tool (`/settings/ai`: select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft/needsHuman, and — since Prompt 10 — any real tool executions: availability slots, or the resulting appointment's id/status/start/end) | Implemented (`/settings/ai`) — a testing tool, not an operations dashboard; tool execution is real (a clearly-labeled warning banner says so), but sending a message to the customer stays disabled. AI Conversation/Logs remain **Future** — no logging entity exists yet |
+| **AI Escalations** | Escalations list (status/priority/unassigned filters), detail (customer/conversation/assigned-staff summary, AI's reason/summary, Claim/Resolve/Cancel) | Implemented (`/settings/escalations`, Prompt 12) — an internal staff workflow tool, not a customer-facing feature; no external notification of any kind |
 
 Every "Implemented" screen above lives under `/settings/...` and is gated
 by `ProtectedRoute` + session auth; "detail" views in this codebase are
@@ -299,9 +315,11 @@ the flow *is*, only who/what executes it.
 
 **Classify/Draft — implemented today (Prompt 09), grounded (Prompt 11)**: `POST /api/ai/analyze` classifies a message into one of twelve fixed intents, extracts a small set of structured entities (never fabricated — unknown values are `null`), and returns a `confidence`/`needsHuman`/`reason` triple. As of Prompt 11, the draft answer for a non-booking question is actually grounded in real data rather than a generic deflection: a price question states the exact stored price or admits none exists; a warranty question cites the matching Business Rule or Knowledge Item or admits it can't be confirmed; a service-history question cites the real record or admits there isn't one; a vehicle-symptom question acknowledges the symptom and cites relevant history as fact without concluding a diagnosis from it. This is read-only analysis, returned to staff as a draft — it is never sent to a customer automatically.
 
-**Perform — partially implemented (Prompt 10)**: `check_availability`, `create_appointment`, `reschedule_appointment`, and `cancel_appointment` exist today as real, whitelisted tools (`src/server/ai/tools/`) behind a server-controlled tool-calling loop (max 3 tool calls per `analyze` request) — each one calls the existing Appointment Service, never Prisma directly, and the three mutating tools each require an explicit customer confirmation phrase in the *current* message before they run at all. **Still future**: create CustomerRequest, find/search among several possible customer or vehicle matches, automatic Customer/Vehicle creation, and create escalation — none of this exists yet; Prompt 11 deliberately added no new tool of any kind.
+**Perform — partially implemented (Prompt 10, 12)**: `check_availability`, `create_appointment`, `reschedule_appointment`, and `cancel_appointment` exist today as real, whitelisted tools (`src/server/ai/tools/`) behind a server-controlled tool-calling loop (max 3 tool calls per `analyze` request) — each one calls the existing Appointment Service, never Prisma directly, and the three mutating tools each require an explicit customer confirmation phrase in the *current* message before they run at all. "Create escalation" is now real too (Prompt 12) — but not as a tool: `analyzeMessage()` itself calls `escalationService.createOrReuseActiveEscalation()` directly whenever the already-validated result has `needsHuman: true`, since a human handoff is a consequence of the *result*, not an action the model requests. **Still future**: create CustomerRequest, find/search among several possible customer or vehicle matches, automatic Customer/Vehicle creation — none of this exists yet.
 
 **Ask — future**: today's draft answer can *state* that more information is needed, but there is no multi-turn clarification loop, no follow-up-question tool, and no automatic re-prompting yet — that belongs to the AI Core the same way the rest of "Perform" does, layered on top of the single-shot `analyze` call.
+
+**Escalate — implemented today (Prompt 12)**: a `needsHuman: true` result (from the model's own judgment or the confidence policy) now creates or reuses a real, persisted `AiEscalation` row, idempotently, per Conversation — not just a flag on the response. The AI can never resolve, cancel, claim, assign, or re-prioritize an escalation after creating it; only authenticated staff can, through `/api/escalations/:id/claim|resolve|cancel`. A safety-layer *rejection* (a caught fabricated claim) deliberately does not itself create an escalation — see `DEVELOPMENT_ROADMAP.md` Prompt 12 for the exact eligibility rule.
 
 ## 12. AI Forbidden Actions
 
@@ -348,7 +366,18 @@ notified a manager") — meaningful now that Prompt 11 gives the AI many
 more reasons to want to say that. Full rationale in
 `AI_BEHAVIOR_CONTRACT.md`.
 
-## 13. Human Escalation (Future)
+**As of Prompt 12**, "access another tenant's data" additionally covers the
+new `AiEscalation` table specifically: every escalation query is scoped by
+`tenantId` + `businessId` exactly like every other domain table, verified
+by both unit tests and a live cross-tenant check against the real database
+(view/claim/resolve/cancel all return `404` for a foreign-tenant
+escalation). The AI still cannot resolve, cancel, claim, assign, or
+re-prioritize an escalation after creating it — only `escalationService.ts`'s
+staff-facing functions can change its state, and each independently
+re-checks the caller's role via `requireRole()`, the same defense-in-depth
+convention `appointmentService.ts` already established.
+
+## 13. Human Escalation
 
 The AI must hand off to a human when: it cannot answer reliably; the
 question needs a manager's judgment call; the customer is in conflict;
@@ -358,18 +387,28 @@ outside the business's stated rules; or the AI cannot safely determine
 the next step.
 
 **As of Prompt 09**, the `needsHuman`/`reason` fields on every `analyze`
-response are the first real implementation of this signal — confidence
+response were the first real implementation of this signal — confidence
 below 0.50 forces it server-side regardless of what the model claims, and
 a detected prompt-injection attempt or fabricated-action claim forces it
-too. **Prompt 11** adds more triggers for the same honest signal — an
+too. **Prompt 11** added more triggers for the same honest signal — an
 unanswerable customer-support question, a vehicle-symptom report, an
-ungrounded warranty question — but deliberately does not change what
-happens next: `needsHuman: true` is still only a signal on the result, and
-the AI is now explicitly forbidden (system prompt rule 19, and
-`applyFabricatedEscalationCheck`) from claiming it already notified a
-human, since no such mechanism exists yet. What's still entirely future:
-an actual escalation entity, a queue, assignment to a specific manager,
-and any UI for it (Roadmap 12).
+ungrounded warranty question.
+
+**As of Prompt 12, "hand off to a human" is a real, persisted, tenant-
+isolated workflow, not just a signal.** A `needsHuman: true` result now
+creates (or reuses, idempotently, per Conversation) a real `AiEscalation`
+row that an owner/admin/manager actually sees on `/settings/escalations`,
+can claim (atomically — a second staff member cannot steal a claimed
+escalation), and can resolve or cancel. The AI still cannot claim a human
+was actually notified until that row genuinely exists (`applyFabricatedEscalationCheck`,
+Prompt 11, is unchanged and still catches a premature claim), and it can
+never change the escalation's state after creating it — see
+`DEVELOPMENT_ROADMAP.md` Prompt 12 for the full status machine and
+idempotency mechanism. **Still future**: assignment to a *specific*
+manager beyond self-claiming (explicit reassignment — Roadmap 12 scoped
+this out deliberately as unnecessary for a first working version), any
+external notification of a human (email/Telegram/push — Roadmap 16), and
+a full AI decision log distinct from this one escalation record (Roadmap 13).
 
 ## 14. Anti-Hallucination Principle
 
@@ -393,16 +432,16 @@ time: extracted entities are `null` whenever unknown rather than a guess
 (enforced by `aiResultSchema`'s normalization), confidence below 0.50
 always forces `needsHuman = true` server-side, and a fabricated
 "appointment confirmed"-style claim in a draft answer is caught and
-replaced. The `Escalate to human` half of this principle is implemented
-as the `needsHuman`/`reason` fields on `analyze`'s response; there is no
-escalation queue or UI for a human to actually receive that signal yet
-(Roadmap 12). **Prompt 11** extends "it doesn't make it up" to Service
+replaced. **Prompt 11** extends "it doesn't make it up" to Service
 History specifically: a price/service/warranty/history question with no
 real grounding gets an honest "I don't have enough information," never an
 estimate, and a vehicle-symptom question gets an acknowledgment plus a
 recommendation to get an in-person inspection — real history is cited as
 fact, but is never allowed to become the basis for a fabricated current
-diagnosis.
+diagnosis. **As of Prompt 12**, the `Escalate to human` half of this
+principle is no longer just a response field with no receiving end — a
+real `AiEscalation` row exists and a human genuinely sees and acts on it
+at `/settings/escalations`.
 
 ## 15. Product Evolution
 
@@ -431,12 +470,17 @@ grounded draft-answer generation — Prompt 11 additionally lets it *read*
 going through `Tools` at all, since this stage is read-only by design —
 and **`Tools` is separately, partially implemented** (Prompt 10) — four
 whitelisted, confirmation-gated tools connect the AI to real `Appointment`
-*writes* under `CRM / Operations`. Everything else `Tools` would
-eventually connect to (CustomerRequest creation, customer/vehicle search,
-escalation) remains future, and so does the **Channels** end of the chain
-(Website, Telegram, WhatsApp, Phone — `Manual`, entered by staff exactly
-as done today, is the only "channel" actually wired to anything).
-No channel integration of any kind exists in this repository.
+*writes* under `CRM / Operations`. **Prompt 12 adds a new branch off `AI Core`
+that this diagram doesn't show yet**: `needsHuman: true` → `EscalationService`
+→ a real `AiEscalation` row a human staff member acts on — not a `Tools`
+call (the AI doesn't request it), and not `CRM / Operations` in the
+Customer/Vehicle/Appointment sense either, but a genuine new persisted
+outcome alongside them. Everything else `Tools` would eventually connect
+to (CustomerRequest creation, customer/vehicle search) remains future, and
+so does the **Channels** end of the chain (Website, Telegram, WhatsApp,
+Phone — `Manual`, entered by staff exactly as done today, is the only
+"channel" actually wired to anything). No channel integration or external
+notification of any kind exists in this repository.
 
 ## Documentation Source of Truth
 

@@ -83,6 +83,8 @@ interface AiResultDto {
   reason: string | null
   /** Present only when at least one real booking tool ran during this analyze call. */
   toolExecutions?: AiToolExecutionSummary[]
+  /** Present only when needsHuman === true and a real Escalation row was created or reused (Prompt 12). */
+  escalation?: { id: string; status: string }
 }
 
 function isCheckAvailabilityData(tool: string, data: unknown): data is CheckAvailabilityData {
@@ -393,6 +395,18 @@ export default function AiSettingsPage() {
                 </span>
                 {result.reason && <span className="text-muted-foreground">{result.reason}</span>}
               </div>
+
+              {result.escalation && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  <span className="font-semibold">Real escalation (Prompt 12):</span> a real, tenant-isolated Escalation
+                  row was created or reused for this conversation — status <span className="font-mono">{result.escalation.status}</span>.
+                  See it on{' '}
+                  <a href="/settings/escalations" className="underline">
+                    Escalations
+                  </a>
+                  .
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

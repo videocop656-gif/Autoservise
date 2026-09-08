@@ -13,6 +13,7 @@ import type {
   CustomerRequestStatusHistory,
   Conversation,
   Message,
+  AiEscalation,
 } from '@prisma/client'
 
 /**
@@ -430,5 +431,52 @@ export function toConversationDto(conversation: ConversationWithOptionalDetail):
     ...('customer' in conversation ? { customer: conversation.customer ?? null } : {}),
     ...('customerRequest' in conversation ? { customerRequest: conversation.customerRequest ?? null } : {}),
     ...(conversation.messages ? { messages: conversation.messages.map(toMessageDto) } : {}),
+  }
+}
+
+export interface AiEscalationDto {
+  id: string
+  conversationId: string
+  customerId: string | null
+  status: AiEscalation['status']
+  priority: AiEscalation['priority']
+  reason: string
+  summary: string | null
+  assignedUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+  resolvedAt: Date | null
+  // Only present on the single-GET response — list items omit these, same
+  // convention as ConversationDto's customer/customerRequest summaries.
+  customer?: { id: string; firstName: string; lastName: string | null } | null
+  assignedUser?: { id: string; name: string } | null
+  conversation?: { id: string; subject: string | null; status: Conversation['status']; channel: Conversation['channel'] } | null
+}
+
+type AiEscalationWithOptionalDetail = AiEscalation & {
+  customer?: { id: string; firstName: string; lastName: string | null } | null
+  assignedUser?: { id: string; name: string } | null
+  conversation?: { id: string; subject: string | null; status: Conversation['status']; channel: Conversation['channel'] } | null
+}
+
+// Never includes tenantId/businessId/activeConversationId (the last is a
+// purely internal idempotency mechanism — see prisma/schema.prisma's
+// AiEscalation.activeConversationId comment — never meaningful to a client).
+export function toAiEscalationDto(escalation: AiEscalationWithOptionalDetail): AiEscalationDto {
+  return {
+    id: escalation.id,
+    conversationId: escalation.conversationId,
+    customerId: escalation.customerId,
+    status: escalation.status,
+    priority: escalation.priority,
+    reason: escalation.reason,
+    summary: escalation.summary,
+    assignedUserId: escalation.assignedUserId,
+    createdAt: escalation.createdAt,
+    updatedAt: escalation.updatedAt,
+    resolvedAt: escalation.resolvedAt,
+    ...('customer' in escalation ? { customer: escalation.customer ?? null } : {}),
+    ...('assignedUser' in escalation ? { assignedUser: escalation.assignedUser ?? null } : {}),
+    ...('conversation' in escalation ? { conversation: escalation.conversation ?? null } : {}),
   }
 }

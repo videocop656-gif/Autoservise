@@ -13,6 +13,7 @@ import type { AiProvider, AiGenerationResult } from '../ai/provider'
 import { TOOL_DEFINITIONS, executeTool } from '../ai/tools/registry'
 import { EMPTY_AI_ENTITIES, type AiResult, type AiToolExchange } from '../ai/types'
 import type { AnalyzeMessageInput } from '../validation/ai.schemas'
+import { createOrReuseActiveEscalation, deriveEscalationReason, deriveEscalationSummary } from './escalationService'
 
 /** Only the most recent messages are sent to the provider — spec §"MESSAGE HISTORY": bounded, chronological, not the entire conversation. */
 const MAX_HISTORY_MESSAGES = 20
@@ -29,9 +30,17 @@ export interface AiToolExecutionSummary {
   message?: string
 }
 
+/** Safe, minimal reference to a real AiEscalation row — never tenantId/businessId/internal metadata (spec §"AI ANALYZE RESPONSE"). */
+export interface AiEscalationReference {
+  id: string
+  status: string
+}
+
 export interface AiAnalyzeResult extends AiResult {
   /** Present only when at least one tool actually ran this request — additive, so existing non-booking consumers are unaffected. */
   toolExecutions?: AiToolExecutionSummary[]
+  /** Present only when needsHuman === true and a real escalation was created or reused (Prompt 12) — absent/undefined otherwise, never a placeholder. */
+  escalation?: AiEscalationReference
 }
 
 function summarizeExchanges(exchanges: AiToolExchange[]): AiToolExecutionSummary[] | undefined {
@@ -163,20 +172,64 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
     }
   }
 
+  // Escalation eligibility (spec §"AI INTEGRATION" step order: "escalation
+  // creation must happen only after ... 4. provider result validation; 5.
+  // safety validation; 6. needsHuman === true") and spec §"TESTS" items
+  // 37-40, which are explicit about what must NEVER create an escalation:
+  // provider failure, configuration failure, a malformed/unparseable AI
+  // result, and a safety-layer *rejection*. The tool-call-limit fallback is
+  // the same category as a malformed result — in both cases there is no
+  // trustworthy validated output to build an escalation from, only a
+  // hand-built, honest "we couldn't do this" placeholder. A safety
+  // *rejection* specifically means the model itself tried to claim a
+  // fabricated booking/diagnosis/escalation and got caught — that is a
+  // model-behavior problem the safety layer already fully contained, not
+  // itself evidence that a human needs to review the underlying customer
+  // question, so it deliberately does not escalate either. Only two things
+  // count as "genuinely eligible": the model's own honest needsHuman=true,
+  // and the confidence policy forcing it (spec §"CONFIDENCE": confidence is
+  // itself a validated, trustworthy field — forcing needsHuman from it is
+  // not a rejection of anything, just applying the existing policy).
+  let finalResult: AiResult
+  let eligibleForEscalation = false
+
   if (exceededLimit) {
-    return { ...buildFallbackResult('AI_TOOL_LIMIT_EXCEEDED: exceeded the maximum of 3 tool calls per request'), toolExecutions: summarizeExchanges(toolExchanges) }
+    finalResult = buildFallbackResult('AI_TOOL_LIMIT_EXCEEDED: exceeded the maximum of 3 tool calls per request')
+  } else {
+    // Unlike a provider-call failure, the provider DID respond here — it's
+    // just untrustworthy. That's a "controlled AI error" (spec), not an
+    // infrastructure failure: it degrades to a safe result (needsHuman:
+    // true) rather than throwing, since analyze() completing with an honest
+    // "escalate" answer is strictly more useful to staff than a bare 5xx.
+    const parsed = aiResultSchema.safeParse(raw)
+    if (parsed.success) {
+      finalResult = applySafetyLayer(parsed.data)
+      eligibleForEscalation = !finalResult.reason?.startsWith('AI_SAFETY_REJECTION')
+    } else {
+      finalResult = buildFallbackResult('AI_INVALID_RESPONSE: the AI response failed structural validation')
+    }
   }
 
-  // Unlike a provider-call failure, the provider DID respond here — it's
-  // just untrustworthy. That's a "controlled AI error" (spec), not an
-  // infrastructure failure: it degrades to a safe result (needsHuman:
-  // true) rather than throwing, since analyze() completing with an honest
-  // "escalate" answer is strictly more useful to staff than a bare 5xx.
-  const parsed = aiResultSchema.safeParse(raw)
-  if (!parsed.success) {
-    return { ...buildFallbackResult('AI_INVALID_RESPONSE: the AI response failed structural validation'), toolExecutions: summarizeExchanges(toolExchanges) }
-  }
+  // Human Escalation integration (Prompt 12) — the single place this
+  // happens. AI_PROVIDER_UNAVAILABLE/AI_CONFIGURATION_ERROR never reach
+  // here at all (callProvider() already threw out of this function
+  // entirely in that case) — there is no AiResult to gate on.
+  const escalation = eligibleForEscalation && finalResult.needsHuman
+    ? await (async () => {
+        const reason = deriveEscalationReason(finalResult.reason)
+        const { escalation: row } = await createOrReuseActiveEscalation(ctx, {
+          conversationId: conversation.id,
+          customerId: conversation.customerId,
+          reason,
+          summary: deriveEscalationSummary(reason),
+        })
+        return row ? { id: row.id, status: row.status } : undefined
+      })()
+    : undefined
 
-  const finalResult = applySafetyLayer(parsed.data)
-  return { ...finalResult, toolExecutions: summarizeExchanges(toolExchanges) }
+  return {
+    ...finalResult,
+    toolExecutions: summarizeExchanges(toolExchanges),
+    ...(escalation ? { escalation } : {}),
+  }
 }

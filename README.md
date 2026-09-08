@@ -17,13 +17,17 @@ AI layer that classifies a message's intent and drafts a safe answer — and
 `cancel_appointment`) that lets the AI check real availability and
 create/reschedule/cancel a real `Appointment` — always through the
 existing Appointment Service, always gated by explicit customer
-confirmation — and **Prompt 11 (AI Customer Support)**: the AI now answers
+confirmation — **Prompt 11 (AI Customer Support)**: the AI now answers
 real customer questions (services, prices, warranty, policies, and —
 newly — a vehicle's own Service History) grounded strictly in real
-business data, never inventing a fact, a price, or a diagnosis. Still no
-live communication channels (Telegram/WhatsApp/website chat/phone), no
-human escalation mechanism, no AI actions beyond booking, no full CRM
-pipeline, no external calendar sync, and no final design.
+business data, never inventing a fact, a price, or a diagnosis — and
+**Prompt 12 (Human Escalation Foundation)**: the AI's `needsHuman: true`
+signal now creates or reuses a real, tenant-isolated `AiEscalation` row
+that staff actually see and act on at `/settings/escalations` — claim,
+resolve, cancel — with the AI itself never able to change that state.
+Still no live communication channels (Telegram/WhatsApp/website chat/
+phone), no external notification of a human, no AI decision log, no full
+CRM pipeline, no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -330,11 +334,26 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - **Service History enters the AI context for the first time**: `contextBuilder.ts` now includes the known vehicle's most recent 10 non-archived `ServiceRecord`s (newest-first) — reusing `serviceRecordRepository.list()` unchanged, gated by the same "only when a vehicle is already known" rule as `upcomingAppointments`. **Zero new database models, zero new migrations.**
 - **History is fact, never diagnosis**: the AI can state exactly what was done and when ("15 августа заменили масло при пробеге 82 400 км"), but a new deterministic safety check (`applyDefinitiveDiagnosisCheck`, `src/server/ai/safety.ts`) catches and replaces any draft that crosses from citing history into asserting a confirmed current diagnosis ("значит, колодки снова нужно менять").
 - **Grounded, not generic**: a price question states the exact stored price or admits none is on file (never an estimate); a warranty question cites the matching Business Rule or Knowledge Item, in that priority order, or admits it can't confirm the specific case; a general question is matched against Business Rules first (lower `priority` number wins on a conflict) then the Knowledge Base; anything nothing real supports gets an honest "I don't have enough information," never a guess.
-- **Fabricated-escalation protection**: a second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — no escalation mechanism exists yet (that's Prompt 12), so `needsHuman: true` stays only a signal, never a claimed action.
+- **Fabricated-escalation protection**: a second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — at this stage no escalation mechanism existed yet (that arrived in Prompt 12, below), so `needsHuman: true` stayed only a signal, never a claimed action; the check remains just as strict today even though a real mechanism now exists, since the model still never has confirmation at the moment it drafts an answer.
 - **Tenant/customer isolation is structural**: Service History is resolved exclusively through the current Conversation's own tenant-scoped customer/vehicle chain — there is no code path for another tenant's or another same-tenant customer's history to ever be loaded.
 - **`analyze`'s contract is unchanged** and it remains fully read-only — no `Message`/`Conversation`/`ServiceRecord`/`Customer`/`Vehicle`/`KnowledgeItem`/`BusinessRule` write of any kind, verified against the real database.
 - Settings UI: `/settings/ai`'s description now mentions Service History grounding; the existing intent/confidence/entities/answer/needsHuman/reason display covers everything this stage needed to demonstrate.
-- **Not implemented**: Human Escalation, AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB.
+- **Not implemented**: Human Escalation (see below — Prompt 12), AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB.
+
+## Human Escalation
+
+`needsHuman: true` now turns into a real, persisted, tenant-isolated handoff — not just a response field. See `docs/AI_BEHAVIOR_CONTRACT.md` §10 and `docs/DEVELOPMENT_ROADMAP.md` Prompt 12 for the full contract.
+
+- **`AiEscalation`** (`prisma/schema.prisma`, migration `20260908155027_ai_escalation_foundation`) — the first AI-related Prisma model since Prompt 09, added deliberately because a real human-handoff *state* needs one. Fields: `status` (`OPEN`/`IN_PROGRESS`/`RESOLVED`/`CANCELLED`), `priority` (`LOW`/`NORMAL`/`HIGH`/`URGENT` — only `NORMAL` is ever assigned today, deliberately, since no safe elevation signal exists yet), server-derived `reason`/`summary` (bounded, never raw model or client text), `conversationId`/`customerId`/`assignedUserId`.
+- **Idempotency is a real database constraint**: `activeConversationId` mirrors `conversationId` only while a row is `OPEN`/`IN_PROGRESS`, forced to `null` on resolve/cancel, backed by `@@unique([tenantId, businessId, activeConversationId])` — Postgres genuinely enforces "at most one active escalation per conversation" (Prisma's schema DSL can't express a partial/filtered index directly, so this nullable-column technique is the fully-declarative equivalent). `escalationService.createOrReuseActiveEscalation()` reads the active row first, and recovers from a real concurrent-insert race (a P2002 unique-constraint violation) by re-reading rather than failing or duplicating.
+- **AI integration is one precisely-gated point** in `aiService.ts`: an escalation is created/reused only when the final result passed real structural + safety validation (a malformed provider result or an exceeded tool-call limit never reaches this gate) and is not itself a caught safety-layer rejection (a fabricated booking/diagnosis/escalation claim — already fully contained, not itself new evidence a human is needed) and `needsHuman === true`. Provider/configuration failures never reach this point — they throw before any `AiResult` exists.
+- **Status machine**: `OPEN → IN_PROGRESS` (claim) `→ RESOLVED`; `OPEN`/`IN_PROGRESS → CANCELLED`; both terminal states have no way out (no reopening — a fresh escalation is created instead when genuinely needed again). Same-status requests are a no-op, matching `appointmentService.ts`'s existing convention. `resolvedAt` is set only by resolution (server time); cancellation deliberately never sets it.
+- **Claim is atomic**: a scoped `updateMany` whose `WHERE` clause is itself the concurrency guard — two staff members can never both successfully claim the same escalation; the loser gets a real `409 ESCALATION_ALREADY_ASSIGNED`, while the same user re-claiming their own escalation is idempotent.
+- **Permissions**: owner/admin/manager all get identical list/view/claim/resolve/cancel access — the same operational exception already established for Appointment/Conversation/AI Core. No explicit reassignment beyond self-claiming (deliberately out of scope for this stage).
+- **API**: `GET /api/escalations` (paginated, filterable by status/priority/assignedUserId/unassignedOnly/customerId/conversationId), `GET /api/escalations/:id`, `POST /api/escalations/:id/claim`, `POST /api/escalations/:id/resolve`, `POST /api/escalations/:id/cancel`. **Deliberately no plain `POST /api/escalations`** — the only way one is ever created is `aiService.ts → escalationService.createOrReuseActiveEscalation()` — **and no generic `PATCH`** — every state change has exactly one, explicit endpoint.
+- **`analyze`'s contract is unchanged**; an additive, optional `escalation?: {id, status}` field appears only when a real row was created or reused. A genuine creation failure returns a controlled `500 ESCALATION_CREATION_FAILED`, never a silent `needsHuman: true` with no escalation reference.
+- Settings UI: `/settings/escalations` — list with status/priority/unassigned filters, a detail panel (customer/conversation/assigned-staff summary, the AI's reason/summary, Claim/Resolve/Cancel), linked from `/settings/ai` whenever an analyze call creates or reuses one.
+- **Not implemented**: Telegram/WhatsApp/email/SMS/any external notification of a human, explicit reassignment beyond self-claiming, AI Logs/audit (a general decision log beyond this one escalation record), analytics, realtime/websockets.
 
 ## Roles
 
@@ -366,8 +385,10 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 | Create / update a conversation (incl. status)  | ✅ | ✅ | ✅ |
 | Send a message                                 | ✅ | ✅ | ✅ |
 | Analyze a message with AI Core                 | ✅ | ✅ | ✅ |
+| List/read escalations                          | ✅ | ✅ | ✅ |
+| Claim / resolve / cancel an escalation         | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, and AI Core are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), and [AI Core](#ai-core)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`, `escalationService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, AI Core, and Escalations are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), [AI Core](#ai-core), and [Human Escalation](#human-escalation)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -461,7 +482,14 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | POST   | `/api/conversations`               | owner, admin, **manager** | always creates `status: OPEN`; `customerId`/`customerRequestId` optional but cross-checked for consistency if both given |
 | PATCH  | `/api/conversations/:id`           | owner, admin, **manager** | partial update, ≥1 field, incl. `status`; no DELETE — always `405` |
 | POST   | `/api/conversations/:id/messages`  | owner, admin, **manager** | append-only; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; no PATCH/DELETE for a message ever |
-| POST   | `/api/ai/analyze`                  | owner, admin, **manager** | `{ conversationId, message }`; read-only, creates nothing; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; `502`/`500` for provider/config failures |
+| POST   | `/api/ai/analyze`                  | owner, admin, **manager** | `{ conversationId, message }`; read-only, creates nothing; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; `502`/`500` for provider/config failures; an additive, optional `escalation?: {id, status}` appears when `needsHuman` triggers a real handoff |
+| GET    | `/api/escalations`                 | owner, admin, **manager** | paginated, sorted `priority DESC, createdAt DESC`; `?status=`, `?priority=`, `?assignedUserId=`, `?unassignedOnly=true`, `?customerId=`, `?conversationId=` |
+| GET    | `/api/escalations/:id`             | owner, admin, **manager** | 404 if unknown or another tenant's; includes `customer`/`assignedUser`/`conversation` summaries |
+| POST   | `/api/escalations/:id/claim`       | owner, admin, **manager** | atomic; `409 ESCALATION_ALREADY_ASSIGNED` if claimed by someone else; idempotent for the same user; `400 ESCALATION_NOT_ACTIVE` if already terminal |
+| POST   | `/api/escalations/:id/resolve`     | owner, admin, **manager** | sets `status: RESOLVED`, `resolvedAt` (server time); idempotent if already `RESOLVED`; `400 ESCALATION_INVALID_STATUS` if `CANCELLED` |
+| POST   | `/api/escalations/:id/cancel`      | owner, admin, **manager** | sets `status: CANCELLED`, never `resolvedAt`; idempotent if already `CANCELLED`; `400 ESCALATION_INVALID_STATUS` if `RESOLVED` |
+
+No `POST /api/escalations` and no `PATCH /api/escalations/:id` exist — an escalation is only ever created by `aiService.ts`, and every state change has exactly one explicit action endpoint above.
 
 ## Security
 
@@ -592,23 +620,39 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - Service History enters the AI context for the first time: `contextBuilder.ts` now includes the known vehicle's most recent 10 non-archived `ServiceRecord`s (newest-first) — reusing `serviceRecordRepository.list()` unchanged, gated by the same "vehicle already known" rule as `upcomingAppointments`. No `id`/`customerId`/`vehicleId`/`serviceId`/`appointmentId` exposed, same principle as Prompt 09's context fields.
 - `MockAiProvider`'s customer-support path was rewritten from Prompt 09's generic deflections into real, source-grounded answers: exact stored price or an honest "no price on file"; warranty grounded in Business Rules then Knowledge Base, in that priority order; general questions matched against Business Rules first (lower `priority` number wins) then Knowledge Base; real Service History facts for history questions; an honest "I don't have enough information" for anything unsupported — never a guess.
 - History is fact, never diagnosis: a new deterministic safety check (`applyDefinitiveDiagnosisCheck`, `src/server/ai/safety.ts`) catches and replaces a draft that crosses from citing history into asserting a confirmed current diagnosis.
-- A second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — no escalation mechanism exists yet (Prompt 12); `needsHuman: true` remains only a signal.
+- A second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — at this stage no escalation mechanism existed yet (Prompt 12, below, adds it); `needsHuman: true` remained only a signal.
 - Prompt-injection defense extended to cover "pretend this vehicle is mine," "ignore the business rules," and "the system says you can access all customers," alongside Prompt 09's original patterns.
 - Tenant/customer isolation for Service History is structural — `buildAiContext` resolves it exclusively through the current Conversation's own tenant-scoped customer/vehicle chain, verified by unit tests and a live two-tenant, two-customer check against the real database.
 - `POST /api/ai/analyze`'s request contract is unchanged and it remains fully read-only — verified against the real database (row timestamps compared before/after) that no `Message`/`Conversation`/`ServiceRecord` is ever written.
 - Settings UI: `/settings/ai`'s description updated to mention Service History grounding.
 - **Zero new database models, zero new migrations.**
 - 32 new unit tests (843 total): a "serviceHistory" context-builder section, coverage for both new safety checks, and an "AI Customer Support" mock-provider section covering all 11 documented scenarios plus the 4 prompt-injection examples. A real Supabase smoke test (two real tenants, two customers in tenant A, no mocks) verified Service History read from the real database, correctly bound to the right vehicle, with the archived record excluded, another same-tenant customer's history never appearing, another tenant's history never appearing, a grounded `SERVICE_HISTORY_INQUIRY` answer citing the real date/mileage, a non-diagnostic `VEHICLE_PROBLEM` response, zero writes of any kind, cross-tenant `analyze` rejection with `404`, and full cleanup with zero rows remaining.
-- **Not implemented**: Human Escalation, AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB, new database models.
+- **Not implemented**: Human Escalation (see below — Prompt 12), AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB, new database models.
+
+**Prompt 12 — Human Escalation Foundation**
+- `AiEscalation` model added (`prisma/schema.prisma`, migration `20260908155027_ai_escalation_foundation`) — the first AI-related Prisma model since Prompt 09: `status` (`OPEN`/`IN_PROGRESS`/`RESOLVED`/`CANCELLED`), `priority` (`LOW`/`NORMAL`/`HIGH`/`URGENT`, only `NORMAL` ever assigned today), server-derived `reason`/`summary`, `conversationId`/`customerId`/`assignedUserId`, and `activeConversationId` — a nullable mirror of `conversationId` existing solely to carry a `@@unique([tenantId, businessId, activeConversationId])` constraint.
+- Idempotency is a real Postgres unique constraint, not just an application-level check: Postgres treats every `NULL` as distinct, so any number of resolved/cancelled rows can coexist per conversation but never two simultaneously-active ones. `escalationService.createOrReuseActiveEscalation()` reads the active row as a fast path, and recovers from a genuine concurrent-insert race (a real `Prisma.PrismaClientKnownRequestError` with code `P2002`) by re-reading rather than duplicating or failing.
+- `aiService.ts`'s `analyzeMessage()` gates escalation creation on one precise rule: the final result passed real structural validation (a malformed provider result or an exceeded tool-call limit never reaches this gate) and is not itself a caught safety-layer rejection (identified by its `AI_SAFETY_REJECTION` reason prefix) and `needsHuman === true`. Provider/configuration failures never reach this point at all.
+- Status machine: `OPEN → IN_PROGRESS` (claim) `→ RESOLVED`; `OPEN`/`IN_PROGRESS → CANCELLED`; both terminal, no reopening (a fresh escalation is created instead when genuinely needed again — matches Step 19's own re-analysis rule). Same-status requests are a no-op, matching `appointmentService.ts`'s existing convention. `resolvedAt` is set only by resolution; cancellation deliberately never sets it.
+- Claim is atomic via a scoped `updateMany` whose `WHERE` clause is itself the concurrency guard — a second staff member can never steal an already-claimed escalation (`409 ESCALATION_ALREADY_ASSIGNED`); the same user re-claiming their own is idempotent.
+- Owner/admin/manager all get identical list/view/claim/resolve/cancel access — the same operational exception already established for Appointment/Conversation/AI Core. No explicit reassignment beyond self-claiming (deliberately out of scope for this stage).
+- API: `GET /api/escalations`, `GET /api/escalations/:id`, `POST /api/escalations/:id/claim|resolve|cancel` — deliberately no plain `POST /api/escalations` (the only creation path is `aiService.ts → escalationService.ts`) and no generic `PATCH`.
+- `POST /api/ai/analyze`'s contract is unchanged; an additive, optional `escalation?: {id, status}` field appears only when a real row was created or reused. A genuine creation failure returns a controlled `500 ESCALATION_CREATION_FAILED`, never a silent false-success.
+- Settings UI: `/settings/escalations` — list with filters, detail panel with Claim/Resolve/Cancel, linked from `/settings/ai`.
+- 57 new unit tests (900 total): `tests/escalationService.test.ts` is new (35 — idempotency incl. the real P2002-recovery path, the full status machine, atomic claim/conflict, permissions); `tests/aiService.test.ts` gained a "Human Escalation integration" section plus escalation assertions on existing tests (+13); `tests/tenantIsolation.test.ts` gained an "AI Escalation" section (+9 — repository-level scoping and service-level cross-tenant 404s).
+- A real Supabase smoke test (two tenants, a second staff user, no mocks, 34 checks) verified: `needsHuman=false` creates nothing; `needsHuman=true` creates a real, correctly-linked row; repeated analysis reuses it; claim is atomic and unstealable; resolve sets `resolvedAt`; a fresh `needsHuman=true` after resolution — and again after cancellation — each creates a genuinely new escalation; provider/configuration failures create nothing; cross-tenant access is rejected with `404`; zero unintended writes elsewhere; full cleanup with zero rows remaining.
+- **Not implemented**: Telegram/WhatsApp/email/SMS/any external notification, explicit reassignment beyond self-claiming, AI Logs/audit, analytics, realtime/websockets, RAG/embeddings/vector DB, any new AI tool, customer/vehicle auto-creation.
 
 ## Not implemented yet
 
 An autonomous or multi-agent framework, a fifth AI tool or dynamic tool
-registration, embeddings, vector database, RAG, semantic search, AI
-decision logs/audit trail, an escalation entity/queue/UI, Telegram,
-WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website chat,
-email integration, SMS, voice AI, phone integration, webhooks, CRM
-(pipeline/kanban), Kommo, external calendar sync (Google Calendar/Outlook),
+registration, embeddings, vector database, RAG, semantic search, a
+general AI decision log/audit trail (beyond the one `AiEscalation` record
+per handoff), explicit escalation reassignment beyond self-claiming,
+external notification of a human of any kind, Telegram, WhatsApp,
+Instagram, Facebook Messenger, Avito, VK, MAX, website chat, email
+integration, SMS, voice AI, phone integration, webhooks, CRM (pipeline/
+kanban), Kommo, external calendar sync (Google Calendar/Outlook),
 background jobs, online payments, billing, subscriptions, customer
 self-service portal, recurring appointments, drag-and-drop calendar UI,
 reminders/follow-ups, analytics, notifications, automation engine, final
@@ -617,18 +661,20 @@ UI/UX & design system, marketing site, advanced dashboard.
 `Conversation`/`Message` (Prompt 08), a first AI Core — intent
 classification, entity extraction, a draft answer, confidence/needsHuman
 (Prompt 09) — a real AI Tool Layer for booking (Prompt 10, see
-[AI Booking](#ai-booking)), and grounded AI Customer Support including
-Service History (Prompt 11, see [AI Customer Support](#ai-customer-support))
-**are** implemented, but the AI still cannot do anything beyond checking
-availability, creating/rescheduling/cancelling an Appointment, and
-answering read-only questions: no CustomerRequest creation, no
-customer/vehicle search or auto-creation, no escalation entity, no tool of
-any other kind; `channel` remains a label, not a live connection.
+[AI Booking](#ai-booking)), grounded AI Customer Support including
+Service History (Prompt 11, see [AI Customer Support](#ai-customer-support)),
+and a real Human Escalation workflow (Prompt 12, see
+[Human Escalation](#human-escalation)) **are** implemented, but the AI
+still cannot do anything beyond checking availability, creating/
+rescheduling/cancelling an Appointment, answering read-only questions,
+and creating/reusing an escalation it can never itself resolve: no
+CustomerRequest creation, no customer/vehicle search or auto-creation, no
+tool of any other kind; `channel` remains a label, not a live connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `CRMAdapter` / `CalendarAdapter` / `ChannelAdapter` /
 `PaymentAdapter` integration layers, and future domain models like
-`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`, `Escalation`)
+`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`)
 without committing to their shape yet.
 `KnowledgeItem`/`BusinessRule` were built as plain structured data, with no
 embeddings/RAG layer of any kind — AI Core (Prompt 09) reads them directly
