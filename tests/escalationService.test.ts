@@ -11,6 +11,7 @@ const {
   claimMock,
   resolveMock,
   cancelMock,
+  aiLogCreateMock,
 } = vi.hoisted(() => ({
   listMock: vi.fn(),
   findByIdMock: vi.fn(),
@@ -20,6 +21,7 @@ const {
   claimMock: vi.fn(),
   resolveMock: vi.fn(),
   cancelMock: vi.fn(),
+  aiLogCreateMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/escalationRepository', () => ({
@@ -34,6 +36,17 @@ vi.mock('../src/server/repositories/escalationRepository', () => ({
     cancel: cancelMock,
   },
   ACTIVE_ESCALATION_STATUSES: ['OPEN', 'IN_PROGRESS'],
+}))
+// escalationService.ts writes audit records via aiLogService.ts (real
+// code) down to this repository — mocked so every log write here stays an
+// in-memory no-op instead of a real, always-failing DB round trip.
+vi.mock('../src/server/repositories/aiLogRepository', () => ({
+  aiLogRepository: {
+    create: aiLogCreateMock,
+    list: vi.fn(),
+    findById: vi.fn(),
+    findByIdWithDetail: vi.fn(),
+  },
 }))
 
 import {
@@ -72,6 +85,7 @@ function makeEscalation(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  aiLogCreateMock.mockResolvedValue({})
 })
 
 describe('deriveEscalationReason', () => {
@@ -337,5 +351,109 @@ describe('permissions', () => {
   it('manager can list/claim/resolve/cancel — same operational exception as Appointment/Conversation/AI Core', async () => {
     listMock.mockResolvedValue({ items: [], total: 0 })
     await expect(listEscalations(makeAuthContext('manager'), { page: 1, pageSize: 20 })).resolves.toBeDefined()
+  })
+})
+
+describe('AI Logs / Audit integration (Prompt 13)', () => {
+  const input = { conversationId: CONVERSATION_ID, customerId: 'cust1', reason: 'r', summary: 's' }
+
+  it('a genuine create writes exactly one AI_ESCALATION_CREATE/SUCCESS record, never labeled as reuse', async () => {
+    findActiveByConversationMock.mockResolvedValue(null)
+    createMock.mockResolvedValue(makeEscalation())
+    await createOrReuseActiveEscalation(makeAuthContext('owner'), input)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'AI_ESCALATION_CREATE', outcome: 'SUCCESS', escalationId: ESCALATION_ID, conversationId: CONVERSATION_ID })
+    )
+  })
+
+  it('a fast-path reuse writes exactly one AI_ESCALATION_REUSE/REUSED record, never labeled as create', async () => {
+    const existing = makeEscalation()
+    findActiveByConversationMock.mockResolvedValue(existing)
+    await createOrReuseActiveEscalation(makeAuthContext('owner'), input)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'AI_ESCALATION_REUSE', outcome: 'REUSED', escalationId: ESCALATION_ID })
+    )
+    expect(createMock).not.toHaveBeenCalled()
+  })
+
+  it('a race-recovered reuse (P2002) also writes AI_ESCALATION_REUSE, never a fabricated create', async () => {
+    findActiveByConversationMock.mockResolvedValueOnce(null).mockResolvedValueOnce(makeEscalation())
+    createMock.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' })
+    )
+    await createOrReuseActiveEscalation(makeAuthContext('owner'), input)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(expect.objectContaining({ operation: 'AI_ESCALATION_REUSE', outcome: 'REUSED' }))
+  })
+
+  it('a genuine creation failure writes NO audit record at all — better none than an inaccurate one', async () => {
+    findActiveByConversationMock.mockResolvedValue(null)
+    createMock.mockRejectedValue(new Error('connection reset'))
+    await expect(createOrReuseActiveEscalation(makeAuthContext('owner'), input)).rejects.toBeTruthy()
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a real claim writes AI_ESCALATION_CLAIM/SUCCESS with the acting user as actorUserId', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'OPEN', assignedUserId: null }))
+    claimMock.mockResolvedValue(makeEscalation({ status: 'IN_PROGRESS', assignedUserId: 'u1' }))
+    await claimEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'AI_ESCALATION_CLAIM', outcome: 'SUCCESS', escalationId: ESCALATION_ID, actorUserId: 'u1' })
+    )
+  })
+
+  it('an idempotent no-op claim (already mine) writes no audit record — no real state transition happened', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'IN_PROGRESS', assignedUserId: 'u1' }))
+    await claimEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a failed claim (already assigned to someone else) writes no misleading SUCCESS audit', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'IN_PROGRESS', assignedUserId: 'someone-else' }))
+    await expect(claimEscalation(makeAuthContext('owner'), ESCALATION_ID)).rejects.toBeTruthy()
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a real resolve writes AI_ESCALATION_RESOLVE/SUCCESS', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'OPEN' }))
+    resolveMock.mockResolvedValue(makeEscalation({ status: 'RESOLVED', resolvedAt: new Date() }))
+    await resolveEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(expect.objectContaining({ operation: 'AI_ESCALATION_RESOLVE', outcome: 'SUCCESS' }))
+  })
+
+  it('an idempotent no-op resolve (already RESOLVED) writes no audit record', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'RESOLVED' }))
+    await resolveEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a failed resolve (invalid transition from CANCELLED) writes no misleading SUCCESS audit', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'CANCELLED' }))
+    await expect(resolveEscalation(makeAuthContext('owner'), ESCALATION_ID)).rejects.toBeTruthy()
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a real cancel writes AI_ESCALATION_CANCEL/SUCCESS', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'OPEN' }))
+    cancelMock.mockResolvedValue(makeEscalation({ status: 'CANCELLED' }))
+    await cancelEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).toHaveBeenCalledTimes(1)
+    expect(aiLogCreateMock).toHaveBeenCalledWith(expect.objectContaining({ operation: 'AI_ESCALATION_CANCEL', outcome: 'SUCCESS' }))
+  })
+
+  it('an idempotent no-op cancel (already CANCELLED) writes no audit record', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'CANCELLED' }))
+    await cancelEscalation(makeAuthContext('owner'), ESCALATION_ID)
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('a failed cancel (invalid transition from RESOLVED) writes no misleading SUCCESS audit', async () => {
+    findByIdMock.mockResolvedValue(makeEscalation({ status: 'RESOLVED' }))
+    await expect(cancelEscalation(makeAuthContext('owner'), ESCALATION_ID)).rejects.toBeTruthy()
+    expect(aiLogCreateMock).not.toHaveBeenCalled()
   })
 })

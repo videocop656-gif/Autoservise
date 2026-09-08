@@ -169,10 +169,20 @@ export interface AiToolCallRequest {
 /**
  * Never a raw database object, never a Prisma row — every tool always
  * returns one of these two shapes (spec §"TOOL EXECUTION CONTRACT").
+ *
+ * `attempted` (Prompt 13, failure branch only) distinguishes a real
+ * execution attempt (the underlying appointmentService.ts function was
+ * actually called and threw) from a gate rejection that never reached it
+ * (confirmation missing, Zod validation failed, entity not in this
+ * conversation's allow-list) — see tools/errors.ts. This is what lets
+ * aiLogService.ts log only genuine tool-execution events (spec §"LOG ONLY
+ * ACTUAL TOOL EXECUTION"), never a blocked/rejected attempt the model
+ * merely requested. A successful result has no need for the flag — it
+ * obviously means the real function ran.
  */
 export type ToolResult =
   | { success: true; tool: string; data: unknown }
-  | { success: false; tool: string; errorCode: string; message: string; retryable?: boolean }
+  | { success: false; tool: string; errorCode: string; message: string; retryable?: boolean; attempted: boolean }
 
 /** One resolved round of the tool-calling loop, fed back to the provider on the next round. */
 export interface AiToolExchange {

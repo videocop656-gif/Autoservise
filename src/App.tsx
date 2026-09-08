@@ -16,6 +16,7 @@ import CustomerRequestsSettingsPage from './pages/settings/CustomerRequestsSetti
 import ConversationsSettingsPage from './pages/settings/ConversationsSettingsPage'
 import AiSettingsPage from './pages/settings/AiSettingsPage'
 import EscalationsSettingsPage from './pages/settings/EscalationsSettingsPage'
+import AiLogsSettingsPage from './pages/settings/AiLogsSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -140,6 +141,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <EscalationsSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/ai-logs"
+        element={
+          <ProtectedRoute>
+            <AiLogsSettingsPage />
           </ProtectedRoute>
         }
       />

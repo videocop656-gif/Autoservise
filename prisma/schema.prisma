@@ -137,6 +137,33 @@ enum AiEscalationPriority {
   URGENT
 }
 
+// What kind of AI/staff event this log row records — see AiLog below.
+// Deliberately this exact set, no more: one value per event this project
+// actually produces today (aiService.ts for the first two, escalation
+// create/reuse from within escalationService.ts's own
+// createOrReuseActiveEscalation(), and the three staff actions from
+// escalationService.ts's claim/resolve/cancel).
+enum AiLogOperation {
+  AI_ANALYZE
+  AI_TOOL_EXECUTION
+  AI_ESCALATION_CREATE
+  AI_ESCALATION_REUSE
+  AI_ESCALATION_CLAIM
+  AI_ESCALATION_RESOLVE
+  AI_ESCALATION_CANCEL
+}
+
+// What actually happened, independent of which operation it was —
+// see aiLogService.ts for the exact mapping used for each operation.
+enum AiLogOutcome {
+  SUCCESS
+  ESCALATED
+  REUSED
+  FAILED
+  REJECTED
+  NO_ACTION
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -159,6 +186,7 @@ model Tenant {
   conversations                  Conversation[]
   messages                       Message[]
   aiEscalations                  AiEscalation[]
+  aiLogs                         AiLog[]
 
   @@map("tenants")
 }
@@ -177,6 +205,7 @@ model User {
   sessions                       Session[]
   customerRequestStatusHistories CustomerRequestStatusHistory[]
   assignedEscalations            AiEscalation[]
+  aiLogActions                   AiLog[]
 
   @@index([tenantId])
   @@map("users")
@@ -211,6 +240,7 @@ model Business {
   conversations                  Conversation[]
   messages                       Message[]
   aiEscalations                  AiEscalation[]
+  aiLogs                         AiLog[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -637,6 +667,7 @@ model Conversation {
 
   messages    Message[]
   escalations AiEscalation[]
+  aiLogs      AiLog[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -667,6 +698,8 @@ model Message {
   // no DELETE endpoint for Conversation today, so this only matters for
   // direct DB operations outside the app's normal flow.
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  aiLogs AiLog[]
 
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
@@ -744,6 +777,8 @@ model AiEscalation {
   // same principle as CustomerRequestStatusHistory.changedByUserId.
   assignedUser User?        @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
 
+  aiLogs AiLog[]
+
   @@unique([tenantId, businessId, activeConversationId])
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -753,6 +788,85 @@ model AiEscalation {
   @@index([assignedUserId])
   @@index([createdAt])
   @@map("ai_escalations")
+}
+
+// A safe, minimal audit trail of AI/staff events (Prompt 13) — never a
+// substitute for Conversation/Message (the actual transcript) or a
+// dashboard/analytics feature (Roadmap 14). Written exclusively by
+// aiLogService.ts, which is the one place that decides what is safe to
+// persist here — the AI itself never gets Prisma access, and nothing in
+// this model may ever hold chain-of-thought, hidden reasoning, a raw
+// provider response, a full prompt, a full Message/transcript, or any
+// secret/credential (see aiLogService.ts's sanitizeMetadata() and
+// AI_BEHAVIOR_CONTRACT.md's logging/privacy boundary).
+model AiLog {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  // All optional: not every operation this model records is about a
+  // Conversation/Message/Escalation/staff member specifically — e.g. a
+  // provider/configuration failure log still has a conversationId (it
+  // happened during one specific analyze() call) but no escalation.
+  conversationId String?
+  messageId      String?
+  escalationId   String?
+  // The staff member who performed the action, for the three
+  // AI_ESCALATION_CLAIM/RESOLVE/CANCEL operations only — null for every
+  // AI-driven operation (AI_ANALYZE, AI_TOOL_EXECUTION,
+  // AI_ESCALATION_CREATE/REUSE), since those aren't a human's action.
+  actorUserId String?
+
+  operation AiLogOperation
+  outcome   AiLogOutcome
+
+  // Mirrors the validated AiResult fields for AI_ANALYZE rows only — null
+  // for every other operation. Never the model's own free-form text
+  // beyond what aiResultSchema already validates.
+  intent     String?
+  confidence Float?
+  needsHuman Boolean?
+
+  // A short, safe, server-derived explanation — never model chain-of-
+  // thought, never a raw provider explanation, bounded to 500 chars by
+  // aiLogService.ts before this row is ever written.
+  reason String?
+
+  // For AI_TOOL_EXECUTION rows only.
+  toolName    String?
+  toolSuccess Boolean?
+
+  // Small, structured, whitelisted-shape technical data only (e.g.
+  // {"provider":"mock","toolCallCount":2} or {"errorCode":"APPOINTMENT_CONFLICT"})
+  // — see aiLogService.ts's sanitizeMetadata(). Never raw provider output,
+  // never a prompt, never PII beyond what's already reachable via the FKs
+  // above.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict on every optional domain relation, same principle as
+  // AiEscalation: an audit record is itself a historical fact and must
+  // survive the thing it's about being removed outside the app's normal
+  // workflow (none of Conversation/Message/AiEscalation has a hard-delete
+  // path today, so this is defensive, matching the rest of the schema).
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  message      Message?      @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  escalation   AiEscalation? @relation(fields: [escalationId], references: [id], onDelete: Restrict)
+  // SetNull, not Restrict: the audit trail must survive a User being
+  // removed, even though there is no user-delete flow today — same
+  // principle as AiEscalation.assignedUserId / CustomerRequestStatusHistory.changedByUserId.
+  actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([escalationId, createdAt])
+  @@index([operation, createdAt])
+  @@index([outcome, createdAt])
+  @@map("ai_logs")
 }
 
 model Session {

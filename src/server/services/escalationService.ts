@@ -3,6 +3,7 @@ import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { escalationRepository } from '../repositories/escalationRepository'
+import { logEscalationEvent, logEscalationAction } from './aiLogService'
 import type { PaginationParams } from '../lib/pagination'
 import type { AiEscalationStatus, AiEscalationPriority } from '@prisma/client'
 
@@ -81,6 +82,15 @@ export async function createOrReuseActiveEscalation(
 
   const active = await escalationRepository.findActiveByConversation(ctx.tenant.id, ctx.business.id, input.conversationId)
   if (active) {
+    // AI_ESCALATION_REUSE (Prompt 13) — this is the one place that
+    // genuinely knows it's a reuse, not a create; never logged as
+    // AI_ESCALATION_CREATE (spec §"ESCALATION LOGGING").
+    await logEscalationEvent(ctx, {
+      operation: 'AI_ESCALATION_REUSE',
+      conversationId: input.conversationId,
+      escalationId: active.id,
+      reason: input.reason,
+    })
     return { escalation: active, created: false }
   }
 
@@ -96,18 +106,34 @@ export async function createOrReuseActiveEscalation(
       summary: input.summary,
       activeConversationId: input.conversationId,
     })
+    await logEscalationEvent(ctx, {
+      operation: 'AI_ESCALATION_CREATE',
+      conversationId: input.conversationId,
+      escalationId: created.id,
+      reason: input.reason,
+    })
     return { escalation: created, created: true }
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const nowActive = await escalationRepository.findActiveByConversation(ctx.tenant.id, ctx.business.id, input.conversationId)
       if (nowActive) {
+        // Lost a genuine concurrent-insert race — this really is a reuse from this call's perspective (spec §"CONCURRENT CREATION").
+        await logEscalationEvent(ctx, {
+          operation: 'AI_ESCALATION_REUSE',
+          conversationId: input.conversationId,
+          escalationId: nowActive.id,
+          reason: input.reason,
+        })
         return { escalation: nowActive, created: false }
       }
     }
     // Spec §"ESCALATION CREATION MUST BE TRANSACTION-SAFE": never silently
     // report needsHuman=true while pretending an escalation exists — a
     // genuine creation failure is a controlled application error, not a
-    // swallowed one, and never exposes the raw database error.
+    // swallowed one, and never exposes the raw database error. Deliberately
+    // not logged as AI_ESCALATION_CREATE/FAILED: there is no escalation row
+    // and no conversationId-scoped fact to safely and unambiguously record
+    // beyond what the thrown 500 itself already communicates to the caller.
     throw new ApiError(500, 'ESCALATION_CREATION_FAILED', 'Failed to create escalation')
   }
 }
@@ -166,6 +192,10 @@ export async function claimEscalation(ctx: AuthContext, id: string) {
     if (latest?.assignedUserId === ctx.user.id) return latest
     throw new ApiError(409, 'ESCALATION_ALREADY_ASSIGNED', 'This escalation is already claimed by another staff member')
   }
+  // Logged only for this genuine, real state transition (spec §"ESCALATION
+  // STAFF ACTIONS") — never for the idempotent "already mine" early return
+  // above, since no actual write happened there.
+  await logEscalationAction(ctx, { operation: 'AI_ESCALATION_CLAIM', escalationId: claimed.id, conversationId: claimed.conversationId })
   return claimed
 }
 
@@ -189,6 +219,8 @@ export async function resolveEscalation(ctx: AuthContext, id: string) {
     // Became terminal between our read and the atomic update (e.g. cancelled concurrently) — 404 is honest and matches the rest of the app's "not found = not currently mutable this way" convention.
     throw new ApiError(404, 'NOT_FOUND', 'Escalation not found')
   }
+  // Real transition only (spec §"ESCALATION STAFF ACTIONS") — never for the idempotent "already RESOLVED" early return above.
+  await logEscalationAction(ctx, { operation: 'AI_ESCALATION_RESOLVE', escalationId: resolved.id, conversationId: resolved.conversationId })
   return resolved
 }
 
@@ -211,5 +243,7 @@ export async function cancelEscalation(ctx: AuthContext, id: string) {
   if (!cancelled) {
     throw new ApiError(404, 'NOT_FOUND', 'Escalation not found')
   }
+  // Real transition only (spec §"ESCALATION STAFF ACTIONS") — never for the idempotent "already CANCELLED" early return above.
+  await logEscalationAction(ctx, { operation: 'AI_ESCALATION_CANCEL', escalationId: cancelled.id, conversationId: cancelled.conversationId })
   return cancelled
 }

@@ -20,28 +20,37 @@ const MESSAGE_TO_ERROR_CODE: [RegExp, string][] = [
   [/Cannot change appointment status/, 'APPOINTMENT_NOT_CANCELLABLE'],
 ]
 
-/** Converts whatever a reused Appointment/Booking service function threw into the tool's own structured failure result — never a raw error, stack trace, or Prisma detail. */
+/**
+ * Converts whatever a reused Appointment/Booking service function threw
+ * into the tool's own structured failure result — never a raw error,
+ * stack trace, or Prisma detail. Only ever called from within a tool
+ * executor's try/catch around the real service call, so `attempted` is
+ * always true here — the underlying business logic genuinely ran and
+ * failed, which is exactly what aiLogService.ts's AI_TOOL_EXECUTION/FAILED
+ * logging (Prompt 13) needs to distinguish from a gate rejection below.
+ */
 export function toToolFailure(toolName: string, err: unknown): ToolResult {
   if (err instanceof ApiError) {
     if (err.statusCode === 404) {
-      return { success: false, tool: toolName, errorCode: 'NOT_FOUND', message: err.message }
+      return { success: false, tool: toolName, errorCode: 'NOT_FOUND', message: err.message, attempted: true }
     }
     if (err.code === 'APPOINTMENT_CONFLICT') {
-      return { success: false, tool: toolName, errorCode: 'APPOINTMENT_CONFLICT', message: err.message, retryable: true }
+      return { success: false, tool: toolName, errorCode: 'APPOINTMENT_CONFLICT', message: err.message, retryable: true, attempted: true }
     }
     if (err.statusCode === 403) {
-      return { success: false, tool: toolName, errorCode: 'FORBIDDEN', message: err.message }
+      return { success: false, tool: toolName, errorCode: 'FORBIDDEN', message: err.message, attempted: true }
     }
     for (const [pattern, code] of MESSAGE_TO_ERROR_CODE) {
       if (pattern.test(err.message)) {
-        return { success: false, tool: toolName, errorCode: code, message: err.message }
+        return { success: false, tool: toolName, errorCode: code, message: err.message, attempted: true }
       }
     }
-    return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message: err.message }
+    return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message: err.message, attempted: true }
   }
-  return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message: 'Unexpected error executing tool' }
+  return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message: 'Unexpected error executing tool', attempted: true }
 }
 
+/** A gate rejection — the confirmation check ran before the real service was ever called. `attempted: false` (Prompt 13: never logged as a tool execution). */
 export function confirmationRequired(toolName: string): ToolResult {
   return {
     success: false,
@@ -49,14 +58,22 @@ export function confirmationRequired(toolName: string): ToolResult {
     errorCode: 'CONFIRMATION_REQUIRED',
     message: 'Explicit customer confirmation is required before this action can be performed',
     retryable: true,
+    attempted: false,
   }
 }
 
+/** A gate rejection — Zod validation failed before the real service was ever called. `attempted: false` (Prompt 13: never logged as a tool execution). */
 export function invalidInput(toolName: string, message: string): ToolResult {
-  return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message }
+  return { success: false, tool: toolName, errorCode: 'INVALID_INPUT', message, attempted: false }
 }
 
-/** The tool call targeted a real, same-tenant entity — just not one this conversation is actually about. Never a 404 (that would suggest the id doesn't exist at all, which isn't the issue here). */
+/**
+ * A gate rejection — the tool call targeted a real, same-tenant entity
+ * just not one this conversation is actually about, caught before the
+ * real service was ever called. Never a 404 (that would suggest the id
+ * doesn't exist at all, which isn't the issue here). `attempted: false`
+ * (Prompt 13: never logged as a tool execution).
+ */
 export function forbiddenEntity(toolName: string, message: string): ToolResult {
-  return { success: false, tool: toolName, errorCode: 'FORBIDDEN', message }
+  return { success: false, tool: toolName, errorCode: 'FORBIDDEN', message, attempted: false }
 }

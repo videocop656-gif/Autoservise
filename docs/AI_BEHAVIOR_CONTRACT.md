@@ -1,6 +1,6 @@
 # AI Administrator — Behavior Contract
 
-> **Updated after Prompt 12.** `Conversation`/`Message` (Prompt 08), a
+> **Updated after Prompt 13.** `Conversation`/`Message` (Prompt 08), a
 > first AI Core — intent classification, entity extraction, a draft
 > answer, and the `needsHuman`/`reason` escalation signal (Prompt 09) — a
 > real, whitelisted AI Tool Layer (Prompt 10: `check_availability`,
@@ -10,18 +10,23 @@
 > Service History enters the AI context; price/warranty/service/knowledge/
 > history answers are grounded in real data instead of generic deflection;
 > two new deterministic safety checks catch a fabricated diagnosis or a
-> fabricated escalation claim) — and now a real Human Escalation workflow
+> fabricated escalation claim) — a real Human Escalation workflow
 > (Prompt 12: a `needsHuman: true` result creates or idempotently reuses a
 > real, tenant-isolated `AiEscalation` row; staff claim/resolve/cancel it
-> through `/api/escalations/*`; the AI itself can never change its state)
+> through `/api/escalations/*`; the AI itself can never change its state) —
+> and now a safe, minimal AI Logs / Audit foundation (Prompt 13: a new
+> `AiLog` table records every `analyze` outcome, every genuinely-executed
+> tool call, and every escalation create/reuse/claim/resolve/cancel,
+> readable at `/settings/ai-logs`; it never holds chain-of-thought, a raw
+> provider response, a full prompt, or full message content — see §14)
 > all now exist in this repository, confirmed against
 > `prisma/schema.prisma`, `api/`, and `src/`. What's still entirely
 > unimplemented, and remains this document's actual "future spec" portion:
 > `findCustomer`/`findVehicle`/CRM-write tools beyond Appointment, automatic
 > Customer/Vehicle creation, explicit escalation reassignment beyond
-> self-claiming, external notification of a human of any kind, AI decision
-> logging/auditability, and every external channel. See
-> `DEVELOPMENT_ROADMAP.md` Prompt 13 onward for where those land. This
+> self-claiming, external notification of a human of any kind, analytics/
+> dashboards built on top of the new audit log, and every external channel.
+> See `DEVELOPMENT_ROADMAP.md` Prompt 14 onward for where those land. This
 > document remains binding on whoever implements them.
 
 ## 1. Core Principle
@@ -354,10 +359,41 @@ The future system must be able to answer, for any AI-driven action:
 one specific case an `AiEscalation` row represents: its `reason` field
 records why a human was needed, `createdAt`/`updatedAt`/`resolvedAt` and
 `status` record what happened to that specific handoff and when, and
-`assignedUserId` records who handled it. This is not the general AI
-decision log this section still calls for (no record of every intent
-classification, every tool call and its result, or every draft answer
-exists yet) — that remains Roadmap 13's job in full.
+`assignedUserId` records who handled it.
+
+**As of Prompt 13**, this section has a real, general answer for every
+`analyze` call, not just the escalation case. A new `AiLog` table
+(`prisma/schema.prisma`, migration `20260908174017_ai_logs_audit_foundation`)
+records, for every `analyze` request: what the AI decided (`intent`,
+`confidence`, `needsHuman`, a bounded safe `reason` — the "why"), which
+tool it genuinely called and whether that call succeeded (`toolName`,
+`toolSuccess`, one row per *actual* execution — never for a call the model
+merely requested but that was gated/blocked/never reached the real
+service), and whether human escalation was required and what genuinely
+happened as a result (`AI_ESCALATION_CREATE`/`REUSE`/`CLAIM`/`RESOLVE`/
+`CANCEL`, each its own row, create and reuse never conflated). Read at
+`GET /api/ai-logs`/`GET /api/ai-logs/:id` and `/settings/ai-logs`
+(owner/admin/manager only, tenant/business-isolated, a foreign log id
+returns a plain `404`).
+
+**This is deliberately a technical audit trail, not "what data did it
+use"/"what was the tool's result" in full.** `AiLog` never stores: the
+model's chain-of-thought or any hidden reasoning (none is ever requested
+from the provider — see §2), the raw provider response, the full system
+prompt, the full Message/transcript content, raw tool arguments, a raw
+Prisma/appointment object, or any secret/credential/session token.
+`aiLogService.ts` is the sole gatekeeper enforcing this: a fixed metadata
+key whitelist (`provider`, `toolCallCount`, `errorCode`, `statusCode`,
+`confirmationRequired`, `retryable`), a bounded `reason` (≤500 chars, same
+"server-derived, never raw model/client text" convention as
+`AiEscalation.reason`), and no path for the AI itself to write directly —
+every row is written by `aiService.ts`/`escalationService.ts` after the
+real event has already happened, never speculatively. A logging failure
+is caught and reported but never rolls back or masks the real business
+action it describes (§16's boundary between "what happened" and "what was
+merely attempted" applies here too — see `attempted` on `ToolResult` in
+`src/server/ai/types.ts`). Analytics/dashboards built on top of this data
+(trends, aggregates, charts) remain Roadmap 14's job, not this one's.
 
 ## 15. Human Override
 
@@ -381,28 +417,28 @@ silently working the same case).
 
 ## 16. Development Boundary
 
-As of Prompt 12, this document is **almost entirely** a specification of
-already-implemented behavior — §§1–4, 6–13, 15's core principles now have
+As of Prompt 13, this document is **almost entirely** a specification of
+already-implemented behavior — §§1–4, 6–14, 15's core principles now have
 real code behind them (a real Tool Layer, real confirmation gating, real
 tenant/entity scoping, grounded customer-support answers, real diagnosis/
-escalation-claim safety checks, and now a real, persisted, tenant-isolated
-Human Escalation workflow with a full status machine) — and **partly**
-still future-only (§5's multiple-match search, §7's pricing *changes*
-[reading a price is implemented; changing one is not], §10's explicit
-reassignment beyond self-claiming and any external notification of a
-human, §14's full AI decision log beyond the one `AiEscalation` record):
-no tool or mechanism exists yet for any of these, so those specific rules
-have no code to violate yet — they remain binding on whoever builds
-Prompt 13+.
+escalation-claim safety checks, a real, persisted, tenant-isolated Human
+Escalation workflow with a full status machine, and now a real, safe AI
+Logs / Audit foundation covering every `analyze` call, every genuine tool
+execution, and every escalation state change) — and **partly** still
+future-only (§5's multiple-match search, §7's pricing *changes* [reading a
+price is implemented; changing one is not], §10's explicit reassignment
+beyond self-claiming and any external notification of a human, §14's
+analytics/dashboards on top of the new audit log): no tool or mechanism
+exists yet for any of these, so those specific rules have no code to
+violate yet — they remain binding on whoever builds Prompt 14+.
 
 Do not add: embeddings; a vector database; RAG; an autonomous or
 multi-agent framework; a fifth AI tool or any dynamically-registered tool;
 conversation memory beyond the existing bounded message history; external
-channel integrations (Telegram/WhatsApp/phone/website chat); AI decision
-logging or an audit trail beyond the one `AiEscalation` record; external
-notification of a human of any kind (email/SMS/push/Telegram); explicit
-escalation reassignment beyond self-claiming; automatic Customer/Vehicle/
-Service creation.
+channel integrations (Telegram/WhatsApp/phone/website chat); a dashboard
+or analytics UI built on top of `AiLog`; external notification of a human
+of any kind (email/SMS/push/Telegram); explicit escalation reassignment
+beyond self-claiming; automatic Customer/Vehicle/Service creation.
 
 These arrive only at their corresponding stage in
 `DEVELOPMENT_ROADMAP.md` (Prompt 13 and onward) — none of them exist in

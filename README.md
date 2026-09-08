@@ -24,10 +24,15 @@ business data, never inventing a fact, a price, or a diagnosis — and
 **Prompt 12 (Human Escalation Foundation)**: the AI's `needsHuman: true`
 signal now creates or reuses a real, tenant-isolated `AiEscalation` row
 that staff actually see and act on at `/settings/escalations` — claim,
-resolve, cancel — with the AI itself never able to change that state.
+resolve, cancel — with the AI itself never able to change that state —
+and **Prompt 13 (AI Logs / Audit Foundation)**: a new `AiLog` table records
+a safe, minimal technical audit trail — every `analyze` outcome, every
+genuinely-executed tool call, every escalation create/reuse/claim/resolve/
+cancel — readable at `/settings/ai-logs`; it never stores chain-of-thought,
+a raw provider response, a full prompt, or full message content.
 Still no live communication channels (Telegram/WhatsApp/website chat/
-phone), no external notification of a human, no AI decision log, no full
-CRM pipeline, no external calendar sync, and no final design.
+phone), no external notification of a human, no analytics/dashboard, no
+full CRM pipeline, no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -338,7 +343,7 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - **Tenant/customer isolation is structural**: Service History is resolved exclusively through the current Conversation's own tenant-scoped customer/vehicle chain — there is no code path for another tenant's or another same-tenant customer's history to ever be loaded.
 - **`analyze`'s contract is unchanged** and it remains fully read-only — no `Message`/`Conversation`/`ServiceRecord`/`Customer`/`Vehicle`/`KnowledgeItem`/`BusinessRule` write of any kind, verified against the real database.
 - Settings UI: `/settings/ai`'s description now mentions Service History grounding; the existing intent/confidence/entities/answer/needsHuman/reason display covers everything this stage needed to demonstrate.
-- **Not implemented**: Human Escalation (see below — Prompt 12), AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB.
+- **Not implemented**: Human Escalation (see below — Prompt 12), AI Logs/audit (see below — Prompt 13), external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB.
 
 ## Human Escalation
 
@@ -353,7 +358,20 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - **API**: `GET /api/escalations` (paginated, filterable by status/priority/assignedUserId/unassignedOnly/customerId/conversationId), `GET /api/escalations/:id`, `POST /api/escalations/:id/claim`, `POST /api/escalations/:id/resolve`, `POST /api/escalations/:id/cancel`. **Deliberately no plain `POST /api/escalations`** — the only way one is ever created is `aiService.ts → escalationService.createOrReuseActiveEscalation()` — **and no generic `PATCH`** — every state change has exactly one, explicit endpoint.
 - **`analyze`'s contract is unchanged**; an additive, optional `escalation?: {id, status}` field appears only when a real row was created or reused. A genuine creation failure returns a controlled `500 ESCALATION_CREATION_FAILED`, never a silent `needsHuman: true` with no escalation reference.
 - Settings UI: `/settings/escalations` — list with status/priority/unassigned filters, a detail panel (customer/conversation/assigned-staff summary, the AI's reason/summary, Claim/Resolve/Cancel), linked from `/settings/ai` whenever an analyze call creates or reuses one.
-- **Not implemented**: Telegram/WhatsApp/email/SMS/any external notification of a human, explicit reassignment beyond self-claiming, AI Logs/audit (a general decision log beyond this one escalation record), analytics, realtime/websockets.
+- **Not implemented**: Telegram/WhatsApp/email/SMS/any external notification of a human, explicit reassignment beyond self-claiming, analytics, realtime/websockets.
+
+## AI Logs / Audit
+
+A safe, minimal technical audit trail — not a transcript, not a dashboard. See `docs/AI_BEHAVIOR_CONTRACT.md` §14 and `docs/DEVELOPMENT_ROADMAP.md` Prompt 13 for the full contract.
+
+- **`AiLog`** (`prisma/schema.prisma`, migration `20260908174017_ai_logs_audit_foundation`) — the second AI-related Prisma model, recording `operation` (`AI_ANALYZE`, `AI_TOOL_EXECUTION`, `AI_ESCALATION_CREATE`/`REUSE`/`CLAIM`/`RESOLVE`/`CANCEL`) and `outcome` (`SUCCESS`/`ESCALATED`/`REUSED`/`FAILED`/`REJECTED`/`NO_ACTION`), plus optional `intent`/`confidence`/`needsHuman` (for `AI_ANALYZE` rows), a bounded server-derived `reason`, optional `toolName`/`toolSuccess`, a whitelisted-shape `metadata` JSON column, and optional FKs to `Conversation`/`Message`/`AiEscalation`/`User` (the last only for the three staff-action operations). **Never** stores chain-of-thought, hidden reasoning, a raw provider response, a full prompt, full `Message`/transcript content, raw tool arguments, a raw Prisma object, or any secret/credential.
+- **Data minimization is enforced in code**: `aiLogService.ts` is the sole gatekeeper — `sanitizeMetadata()` accepts only a fixed key whitelist (`provider`, `toolCallCount`, `errorCode`, `statusCode`, `confirmationRequired`, `retryable`), drops any other key and every object/array value, and truncates surviving strings to 200 characters; `sanitizeReason()` truncates to 500 characters. There is no path for the AI or a client to write a log row directly.
+- **The audit reflects real events, never the model's intentions**: a new `attempted` field on a failed `ToolResult` (`src/server/ai/types.ts`) distinguishes a genuine execution attempt (the real `appointmentService.ts` function ran and threw) from a gate rejection (confirmation missing, invalid input, forbidden entity) that never reached it — `AI_TOOL_EXECUTION` is logged only for the former. Escalation create vs. reuse is never conflated: `escalationService.createOrReuseActiveEscalation()` is the one place that genuinely knows which happened, and logs accordingly; a genuine creation failure logs nothing at all rather than an inaccurate record.
+- **`AI_ANALYZE` logging happens only after full validation**: an outcome (`SUCCESS`/`ESCALATED`/`REJECTED`/`FAILED`) is computed once structural (`aiResultSchema.safeParse`) and safety (`applySafetyLayer`) validation have both completed — a provider/configuration failure never produces a false `SUCCESS`, but does write a durable `FAILED` record before rethrowing.
+- **Atomicity**: the Booking Service and Escalation Service were never rewritten for logging. The real business action always happens and is durable first; `aiLogService.ts`'s `writeLog()` wraps every write in try/catch and never rethrows — a logging failure is reported (`logger.error('ai_log_write_failed', ...)`) but never rolls back or masks the action it describes.
+- **API**: `GET /api/ai-logs` (paginated, filterable by `operation`/`outcome`/`conversationId`/`escalationId`/`dateFrom`/`dateTo`, newest first), `GET /api/ai-logs/:id`. **Deliberately no `POST /api/ai-logs`** — every row is server-written; `tenantId`/`businessId`/`actorUserId`/`outcome`/`provider`/`toolSuccess`/`confidence`/`needsHuman`/`createdAt` can never be client-supplied. A foreign-tenant or foreign-business log id returns a plain `404`.
+- Settings UI: `/settings/ai-logs` — a filterable, paginated list (operation, outcome, date range) plus a safe detail panel (intent/confidence/needsHuman/tool/reason, conversation/escalation links, actor, whitelisted metadata). Explicitly not a dashboard — no charts, no aggregates.
+- **Not implemented**: any Dashboard/Analytics UI built on top of this data (Prompt 14), external notifications, realtime/websockets, RAG/embeddings, any new AI tool, customer/vehicle auto-creation, Team Management.
 
 ## Roles
 
@@ -387,8 +405,9 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 | Analyze a message with AI Core                 | ✅ | ✅ | ✅ |
 | List/read escalations                          | ✅ | ✅ | ✅ |
 | Claim / resolve / cancel an escalation         | ✅ | ✅ | ✅ |
+| List/read AI logs                              | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`, `escalationService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, AI Core, and Escalations are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), [AI Core](#ai-core), and [Human Escalation](#human-escalation)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`, `escalationService.ts`, `aiLogService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, AI Core, Escalations, and AI Logs are the deliberate exceptions: manager has full read/write (or, for AI Logs, read) access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), [AI Core](#ai-core), [Human Escalation](#human-escalation), and [AI Logs / Audit](#ai-logs--audit)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -488,8 +507,10 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | POST   | `/api/escalations/:id/claim`       | owner, admin, **manager** | atomic; `409 ESCALATION_ALREADY_ASSIGNED` if claimed by someone else; idempotent for the same user; `400 ESCALATION_NOT_ACTIVE` if already terminal |
 | POST   | `/api/escalations/:id/resolve`     | owner, admin, **manager** | sets `status: RESOLVED`, `resolvedAt` (server time); idempotent if already `RESOLVED`; `400 ESCALATION_INVALID_STATUS` if `CANCELLED` |
 | POST   | `/api/escalations/:id/cancel`      | owner, admin, **manager** | sets `status: CANCELLED`, never `resolvedAt`; idempotent if already `CANCELLED`; `400 ESCALATION_INVALID_STATUS` if `RESOLVED` |
+| GET    | `/api/ai-logs`                     | owner, admin, **manager** | paginated, sorted `createdAt DESC, id DESC`; `?operation=`, `?outcome=`, `?conversationId=`, `?escalationId=`, `?dateFrom=`, `?dateTo=` |
+| GET    | `/api/ai-logs/:id`                 | owner, admin, **manager** | 404 if unknown or another tenant's/business's; safe detail DTO incl. actor summary and whitelisted metadata |
 
-No `POST /api/escalations` and no `PATCH /api/escalations/:id` exist — an escalation is only ever created by `aiService.ts`, and every state change has exactly one explicit action endpoint above.
+No `POST /api/escalations` and no `PATCH /api/escalations/:id` exist — an escalation is only ever created by `aiService.ts`, and every state change has exactly one explicit action endpoint above. Likewise, no `POST /api/ai-logs` exists at all — every `AiLog` row is written server-side by `aiLogService.ts`, never by a client request.
 
 ## Security
 
@@ -643,39 +664,56 @@ No `POST /api/escalations` and no `PATCH /api/escalations/:id` exist — an esca
 - A real Supabase smoke test (two tenants, a second staff user, no mocks, 34 checks) verified: `needsHuman=false` creates nothing; `needsHuman=true` creates a real, correctly-linked row; repeated analysis reuses it; claim is atomic and unstealable; resolve sets `resolvedAt`; a fresh `needsHuman=true` after resolution — and again after cancellation — each creates a genuinely new escalation; provider/configuration failures create nothing; cross-tenant access is rejected with `404`; zero unintended writes elsewhere; full cleanup with zero rows remaining.
 - **Not implemented**: Telegram/WhatsApp/email/SMS/any external notification, explicit reassignment beyond self-claiming, AI Logs/audit, analytics, realtime/websockets, RAG/embeddings/vector DB, any new AI tool, customer/vehicle auto-creation.
 
+**Prompt 13 — AI Logs / Audit Foundation**
+- `AiLog` model added (`prisma/schema.prisma`, migration `20260908174017_ai_logs_audit_foundation`) — the second AI-related Prisma model: `operation` (`AI_ANALYZE`/`AI_TOOL_EXECUTION`/`AI_ESCALATION_CREATE`/`REUSE`/`CLAIM`/`RESOLVE`/`CANCEL`), `outcome` (`SUCCESS`/`ESCALATED`/`REUSED`/`FAILED`/`REJECTED`/`NO_ACTION`), optional `intent`/`confidence`/`needsHuman` (for `AI_ANALYZE` rows), a bounded server-derived `reason`, optional `toolName`/`toolSuccess`, whitelisted-shape `metadata`, and optional FKs to `Conversation`/`Message`/`AiEscalation`/`User`.
+- A new `attempted: boolean` field on a failed `ToolResult` (`src/server/ai/types.ts`) distinguishes a genuine execution attempt (the real `appointmentService.ts` function ran and threw) from a gate rejection that never reached it — necessary because `errorCode` alone isn't a reliable proxy; `AI_TOOL_EXECUTION` is logged only for the former, so the audit reflects actual events, never the model's mere intentions.
+- `aiLogService.ts` is the sole gatekeeper deciding what's safe to persist: a fixed metadata key whitelist, truncated `reason` (≤500 chars), no raw provider response, no chain-of-thought, no full prompt or transcript, no tool arguments, no secrets. Writes are fire-and-forget — `writeLog()` catches and reports a failure but never rethrows, so a logging failure can never roll back or mask the real business action it describes; the business action (booking, escalation, staff transition) is always durable first.
+- `AI_ANALYZE` logging computes exactly one outcome per `analyze` call, only after full structural + safety validation: `FAILED` for a tool-limit-exceeded or malformed result, `REJECTED` for a caught safety-layer rejection, `ESCALATED` when `needsHuman` is genuinely eligible and true, `SUCCESS` otherwise — plus a durable `FAILED` record (never a false `SUCCESS`) for a genuine provider/configuration failure.
+- Escalation create-vs-reuse is never conflated: `escalationService.createOrReuseActiveEscalation()` — the one place that genuinely knows which happened — logs `AI_ESCALATION_CREATE`/`REUSE` accordingly, and a genuine creation failure logs nothing at all. The three staff actions log `AI_ESCALATION_CLAIM`/`RESOLVE`/`CANCEL` with the acting `actorUserId` only after a real, non-idempotent state transition — an idempotent no-op logs nothing.
+- API: `GET /api/ai-logs`, `GET /api/ai-logs/:id` — deliberately no `POST /api/ai-logs`; every field a client could otherwise forge (`tenantId`/`businessId`/`actorUserId`/`outcome`/`provider`/`toolSuccess`/`confidence`/`needsHuman`/`createdAt`) is always server-derived.
+- Owner/admin/manager all get identical read access — the same operational exception already established for every other AI/staff-facing domain.
+- Settings UI: `/settings/ai-logs` — filterable (operation/outcome/date range), paginated list plus a safe detail panel; explicitly not a dashboard.
+- 47 new unit tests (947 total): `tests/aiLogService.test.ts` is new (17 — metadata whitelist/truncation, reason truncation, non-throwing write-failure, permission/tenant-scoping); `tests/aiService.test.ts` gained an "AI Logs / Audit" section (+11); `tests/escalationService.test.ts` gained an equivalent section (+13); `tests/tenantIsolation.test.ts` gained an "AI Log" section (+6).
+- A real Supabase smoke test (two tenants, two businesses, no mocks, 28 checks) verified: independent per-tenant `AI_ANALYZE` logging; cross-tenant and cross-business log reads both `404`; a genuine create followed by a genuine reuse produces exactly one `AI_ESCALATION_CREATE` and a separate `AI_ESCALATION_REUSE`, never two creates; a provider failure produces `FAILED` and no false `SUCCESS`; a real tool call produces exactly one `SUCCESS` tool log, an invalid one exactly one `FAILED` tool log with only a safe `errorCode`; claim/resolve/cancel each produce their own audit row; the full AI answer text is never persisted into any log row; every `metadata` object contains only whitelisted keys; full cleanup with a post-cleanup re-count confirming zero rows remain.
+- **Not implemented**: any Dashboard/Analytics UI (Prompt 14), external notifications, realtime/websockets, RAG/embeddings, any new AI tool, customer/vehicle auto-creation, Team Management.
+
 ## Not implemented yet
 
 An autonomous or multi-agent framework, a fifth AI tool or dynamic tool
 registration, embeddings, vector database, RAG, semantic search, a
-general AI decision log/audit trail (beyond the one `AiEscalation` record
-per handoff), explicit escalation reassignment beyond self-claiming,
+Dashboard/Analytics UI built on top of the new AI Logs audit trail,
+explicit escalation reassignment beyond self-claiming,
 external notification of a human of any kind, Telegram, WhatsApp,
 Instagram, Facebook Messenger, Avito, VK, MAX, website chat, email
 integration, SMS, voice AI, phone integration, webhooks, CRM (pipeline/
 kanban), Kommo, external calendar sync (Google Calendar/Outlook),
 background jobs, online payments, billing, subscriptions, customer
 self-service portal, recurring appointments, drag-and-drop calendar UI,
-reminders/follow-ups, analytics, notifications, automation engine, final
-UI/UX & design system, marketing site, advanced dashboard.
+reminders/follow-ups, notifications, automation engine, final
+UI/UX & design system, marketing site, advanced dashboard, Team Management.
 
 `Conversation`/`Message` (Prompt 08), a first AI Core — intent
 classification, entity extraction, a draft answer, confidence/needsHuman
 (Prompt 09) — a real AI Tool Layer for booking (Prompt 10, see
 [AI Booking](#ai-booking)), grounded AI Customer Support including
 Service History (Prompt 11, see [AI Customer Support](#ai-customer-support)),
-and a real Human Escalation workflow (Prompt 12, see
-[Human Escalation](#human-escalation)) **are** implemented, but the AI
-still cannot do anything beyond checking availability, creating/
-rescheduling/cancelling an Appointment, answering read-only questions,
-and creating/reusing an escalation it can never itself resolve: no
-CustomerRequest creation, no customer/vehicle search or auto-creation, no
-tool of any other kind; `channel` remains a label, not a live connection.
+a real Human Escalation workflow (Prompt 12, see
+[Human Escalation](#human-escalation)), and a safe AI Logs / Audit
+foundation (Prompt 13, see [AI Logs / Audit](#ai-logs--audit)) **are**
+implemented, but the AI still cannot do anything beyond checking
+availability, creating/rescheduling/cancelling an Appointment, answering
+read-only questions, and creating/reusing an escalation it can never
+itself resolve: no CustomerRequest creation, no customer/vehicle search or
+auto-creation, no tool of any other kind; `channel` remains a label, not a
+live connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `CRMAdapter` / `CalendarAdapter` / `ChannelAdapter` /
 `PaymentAdapter` integration layers, and future domain models like
-`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`)
-without committing to their shape yet.
+`AutomationRule`, `Subscription`, `UsageEvent`)
+without committing to their shape yet. (`AuditLog` is no longer one of
+these — `AiLog`, Prompt 13, already fills that role; see
+[AI Logs / Audit](#ai-logs--audit).)
 `KnowledgeItem`/`BusinessRule` were built as plain structured data, with no
 embeddings/RAG layer of any kind — AI Core (Prompt 09) reads them directly
 as-is, the same way it reads Services, rather than through any semantic

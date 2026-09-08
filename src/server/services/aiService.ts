@@ -1,3 +1,4 @@
+import type { AiLogOutcome } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
@@ -14,6 +15,7 @@ import { TOOL_DEFINITIONS, executeTool } from '../ai/tools/registry'
 import { EMPTY_AI_ENTITIES, type AiResult, type AiToolExchange } from '../ai/types'
 import type { AnalyzeMessageInput } from '../validation/ai.schemas'
 import { createOrReuseActiveEscalation, deriveEscalationReason, deriveEscalationSummary } from './escalationService'
+import { logAiAnalyze, logToolExecution } from './aiLogService'
 
 /** Only the most recent messages are sent to the provider — spec §"MESSAGE HISTORY": bounded, chronological, not the entire conversation. */
 const MAX_HISTORY_MESSAGES = 20
@@ -66,6 +68,14 @@ function buildFallbackResult(reason: string): AiResult {
 interface AnalyzeDeps {
   /** Test-only override; production code always goes through aiProviderFactory.ts. */
   provider?: AiProvider
+}
+
+/** Safe, small metadata value for AiLog (spec §"METADATA") — a class name, never any provider configuration/credentials. */
+function providerName(provider: AiProvider): string {
+  const ctorName = provider.constructor?.name
+  if (ctorName === 'MockAiProvider') return 'mock'
+  if (ctorName === 'OpenAiProvider') return 'openai'
+  return 'unknown'
 }
 
 async function callProvider(
@@ -129,47 +139,83 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
   let raw: unknown
   let exceededLimit = false
 
-  // Up to MAX_TOOL_CALLS rounds that may each execute one or more tools,
-  // plus one final round (round === MAX_TOOL_CALLS) that is only ever
-  // allowed to produce an answer, not request another tool — that's what
-  // guarantees the provider always gets to see the result of the LAST
-  // allowed tool call before being cut off, rather than being cut off one
-  // round too early.
-  for (let round = 0; round <= MAX_TOOL_CALLS; round++) {
-    const generation = await callProvider(provider, {
-      systemPrompt,
-      businessContext: context,
-      history,
-      // The one and only untrusted value in this whole call — see
-      // provider.ts and promptBuilder.ts for how it stays separated from
-      // system instructions and business context. Also the same value the
-      // confirmation gate (confirmation.ts) checks before any mutating
-      // tool is allowed to execute.
-      userMessage: input.message,
-      tools: TOOL_DEFINITIONS,
-      toolExchanges,
-    })
+  try {
+    // Up to MAX_TOOL_CALLS rounds that may each execute one or more tools,
+    // plus one final round (round === MAX_TOOL_CALLS) that is only ever
+    // allowed to produce an answer, not request another tool — that's what
+    // guarantees the provider always gets to see the result of the LAST
+    // allowed tool call before being cut off, rather than being cut off one
+    // round too early.
+    for (let round = 0; round <= MAX_TOOL_CALLS; round++) {
+      const generation = await callProvider(provider, {
+        systemPrompt,
+        businessContext: context,
+        history,
+        // The one and only untrusted value in this whole call — see
+        // provider.ts and promptBuilder.ts for how it stays separated from
+        // system instructions and business context. Also the same value the
+        // confirmation gate (confirmation.ts) checks before any mutating
+        // tool is allowed to execute.
+        userMessage: input.message,
+        tools: TOOL_DEFINITIONS,
+        toolExchanges,
+      })
 
-    if (generation.type === 'final') {
-      raw = generation.raw
-      break
-    }
+      if (generation.type === 'final') {
+        raw = generation.raw
+        break
+      }
 
-    if (round === MAX_TOOL_CALLS || toolExchanges.length + generation.calls.length > MAX_TOOL_CALLS) {
-      exceededLimit = true
-      break
-    }
+      if (round === MAX_TOOL_CALLS || toolExchanges.length + generation.calls.length > MAX_TOOL_CALLS) {
+        exceededLimit = true
+        break
+      }
 
-    const allowedEntities = {
-      customerId: context.customer?.id ?? null,
-      vehicleId: context.vehicle?.id ?? null,
-      appointmentIds: context.upcomingAppointments.map((a) => a.id),
-    }
+      const allowedEntities = {
+        customerId: context.customer?.id ?? null,
+        vehicleId: context.vehicle?.id ?? null,
+        appointmentIds: context.upcomingAppointments.map((a) => a.id),
+      }
 
-    for (const call of generation.calls) {
-      const result = await executeTool(ctx, call.name, call.arguments, input.message, allowedEntities)
-      toolExchanges.push({ call, result })
+      for (const call of generation.calls) {
+        const result = await executeTool(ctx, call.name, call.arguments, input.message, allowedEntities)
+        toolExchanges.push({ call, result })
+
+        // AI_TOOL_EXECUTION logging (Prompt 13) — only for a genuine
+        // execution attempt (spec §"LOG ONLY ACTUAL TOOL EXECUTION"):
+        // `result.attempted` (see types.ts's ToolResult) is false for every
+        // gate rejection (confirmation missing, invalid input, forbidden
+        // entity) — the real appointmentService.ts function was never
+        // called for those, so no log is written. Never logs raw tool
+        // arguments or a raw appointment/Prisma object — only the tool's
+        // name and its already-sanitized ToolResult outcome.
+        if (result.success || result.attempted) {
+          await logToolExecution(ctx, {
+            conversationId: conversation.id,
+            toolName: call.name,
+            toolSuccess: result.success,
+            outcome: result.success ? 'SUCCESS' : 'FAILED',
+            reason: result.success ? null : result.message,
+            metadata: result.success ? undefined : { errorCode: result.errorCode },
+          })
+        }
+      }
     }
+  } catch (err) {
+    // A provider/configuration failure never produces any AiResult at all
+    // (spec §"PROVIDER FAILURE"/"CONFIGURATION FAILURE") — but it IS worth
+    // a durable FAILED record for later investigation (spec goal #1). Log,
+    // then rethrow unchanged — the HTTP error contract for the caller is
+    // completely unaffected by this.
+    if (err instanceof ApiError && (err.code === 'AI_PROVIDER_UNAVAILABLE' || err.code === 'AI_CONFIGURATION_ERROR')) {
+      await logAiAnalyze(ctx, {
+        conversationId: conversation.id,
+        outcome: 'FAILED',
+        reason: `Provider error: ${err.code}`,
+        metadata: { errorCode: err.code, statusCode: err.statusCode },
+      })
+    }
+    throw err
   }
 
   // Escalation eligibility (spec §"AI INTEGRATION" step order: "escalation
@@ -192,9 +238,19 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
   // not a rejection of anything, just applying the existing policy).
   let finalResult: AiResult
   let eligibleForEscalation = false
+  // AI_ANALYZE audit outcome (Prompt 13) — computed alongside finalResult
+  // at each branch, rather than re-deriving it later, so there is exactly
+  // one place that decides what actually happened: FAILED for the two
+  // "no trustworthy validated output" cases (tool-limit exceeded, malformed
+  // provider result), REJECTED for a caught safety-layer rejection,
+  // ESCALATED when needsHuman is genuinely eligible and true, SUCCESS
+  // otherwise. Spec §"TESTS": never a false SUCCESS for any of the failure
+  // cases above.
+  let analyzeOutcome: AiLogOutcome
 
   if (exceededLimit) {
     finalResult = buildFallbackResult('AI_TOOL_LIMIT_EXCEEDED: exceeded the maximum of 3 tool calls per request')
+    analyzeOutcome = 'FAILED'
   } else {
     // Unlike a provider-call failure, the provider DID respond here — it's
     // just untrustworthy. That's a "controlled AI error" (spec), not an
@@ -205,8 +261,10 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
     if (parsed.success) {
       finalResult = applySafetyLayer(parsed.data)
       eligibleForEscalation = !finalResult.reason?.startsWith('AI_SAFETY_REJECTION')
+      analyzeOutcome = !eligibleForEscalation ? 'REJECTED' : finalResult.needsHuman ? 'ESCALATED' : 'SUCCESS'
     } else {
       finalResult = buildFallbackResult('AI_INVALID_RESPONSE: the AI response failed structural validation')
+      analyzeOutcome = 'FAILED'
     }
   }
 
@@ -214,6 +272,11 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
   // happens. AI_PROVIDER_UNAVAILABLE/AI_CONFIGURATION_ERROR never reach
   // here at all (callProvider() already threw out of this function
   // entirely in that case) — there is no AiResult to gate on.
+  //
+  // AI_ESCALATION_CREATE/REUSE logging (Prompt 13) happens inside
+  // createOrReuseActiveEscalation() itself (escalationService.ts) — that
+  // is the one place that genuinely knows whether this call created a new
+  // row or reused an existing active one; aiService.ts never guesses.
   const escalation = eligibleForEscalation && finalResult.needsHuman
     ? await (async () => {
         const reason = deriveEscalationReason(finalResult.reason)
@@ -226,6 +289,22 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
         return row ? { id: row.id, status: row.status } : undefined
       })()
     : undefined
+
+  // The single AI_ANALYZE audit record for this call — written only after
+  // the result has fully passed structural + safety validation (spec
+  // §"AI ANALYZE LOGGING"). Never the raw provider response, never the
+  // system prompt, never chain-of-thought — only the already-validated
+  // AiResult's own fields plus small, whitelisted metadata.
+  await logAiAnalyze(ctx, {
+    conversationId: conversation.id,
+    escalationId: escalation?.id ?? null,
+    outcome: analyzeOutcome,
+    intent: finalResult.intent,
+    confidence: finalResult.confidence,
+    needsHuman: finalResult.needsHuman,
+    reason: finalResult.reason,
+    metadata: { provider: providerName(provider), toolCallCount: toolExchanges.length },
+  })
 
   return {
     ...finalResult,

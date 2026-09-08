@@ -43,7 +43,8 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const executor = TOOL_EXECUTORS[name]
   if (!executor) {
-    return { success: false, tool: name, errorCode: 'INVALID_INPUT', message: `Unknown tool: ${name}` }
+    // A gate rejection, same as the ones in tools/errors.ts — the name isn't even in the whitelist, so nothing ever ran (Prompt 13: attempted: false).
+    return { success: false, tool: name, errorCode: 'INVALID_INPUT', message: `Unknown tool: ${name}`, attempted: false }
   }
   return executor(ctx, args, currentUserMessage, allowed)
 }

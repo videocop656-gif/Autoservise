@@ -8,6 +8,7 @@ const {
   executeToolMock,
   escalationFindActiveMock,
   escalationCreateMock,
+  aiLogCreateMock,
 } = vi.hoisted(() => ({
   convFindByIdMock: vi.fn(),
   listByConversationMock: vi.fn(),
@@ -15,6 +16,7 @@ const {
   executeToolMock: vi.fn(),
   escalationFindActiveMock: vi.fn(),
   escalationCreateMock: vi.fn(),
+  aiLogCreateMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/conversationRepository', () => ({
@@ -40,6 +42,18 @@ vi.mock('../src/server/repositories/escalationRepository', () => ({
     claim: vi.fn(),
     resolve: vi.fn(),
     cancel: vi.fn(),
+  },
+}))
+// escalationService.ts (real code, exercised via createOrReuseActiveEscalation)
+// and aiService.ts both write through aiLogService.ts (also real code) down
+// to this repository — mocked so every log write in these tests stays an
+// in-memory no-op instead of a real, always-failing DB round trip.
+vi.mock('../src/server/repositories/aiLogRepository', () => ({
+  aiLogRepository: {
+    create: aiLogCreateMock,
+    list: vi.fn(),
+    findById: vi.fn(),
+    findByIdWithDetail: vi.fn(),
   },
 }))
 
@@ -129,6 +143,7 @@ beforeEach(() => {
   executeToolMock.mockResolvedValue({ success: true, tool: 'check_availability', data: { available: true, slots: [] } })
   escalationFindActiveMock.mockResolvedValue(null)
   escalationCreateMock.mockResolvedValue(makeEscalationRow())
+  aiLogCreateMock.mockResolvedValue({})
 })
 
 describe('analyzeMessage — permissions', () => {
@@ -442,5 +457,134 @@ describe('analyzeMessage — Human Escalation integration (Prompt 12)', () => {
     // Only findActiveByConversation (idempotency check) and create are ever exercised by the AI path.
     expect(escalationFindActiveMock).toHaveBeenCalled()
     expect(escalationCreateMock).toHaveBeenCalled()
+  })
+})
+
+describe('analyzeMessage — AI Logs / Audit (Prompt 13)', () => {
+  function analyzeLogCalls() {
+    return aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation === 'AI_ANALYZE')
+  }
+
+  it('a successful analysis (no escalation) writes exactly one AI_ANALYZE/SUCCESS record', async () => {
+    const provider = makeStubProvider(validRaw())
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ operation: 'AI_ANALYZE', outcome: 'SUCCESS', conversationId: 'conv1', intent: 'PRICE_INQUIRY' })
+    expect(calls[0]!.escalationId).toBeFalsy()
+  })
+
+  it('needsHuman = true writes an AI_ANALYZE/ESCALATED record carrying the real escalationId', async () => {
+    const provider = makeStubProvider(validRaw({ needsHuman: true, reason: 'Needs a human' }))
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ operation: 'AI_ANALYZE', outcome: 'ESCALATED', escalationId: 'esc1', needsHuman: true })
+  })
+
+  it('reusing an existing active escalation still writes AI_ANALYZE/ESCALATED with the reused id — the reuse-vs-create distinction lives in the separate AI_ESCALATION_* record, not here', async () => {
+    const existing = makeEscalationRow({ id: 'esc-existing', status: 'IN_PROGRESS' })
+    escalationFindActiveMock.mockResolvedValue(existing)
+    const provider = makeStubProvider(validRaw({ needsHuman: true }))
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'ESCALATED', escalationId: 'esc-existing' })
+    // And the reuse itself is recorded as its own, correctly-labeled event — never as a fabricated create.
+    const escalationLogCalls = aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation !== 'AI_ANALYZE')
+    expect(escalationLogCalls).toEqual([expect.objectContaining({ operation: 'AI_ESCALATION_REUSE', outcome: 'REUSED', escalationId: 'esc-existing' })])
+  })
+
+  it('provider failure (AI_PROVIDER_UNAVAILABLE) writes AI_ANALYZE/FAILED, never a false SUCCESS', async () => {
+    const provider = makeFailingProvider(new AiProviderError('AI_PROVIDER_UNAVAILABLE', 'network down'))
+    await expect(analyzeMessage(makeAuthContext('owner'), baseInput, { provider })).rejects.toMatchObject({ statusCode: 502 })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'FAILED' })
+    expect(calls.some((c) => c.outcome === 'SUCCESS')).toBe(false)
+  })
+
+  it('configuration failure (AI_CONFIGURATION_ERROR) writes AI_ANALYZE/FAILED, never a false SUCCESS', async () => {
+    const provider = makeFailingProvider(new AiProviderError('AI_CONFIGURATION_ERROR', 'no key'))
+    await expect(analyzeMessage(makeAuthContext('owner'), baseInput, { provider })).rejects.toMatchObject({ statusCode: 500 })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'FAILED' })
+  })
+
+  it('malformed provider output writes AI_ANALYZE/FAILED, never a false SUCCESS or ESCALATED', async () => {
+    const provider = makeStubProvider({ intent: 'NOT_A_REAL_INTENT', confidence: 2, answer: '' })
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'FAILED' })
+  })
+
+  it('a safety-layer rejection writes AI_ANALYZE/REJECTED, never ESCALATED, and creates no escalation-linked log', async () => {
+    const provider = makeStubProvider(validRaw({ answer: 'Я записал вас на завтра в 15:00.', needsHuman: false }))
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'REJECTED' })
+    expect(calls[0]!.escalationId).toBeFalsy()
+  })
+
+  it('exceeding the tool-call limit writes AI_ANALYZE/FAILED and no fake tool-execution logs for tools never actually called', async () => {
+    const provider = makeInfiniteToolCaller()
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const calls = analyzeLogCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ outcome: 'FAILED' })
+    const toolLogCalls = aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation === 'AI_TOOL_EXECUTION')
+    // Every actually-attempted call (up to MAX_TOOL_CALLS) is logged, but never more than actually ran.
+    expect(toolLogCalls.length).toBeLessThanOrEqual(3)
+  })
+
+  it('a genuinely executed successful tool call writes exactly one AI_TOOL_EXECUTION/SUCCESS log with safe fields only', async () => {
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async () => {
+        round += 1
+        if (round === 1) return { type: 'tool_calls', calls: [{ id: 't1', name: 'check_availability', arguments: { date: '2026-09-16', secret: 'sk-xxx' } }] }
+        return { type: 'final', raw: validRaw() }
+      }),
+    }
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const toolLogCalls = aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation === 'AI_TOOL_EXECUTION')
+    expect(toolLogCalls).toHaveLength(1)
+    expect(toolLogCalls[0]).toMatchObject({ toolName: 'check_availability', toolSuccess: true, outcome: 'SUCCESS' })
+    expect(JSON.stringify(toolLogCalls[0])).not.toContain('sk-xxx')
+  })
+
+  it('a genuinely attempted but failed tool call writes AI_TOOL_EXECUTION/FAILED with only safe error info', async () => {
+    executeToolMock.mockResolvedValue({ success: false, tool: 'create_appointment', errorCode: 'APPOINTMENT_CONFLICT', message: 'Slot no longer available', attempted: true })
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async () => {
+        round += 1
+        if (round === 1) return { type: 'tool_calls', calls: [{ id: 't1', name: 'create_appointment', arguments: {} }] }
+        return { type: 'final', raw: validRaw() }
+      }),
+    }
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const toolLogCalls = aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation === 'AI_TOOL_EXECUTION')
+    expect(toolLogCalls).toHaveLength(1)
+    expect(toolLogCalls[0]).toMatchObject({ toolName: 'create_appointment', toolSuccess: false, outcome: 'FAILED', reason: 'Slot no longer available' })
+    expect((toolLogCalls[0]!.metadata as Record<string, unknown>)).toEqual({ errorCode: 'APPOINTMENT_CONFLICT' })
+  })
+
+  it('a gate-rejected tool call (confirmation missing, never actually executed) writes NO tool-execution log at all', async () => {
+    executeToolMock.mockResolvedValue({ success: false, tool: 'create_appointment', errorCode: 'CONFIRMATION_REQUIRED', message: 'Please confirm', attempted: false })
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async () => {
+        round += 1
+        if (round === 1) return { type: 'tool_calls', calls: [{ id: 't1', name: 'create_appointment', arguments: {} }] }
+        return { type: 'final', raw: validRaw() }
+      }),
+    }
+    await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    const toolLogCalls = aiLogCreateMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter((d) => d.operation === 'AI_TOOL_EXECUTION')
+    expect(toolLogCalls).toHaveLength(0)
   })
 })

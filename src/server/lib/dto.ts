@@ -14,6 +14,7 @@ import type {
   Conversation,
   Message,
   AiEscalation,
+  AiLog,
 } from '@prisma/client'
 
 /**
@@ -478,5 +479,62 @@ export function toAiEscalationDto(escalation: AiEscalationWithOptionalDetail): A
     ...('customer' in escalation ? { customer: escalation.customer ?? null } : {}),
     ...('assignedUser' in escalation ? { assignedUser: escalation.assignedUser ?? null } : {}),
     ...('conversation' in escalation ? { conversation: escalation.conversation ?? null } : {}),
+  }
+}
+
+export interface AiLogDto {
+  id: string
+  operation: AiLog['operation']
+  outcome: AiLog['outcome']
+  conversationId: string | null
+  messageId: string | null
+  escalationId: string | null
+  intent: string | null
+  confidence: number | null
+  needsHuman: boolean | null
+  reason: string | null
+  toolName: string | null
+  toolSuccess: boolean | null
+  createdAt: Date
+  // Only present on the single-GET response — list items omit these, same
+  // convention as ConversationDto/AiEscalationDto's optional summaries.
+  // `metadata` is already a small, whitelisted-shape object by the time it
+  // reaches this row (see aiLogService.ts's sanitizeMetadata()) — safe to
+  // return as-is, never the raw provider payload it might describe.
+  actor?: { id: string; name: string } | null
+  metadata?: Record<string, unknown> | null
+}
+
+type AiLogWithOptionalActor = AiLog & {
+  actorUser?: { id: string; name: string } | null
+}
+
+/**
+ * Never tenantId/businessId/actorUserId (the raw FK) — only the `actor`
+ * summary, and only when `opts.detail` is set (see spec §"DTO": list items
+ * stay light, the single-GET response is the "detail" one). `metadata` is
+ * a plain scalar column present on every fetched row regardless of query
+ * shape, so — unlike the nested relation summaries elsewhere in this file
+ * — it can't be conditionally structurally absent; `opts.detail` is what
+ * actually gates it. It's already a small, whitelisted-shape object by the
+ * time it reaches this row (see aiLogService.ts's sanitizeMetadata()), so
+ * it's safe to return as-is on the detail response.
+ */
+export function toAiLogDto(log: AiLogWithOptionalActor, opts: { detail?: boolean } = {}): AiLogDto {
+  return {
+    id: log.id,
+    operation: log.operation,
+    outcome: log.outcome,
+    conversationId: log.conversationId,
+    messageId: log.messageId,
+    escalationId: log.escalationId,
+    intent: log.intent,
+    confidence: log.confidence,
+    needsHuman: log.needsHuman,
+    reason: log.reason,
+    toolName: log.toolName,
+    toolSuccess: log.toolSuccess,
+    createdAt: log.createdAt,
+    ...(opts.detail ? { actor: log.actorUser ?? null, metadata: (log.metadata as Record<string, unknown> | null) ?? null } : {}),
   }
 }

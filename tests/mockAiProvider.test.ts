@@ -232,7 +232,7 @@ describe('MockAiProvider — booking confirmation (create_appointment)', () => {
     const toolExchanges: AiToolExchange[] = [
       {
         call: { id: 't1', name: 'create_appointment', arguments: {} },
-        result: { success: false, tool: 'create_appointment', errorCode: 'CONFIRMATION_REQUIRED', message: 'x', retryable: true },
+        result: { success: false, tool: 'create_appointment', errorCode: 'CONFIRMATION_REQUIRED', message: 'x', retryable: true, attempted: false },
       },
     ]
     const provider = new MockAiProvider()
@@ -246,7 +246,7 @@ describe('MockAiProvider — booking confirmation (create_appointment)', () => {
     const toolExchanges: AiToolExchange[] = [
       {
         call: { id: 't1', name: 'create_appointment', arguments: {} },
-        result: { success: false, tool: 'create_appointment', errorCode: 'APPOINTMENT_CONFLICT', message: 'x', retryable: true },
+        result: { success: false, tool: 'create_appointment', errorCode: 'APPOINTMENT_CONFLICT', message: 'x', retryable: true, attempted: true },
       },
     ]
     const provider = new MockAiProvider()

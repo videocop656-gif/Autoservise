@@ -20,6 +20,7 @@ const LINKS = [
   { to: '/settings/conversations', label: 'Conversations' },
   { to: '/settings/ai', label: 'AI Core' },
   { to: '/settings/escalations', label: 'Escalations' },
+  { to: '/settings/ai-logs', label: 'AI Logs' },
 ]
 
 /** Shown on every authenticated page. Only lists routes — role-based action buttons live inside each page. */

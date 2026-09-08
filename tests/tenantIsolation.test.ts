@@ -40,6 +40,10 @@ const {
   aiEscalationCountMock,
   aiEscalationUpdateManyMock,
   aiEscalationCreateMock,
+  aiLogFindFirstMock,
+  aiLogFindManyMock,
+  aiLogCountMock,
+  aiLogCreateMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -84,6 +88,10 @@ const {
     aiEscalationCountMock: vi.fn(),
     aiEscalationUpdateManyMock: vi.fn(),
     aiEscalationCreateMock: vi.fn(),
+    aiLogFindFirstMock: vi.fn(),
+    aiLogFindManyMock: vi.fn(),
+    aiLogCountMock: vi.fn(),
+    aiLogCreateMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -138,6 +146,12 @@ vi.mock('../src/server/db/prisma', () => {
       updateMany: aiEscalationUpdateManyMock,
       create: aiEscalationCreateMock,
     },
+    aiLog: {
+      findFirst: aiLogFindFirstMock,
+      findMany: aiLogFindManyMock,
+      count: aiLogCountMock,
+      create: aiLogCreateMock,
+    },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
   }
@@ -160,6 +174,8 @@ import { conversationRepository } from '../src/server/repositories/conversationR
 import { messageRepository } from '../src/server/repositories/messageRepository'
 import { escalationRepository } from '../src/server/repositories/escalationRepository'
 import { getEscalation, claimEscalation, resolveEscalation, cancelEscalation } from '../src/server/services/escalationService'
+import { aiLogRepository } from '../src/server/repositories/aiLogRepository'
+import { getAiLog, listAiLogs } from '../src/server/services/aiLogService'
 import { analyzeMessage } from '../src/server/services/aiService'
 import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
 import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
@@ -210,6 +226,10 @@ beforeEach(() => {
   aiEscalationCountMock.mockResolvedValue(0)
   aiEscalationUpdateManyMock.mockResolvedValue({ count: 0 })
   aiEscalationCreateMock.mockResolvedValue({})
+  aiLogFindFirstMock.mockResolvedValue(null)
+  aiLogFindManyMock.mockResolvedValue([])
+  aiLogCountMock.mockResolvedValue(0)
+  aiLogCreateMock.mockResolvedValue({})
 })
 
 describe('tenant isolation — Business', () => {
@@ -938,6 +958,64 @@ describe('tenant isolation — AI Escalation (Prompt 12)', () => {
   it('business isolation: list is scoped by businessId too, not just tenantId, so Business A never sees Business B\'s escalations within the same tenant', async () => {
     await escalationRepository.list('tenant-a', 'business-a', { skip: 0, take: 20 })
     const call = aiEscalationFindManyMock.mock.calls[0]![0] as { where: { businessId: string; tenantId: string } }
+    expect(call.where.businessId).toBe('business-a')
+    expect(call.where.tenantId).toBe('tenant-a')
+  })
+})
+
+describe('tenant isolation — AI Log (Prompt 13)', () => {
+  // Same convention as the AI Escalation block above: call the real
+  // repository/service functions against the same mocked prisma client,
+  // proving every query is scoped by tenantId + businessId regardless of
+  // what id string is supplied — a foreign log id must 404, never reveal
+  // that the row exists for some other tenant.
+  const LOG_OWNED_BY_B = '666e4567-e89b-12d3-a456-426614174000'
+
+  function ctxA() {
+    return makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+    })
+  }
+
+  it('repository: list is scoped to tenantId + businessId', async () => {
+    await aiLogRepository.list('tenant-a', 'business-a', { skip: 0, take: 20 })
+    expect(aiLogFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-a', tenantId: 'tenant-a' } })
+    )
+  })
+
+  it('repository: findById never matches a foreign-tenant row — the query itself is scoped', async () => {
+    await aiLogRepository.findById('tenant-a', 'business-a', LOG_OWNED_BY_B)
+    expect(aiLogFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: LOG_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
+  })
+
+  it('repository: findByIdWithDetail is likewise scoped to tenantId + businessId', async () => {
+    await aiLogRepository.findByIdWithDetail('tenant-a', 'business-a', LOG_OWNED_BY_B)
+    expect(aiLogFindFirstMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { businessId: 'business-a', id: LOG_OWNED_BY_B, tenantId: 'tenant-a' } })
+    )
+  })
+
+  it('service: tenant A cannot read tenant B\'s log — 404, scoped lookup never matches, existence never revealed', async () => {
+    aiLogFindFirstMock.mockResolvedValue(null) // scoped query never matches tenant B's row
+    await expect(getAiLog(ctxA(), LOG_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('service: a foreign business within the SAME tenant still cannot read the log — 404', async () => {
+    aiLogFindFirstMock.mockResolvedValue(null)
+    const ctxOtherBusinessSameTenant = makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-other', tenantId: 'tenant-a' }),
+    })
+    await expect(getAiLog(ctxOtherBusinessSameTenant, LOG_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('business isolation: list is scoped by businessId too, not just tenantId', async () => {
+    await listAiLogs(ctxA(), { page: 1, pageSize: 20 })
+    const call = aiLogFindManyMock.mock.calls[0]![0] as { where: { businessId: string; tenantId: string } }
     expect(call.where.businessId).toBe('business-a')
     expect(call.where.tenantId).toBe('tenant-a')
   })
