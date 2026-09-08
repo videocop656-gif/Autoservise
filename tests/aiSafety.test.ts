@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { applyConfidencePolicy, applyFabricatedActionCheck, applySafetyLayer } from '../src/server/ai/safety'
+import {
+  applyConfidencePolicy,
+  applyFabricatedActionCheck,
+  applyFabricatedEscalationCheck,
+  applyDefinitiveDiagnosisCheck,
+  applySafetyLayer,
+} from '../src/server/ai/safety'
 import { EMPTY_AI_ENTITIES } from '../src/server/ai/types'
 import type { ValidatedAiResult } from '../src/server/ai/aiResult.schema'
 
@@ -69,10 +75,68 @@ describe('applyFabricatedActionCheck', () => {
   })
 })
 
+describe('applyFabricatedEscalationCheck (Prompt 11)', () => {
+  it('overrides an answer that claims a manager was already notified', () => {
+    const result = applyFabricatedEscalationCheck(makeResult({ answer: 'Я передал ваш вопрос менеджеру.' }))
+    expect(result.needsHuman).toBe(true)
+    expect(result.answer).not.toContain('передал')
+    expect(result.reason).toContain('AI_SAFETY_REJECTION')
+  })
+
+  it('overrides an English escalation claim', () => {
+    const result = applyFabricatedEscalationCheck(makeResult({ answer: 'I have escalated this issue to a manager.' }))
+    expect(result.needsHuman).toBe(true)
+  })
+
+  it('leaves a correctly-phrased needsHuman signal untouched — no escalation action is claimed', () => {
+    const original = makeResult({
+      answer: 'Для точного ответа потребуется уточнение со стороны администратора сервиса.',
+      needsHuman: true,
+    })
+    const result = applyFabricatedEscalationCheck(original)
+    expect(result).toEqual(original)
+  })
+
+  it('leaves an unrelated safe answer untouched', () => {
+    const original = makeResult({ answer: 'Стоимость замены масла составляет 1500-2500 RUB.' })
+    const result = applyFabricatedEscalationCheck(original)
+    expect(result).toEqual(original)
+  })
+})
+
+describe('applyDefinitiveDiagnosisCheck (Prompt 11)', () => {
+  it('overrides an answer that states a definitive diagnosis as confirmed fact', () => {
+    const result = applyDefinitiveDiagnosisCheck(makeResult({ answer: 'У вас точно неисправен генератор.' }))
+    expect(result.needsHuman).toBe(true)
+    expect(result.answer).not.toContain('генератор')
+    expect(result.reason).toContain('AI_SAFETY_REJECTION')
+  })
+
+  it('leaves a properly-qualified answer untouched', () => {
+    const original = makeResult({
+      answer: 'По описанию одной из возможных причин может быть проблема с системой зарядки. Для точного определения потребуется диагностика.',
+    })
+    const result = applyDefinitiveDiagnosisCheck(original)
+    expect(result).toEqual(original)
+  })
+})
+
 describe('applySafetyLayer', () => {
-  it('applies both checks together', () => {
+  it('applies all checks together', () => {
     const result = applySafetyLayer(makeResult({ confidence: 0.3, answer: 'Я записал вас.', needsHuman: false }))
     expect(result.needsHuman).toBe(true)
     expect(result.answer).not.toContain('записал вас')
+  })
+
+  it('catches a fabricated escalation claim end-to-end', () => {
+    const result = applySafetyLayer(makeResult({ answer: 'Я передал ваш вопрос менеджеру.', needsHuman: false }))
+    expect(result.needsHuman).toBe(true)
+    expect(result.answer).not.toContain('передал')
+  })
+
+  it('catches a fabricated diagnosis claim end-to-end', () => {
+    const result = applySafetyLayer(makeResult({ answer: 'У вас точно неисправен тормозной диск.', needsHuman: false }))
+    expect(result.needsHuman).toBe(true)
+    expect(result.answer).not.toContain('тормозной диск')
   })
 })

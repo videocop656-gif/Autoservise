@@ -11,6 +11,29 @@ import { isExplicitConfirmation } from '../confirmation'
 import { toBusinessLocalDateTime, businessLocalToUtc } from '../../lib/timezone'
 
 /**
+ * Prompt injection defense (spec §"PROMPT INJECTION DEFENSE", Prompt 11):
+ * customer-controlled text must never override system instructions,
+ * business rules, tenant isolation, or the confirmation gate. This is a
+ * deterministic net for the exact documented attack shapes — not a general
+ * classifier — the real defense is structural (buildAiContext only ever
+ * loads the current conversation's own customer/vehicle/history, so there
+ * is no other tenant's or customer's data here to leak regardless of what
+ * the message asks for).
+ */
+const PROMPT_INJECTION_PATTERNS: RegExp[] = [
+  /ignore\s+(all\s+|previous\s+|the\s+)?(business\s+)?(instructions|rules|prompt)/iu,
+  /reveal.*(key|secret|password)/iu,
+  /system\s+prompt/iu,
+  /pretend\s+(that|this|you)/iu,
+  /(another|чужого|другого)\s+(customer|client|клиент)/iu,
+  /притворись/iu,
+  /игнорируй\s+(правила|инструкции|бизнес[- ]правила)/iu,
+  /the\s+system\s+(says|told|allows|grants)/iu,
+  /system\s+(says|allows|grants)\s+you/iu,
+  /can\s+access\s+all\s+customers/iu,
+]
+
+/**
  * Deterministic, keyword-based provider — no network access, no
  * OPENAI_API_KEY required. Used by:
  *  - every automated test in this codebase (spec: "Mock provider должен
@@ -40,7 +63,7 @@ export class MockAiProvider implements AiProvider {
     const lower = message.toLowerCase()
     const confirmed = isExplicitConfirmation(message)
 
-    if (/ignore (all |previous )?instructions|reveal.*(key|secret|password)|system prompt/i.test(message)) {
+    if (PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(message))) {
       return {
         type: 'final',
         raw: finalResult(
@@ -147,8 +170,8 @@ export class MockAiProvider implements AiProvider {
       })
     }
 
-    // --- Everything else: Prompt 09's original plain classification, unchanged. ---
-    return { type: 'final', raw: legacyClassify(request) }
+    // --- Everything else: AI Customer Support (Prompt 11), grounded in real business data. ---
+    return { type: 'final', raw: classifyCustomerSupport(request) }
   }
 }
 
@@ -156,8 +179,15 @@ function toolCallResult(name: string, args: Record<string, unknown>): { type: 't
   return { type: 'tool_calls', calls: [{ id: 't1', name, arguments: args }] }
 }
 
-function finalResult(intent: AiIntent, confidence: number, answer: string, needsHuman: boolean, reason: string | null) {
-  return { intent, confidence, entities: { ...EMPTY_AI_ENTITIES }, answer, needsHuman, reason }
+function finalResult(
+  intent: AiIntent,
+  confidence: number,
+  answer: string,
+  needsHuman: boolean,
+  reason: string | null,
+  serviceName: string | null = null
+) {
+  return { intent, confidence, entities: { ...EMPTY_AI_ENTITIES, serviceName }, answer, needsHuman, reason }
 }
 
 function buildFinalFromToolResult(exchange: AiToolExchange) {
@@ -272,84 +302,257 @@ function resolveDateKey(message: string, history: AiHistoryMessage[], timezone: 
   return null
 }
 
-// --- Prompt 09's original plain classification, reused unchanged as the fallback for anything that isn't booking-shaped. ---
-function legacyClassify(request: AiGenerationRequest) {
+// --- AI Customer Support (Prompt 11): grounded classification for
+// anything that isn't booking-shaped. Every answer below is built strictly
+// from businessContext (Services/Knowledge/Rules/serviceHistory/customer/
+// vehicle) — never an invented price, service, warranty term, or history
+// fact. Intentionally simple keyword matching, not a real NLU model — it
+// exists to prove the grounding/no-diagnosis/no-fabrication rules
+// end-to-end deterministically (spec §"MOCK PROVIDER": "tests must remain
+// deterministic"), the same way the booking branches above prove the
+// two-phase confirmation flow.
+function classifyCustomerSupport(request: AiGenerationRequest) {
+  const context = request.businessContext
   const message = request.userMessage.toLowerCase()
-  const matchedService = request.businessContext.services.find((s) => message.includes(s.name.toLowerCase()))
-
-  let intent: AiIntent = 'GENERAL_QUESTION'
-  let confidence = 0.6
-  let needsHuman = false
-  let reason: string | null = null
+  const matchedService = context.services.find((s) => message.includes(s.name.toLowerCase()))
 
   if (/сколько стоит|стоимость|цена|price|cost|how much/.test(message)) {
-    intent = 'PRICE_INQUIRY'
-    confidence = matchedService ? 0.92 : 0.75
-  } else if (/гаранти|warranty/.test(message)) {
-    intent = 'WARRANTY_INQUIRY'
-    confidence = 0.7
-  } else if (/истори|прошл(ый|ое) (визит|обслуживание)|service history/.test(message)) {
-    intent = 'SERVICE_HISTORY_INQUIRY'
-    confidence = 0.65
-  } else if (/стук|скрип|не заводится|не работает|сломал|странный звук|течёт|запах гари/.test(message)) {
-    intent = 'VEHICLE_PROBLEM'
-    confidence = 0.68
-    needsHuman = true
-    reason = 'Vehicle symptom reports need a human diagnosis, not an AI guess.'
-  } else if (/мои данные|обо мне|my (info|data|profile)/.test(message)) {
-    intent = 'CUSTOMER_INFORMATION'
-    confidence = 0.6
-  } else if (matchedService) {
-    intent = 'SERVICE_INQUIRY'
-    confidence = 0.8
-  } else if (message.trim().length < 3) {
-    intent = 'UNKNOWN'
-    confidence = 0.2
-    needsHuman = true
-    reason = 'Message too short to classify reliably.'
+    return priceInquiryResult(matchedService)
+  }
+  if (/гаранти|warranty/.test(message)) {
+    return warrantyInquiryResult(context)
+  }
+  if (/истори|прошл(ый|ое)\s+(визит|обслуживание|раз)|когда.*(меняли|делали|обслуживали)|на каком пробеге|какие работы|выполнялись|service history/.test(message)) {
+    return serviceHistoryInquiryResult(context, message)
+  }
+  if (/стук|скрип|не заводится|не работает|сломал|странный звук|течёт|запах гари|вибрац/.test(message)) {
+    return vehicleProblemResult(context, message)
+  }
+  if (/мои данные|обо мне|my (info|data|profile)/.test(message)) {
+    return customerInformationResult(context)
   }
 
-  const answer = buildLegacyAnswer(intent, matchedService?.name ?? null, request)
-  return {
-    intent,
-    confidence,
-    entities: { ...EMPTY_AI_ENTITIES, serviceName: matchedService?.name ?? null },
-    answer,
-    needsHuman,
-    reason,
+  // Step 6/7/8 (source priority): a general question is answered from
+  // Business Rules first (higher priority than Knowledge Base), then
+  // Knowledge Base, before falling back to a matched Service or an honest
+  // "not found".
+  const words = tokenize(message)
+  const ruleMatch = findMatchingRule(context.rules, words)
+  if (ruleMatch) {
+    return finalResult('GENERAL_QUESTION', 0.8, ruleMatch.description, false, null, matchedService?.name ?? null)
   }
+  const kbMatch = findMatchingKnowledge(context.knowledge, words)
+  if (kbMatch) {
+    return finalResult('GENERAL_QUESTION', 0.8, kbMatch.content, false, null, matchedService?.name ?? null)
+  }
+
+  if (matchedService) {
+    return serviceInquiryResult(matchedService)
+  }
+  if (message.trim().length < 3) {
+    return finalResult(
+      'UNKNOWN',
+      0.2,
+      'Не уверен, что правильно понял ваш запрос — уточните, пожалуйста, подробнее, чем я могу помочь?',
+      true,
+      'Message too short to classify reliably.'
+    )
+  }
+  // Step 20 (Missing information): an actual question that matched nothing
+  // real gets an honest "I don't know", never a guess — a plain greeting
+  // (no "?") still gets the ordinary welcome reply.
+  if (message.includes('?')) {
+    return finalResult(
+      'UNKNOWN',
+      0.4,
+      'В доступной информации я не нашёл точного ответа на этот вопрос — уточните, пожалуйста, подробнее, или дождитесь ответа сотрудника.',
+      true,
+      'No matching Service/Knowledge/BusinessRule/History found for this message.'
+    )
+  }
+  return finalResult(
+    'GENERAL_QUESTION',
+    0.6,
+    `Спасибо за обращение в ${context.business.name}. Уточните, пожалуйста, ваш вопрос подробнее, чтобы я мог помочь точнее.`,
+    false,
+    null
+  )
 }
 
-function buildLegacyAnswer(intent: AiIntent, serviceName: string | null, request: AiGenerationRequest): string {
-  const { business, services } = request.businessContext
+// Words are reduced to a short prefix ("stem") rather than compared as
+// whole strings — Russian inflects heavily (оплата/оплаты/оплатить), and a
+// deterministic mock has no real morphological analyzer available. A
+// shared 5-character prefix is a crude but adequate and fully deterministic
+// proxy for "same root word" for this mock's purposes.
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4)
+    .map((w) => w.slice(0, 5))
+}
 
-  switch (intent) {
-    case 'PRICE_INQUIRY': {
-      if (serviceName) {
-        const svc = services.find((s) => s.name === serviceName)
-        if (svc?.priceFrom) {
-          const range = svc.priceTo && svc.priceTo !== svc.priceFrom ? `${svc.priceFrom}–${svc.priceTo}` : svc.priceFrom
-          return `Услуга «${svc.name}» стоит ${range} ${svc.currency}. Точная стоимость может зависеть от состояния автомобиля.`
-        }
-      }
-      return 'Стоимость зависит от выбранной услуги и состояния автомобиля — уточните, пожалуйста, какая именно услуга вас интересует.'
-    }
-    case 'VEHICLE_PROBLEM':
-      return 'Спасибо за описание проблемы. Точную причину сможет определить только диагностика в сервисе — передаю ваш запрос сотруднику.'
-    case 'WARRANTY_INQUIRY':
-      return 'По вопросам гарантии уточню у сотрудника, если в базе знаний нет прямого ответа на ваш случай.'
-    case 'SERVICE_HISTORY_INQUIRY':
-      return 'По истории обслуживания вашего автомобиля лучше проконсультирует сотрудник автосервиса.'
-    case 'CUSTOMER_INFORMATION':
-      return 'По вопросам, связанным с вашими личными данными, вас проконсультирует сотрудник автосервиса.'
-    case 'SERVICE_INQUIRY':
-      return serviceName
-        ? `Да, у нас есть услуга «${serviceName}». Уточните, пожалуйста, что именно вас интересует по ней?`
-        : `${business.name} предоставляет несколько услуг — уточните, пожалуйста, что вас интересует?`
-    case 'UNKNOWN':
-      return 'Не уверен, что правильно понял ваш запрос — уточните, пожалуйста, подробнее, чем я могу помочь?'
-    case 'GENERAL_QUESTION':
-    default:
-      return `Спасибо за обращение в ${business.name}. Уточните, пожалуйста, ваш вопрос подробнее, чтобы я мог помочь точнее.`
+/** Lower `priority` number = higher priority (spec §"BUSINESS RULES") — a lower-priority rule must never be allowed to win over a higher-priority one. */
+function findMatchingRule(rules: AiBusinessContext['rules'], words: string[]) {
+  const candidates = rules.filter((r) => {
+    const ruleWords = tokenize(`${r.name} ${r.description}`)
+    return words.some((w) => ruleWords.includes(w))
+  })
+  if (candidates.length === 0) return null
+  return [...candidates].sort((a, b) => a.priority - b.priority)[0]!
+}
+
+function findMatchingKnowledge(knowledge: AiBusinessContext['knowledge'], words: string[]) {
+  return (
+    knowledge.find((k) => {
+      const kbWords = tokenize(`${k.title} ${k.content}`)
+      return words.some((w) => kbWords.includes(w))
+    }) ?? null
+  )
+}
+
+function formatPriceRange(service: AiBusinessContext['services'][number]): string | null {
+  if (service.priceFrom && service.priceTo && service.priceFrom !== service.priceTo) {
+    return `${service.priceFrom}–${service.priceTo} ${service.currency}`
   }
+  if (service.priceFrom) {
+    return `от ${service.priceFrom} ${service.currency}`
+  }
+  return null
+}
+
+// Step 10 (Price safety): a range when both bounds exist, "from X" when
+// only priceFrom exists, and an honest "no price on file" when neither
+// does — never an invented or estimated figure.
+function priceInquiryResult(matchedService: AiBusinessContext['services'][number] | undefined) {
+  if (!matchedService) {
+    return finalResult(
+      'PRICE_INQUIRY',
+      0.75,
+      'Стоимость зависит от выбранной услуги и состояния автомобиля — уточните, пожалуйста, какая именно услуга вас интересует.',
+      false,
+      null
+    )
+  }
+  const price = formatPriceRange(matchedService)
+  if (!price) {
+    return finalResult(
+      'PRICE_INQUIRY',
+      0.7,
+      'В базе сервиса сейчас нет точной цены на эту работу. Лучше уточнить стоимость у администратора.',
+      false,
+      null,
+      matchedService.name
+    )
+  }
+  return finalResult(
+    'PRICE_INQUIRY',
+    0.92,
+    `Услуга «${matchedService.name}» стоит ${price}. Точная стоимость может зависеть от состояния автомобиля.`,
+    false,
+    null,
+    matchedService.name
+  )
+}
+
+// Step 9: name/description/priceFrom/priceTo/currency/durationMinutes — never an invented discount, warranty, or parts guarantee.
+function serviceInquiryResult(service: AiBusinessContext['services'][number]) {
+  const parts = [`Да, у нас есть услуга «${service.name}».`]
+  if (service.description) parts.push(service.description)
+  const price = formatPriceRange(service)
+  if (price) parts.push(`Ориентировочная стоимость: ${price}.`)
+  parts.push(`Продолжительность: около ${service.durationMinutes} мин.`)
+  return finalResult('SERVICE_INQUIRY', 0.85, parts.join(' '), false, null, service.name)
+}
+
+// Step 14 (Warranty): grounded in Business Rules first, then Knowledge
+// Base; if neither covers it, say so honestly rather than inventing a term.
+function warrantyInquiryResult(context: AiBusinessContext) {
+  const keywords = ['гаранти', 'warranty']
+  const rule = context.rules.find((r) => keywords.some((k) => r.name.toLowerCase().includes(k) || r.description.toLowerCase().includes(k) || r.category.toLowerCase().includes(k)))
+  if (rule) {
+    return finalResult('WARRANTY_INQUIRY', 0.85, `Согласно правилам сервиса: ${rule.description}`, false, null)
+  }
+  const kb = context.knowledge.find((k) => keywords.some((w) => k.title.toLowerCase().includes(w) || k.content.toLowerCase().includes(w) || k.category.toLowerCase().includes(w)))
+  if (kb) {
+    return finalResult('WARRANTY_INQUIRY', 0.85, kb.content, false, null)
+  }
+  return finalResult(
+    'WARRANTY_INQUIRY',
+    0.55,
+    'По имеющейся информации я не могу подтвердить, распространяется ли гарантия именно на этот случай — уточните, пожалуйста, у администратора сервиса.',
+    true,
+    'Warranty question could not be grounded in Business Rules or Knowledge Base.'
+  )
+}
+
+// Step 19: real ServiceRecord facts only, never invented — an empty
+// history says so plainly instead of deflecting to "ask staff".
+function serviceHistoryInquiryResult(context: AiBusinessContext, message: string) {
+  if (context.serviceHistory.length === 0) {
+    return finalResult('SERVICE_HISTORY_INQUIRY', 0.8, 'В истории обслуживания этого автомобиля сейчас нет записей.', false, null)
+  }
+  const namedService = context.services.find((s) => message.includes(s.name.toLowerCase()))
+  // serviceHistory is already newest-first (contextBuilder.ts / repository ordering) — [0] is the most recent record overall.
+  const record = namedService ? context.serviceHistory.find((r) => r.serviceName === namedService.name) : context.serviceHistory[0]
+  if (!record) {
+    return finalResult(
+      'SERVICE_HISTORY_INQUIRY',
+      0.75,
+      'В истории обслуживания этого автомобиля нет записей по этой услуге.',
+      false,
+      null,
+      namedService?.name ?? null
+    )
+  }
+  const mileagePart = record.mileage != null ? ` при пробеге ${record.mileage} км` : ''
+  return finalResult(
+    'SERVICE_HISTORY_INQUIRY',
+    0.9,
+    `По нашей истории, ${record.performedAtLocal} выполнено: ${record.serviceName.toLowerCase()}${mileagePart}. ${record.workDescription}`,
+    false,
+    null,
+    record.serviceName
+  )
+}
+
+// Step 5/12 (never a diagnosis): history is cited as fact when relevant,
+// but the current complaint's cause is always left unresolved without an
+// inspection — see AI_BEHAVIOR_CONTRACT.md §8 and safety.ts's
+// applyDefinitiveDiagnosisCheck (defense-in-depth if this text is ever
+// changed to something less careful).
+function vehicleProblemResult(context: AiBusinessContext, message: string) {
+  const symptomKeywords = ['тормоз', 'колодк', 'масл', 'фильтр', 'аккумулятор', 'ремень']
+  const relatedHistory = context.serviceHistory.find((r) =>
+    symptomKeywords.some((kw) => message.includes(kw) && (r.serviceName.toLowerCase().includes(kw) || r.workDescription.toLowerCase().includes(kw)))
+  )
+  const historyNote = relatedHistory
+    ? ` По истории обслуживания: ${relatedHistory.performedAtLocal} — ${relatedHistory.workDescription.toLowerCase()}. Однако по одной лишь истории нельзя установить, связана ли текущая жалоба с этой работой.`
+    : ''
+  return finalResult(
+    'VEHICLE_PROBLEM',
+    0.65,
+    `Спасибо за описание проблемы. По имеющейся информации нельзя точно определить причину — рекомендуется очная диагностика в сервисе.${historyNote}`,
+    true,
+    'Vehicle symptom reports need a human diagnosis, not an AI guess.'
+  )
+}
+
+// Step 15: known customer/vehicle fields only — never another customer's data, never an internal id.
+function customerInformationResult(context: AiBusinessContext) {
+  if (!context.customer) {
+    return finalResult(
+      'CUSTOMER_INFORMATION',
+      0.5,
+      'У меня пока нет данных о клиенте для этого разговора — уточните, пожалуйста, свои данные, либо дождитесь ответа сотрудника.',
+      true,
+      null
+    )
+  }
+  const name = context.customer.lastName ? `${context.customer.firstName} ${context.customer.lastName}` : context.customer.firstName
+  const vehiclePart = context.vehicle
+    ? ` Автомобиль: ${context.vehicle.make} ${context.vehicle.model}${context.vehicle.licensePlate ? ` (${context.vehicle.licensePlate})` : ''}.`
+    : ''
+  return finalResult('CUSTOMER_INFORMATION', 0.85, `По нашим данным: ${name}, телефон ${context.customer.phone}.${vehiclePart}`, false, null)
 }

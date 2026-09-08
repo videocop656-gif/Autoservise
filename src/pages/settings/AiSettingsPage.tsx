@@ -183,9 +183,10 @@ export default function AiSettingsPage() {
               AI Core — Analyze
             </CardTitle>
             <CardDescription>
-              Операционный инструмент для проверки AI Core и AI Booking Tools: анализ тестового сообщения в контексте
-              выбранного разговора. Отправка сообщения клиенту по-прежнему отключена — ответ модели никогда не
-              создаёт Message.
+              Операционный инструмент для проверки AI Core, AI Booking Tools и AI Customer Support: анализ тестового
+              сообщения в контексте выбранного разговора, с учётом Service History автомобиля, если он уже известен.
+              Отправка сообщения клиенту по-прежнему отключена — ответ модели никогда не создаёт Message и не изменяет
+              ServiceRecord/Conversation.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

@@ -35,6 +35,7 @@ const CONTEXT = {
   customer: null,
   vehicle: null,
   upcomingAppointments: [],
+  serviceHistory: [],
 }
 
 function makeConversation(overrides: Record<string, unknown> = {}) {

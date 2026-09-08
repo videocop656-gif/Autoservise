@@ -17,9 +17,13 @@ AI layer that classifies a message's intent and drafts a safe answer — and
 `cancel_appointment`) that lets the AI check real availability and
 create/reschedule/cancel a real `Appointment` — always through the
 existing Appointment Service, always gated by explicit customer
-confirmation. Still no live communication channels (Telegram/WhatsApp/
-website chat/phone), no AI actions beyond booking, no full CRM pipeline,
-no external calendar sync, and no final design.
+confirmation — and **Prompt 11 (AI Customer Support)**: the AI now answers
+real customer questions (services, prices, warranty, policies, and —
+newly — a vehicle's own Service History) grounded strictly in real
+business data, never inventing a fact, a price, or a diagnosis. Still no
+live communication channels (Telegram/WhatsApp/website chat/phone), no
+human escalation mechanism, no AI actions beyond booking, no full CRM
+pipeline, no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -319,6 +323,19 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - Settings UI: `/settings/ai` shows a visible "tool execution is real" warning and, per analyze call, each tool's name/outcome — availability slots, or the resulting appointment's id/status/start/end. Sending a message to the customer remains disabled.
 - **Not implemented**: a persistent idempotency guard beyond the real-time conflict re-check (deliberately — inventing a table just for this was explicitly out of scope); automatic Customer/Vehicle creation; searching among several possible customer/vehicle matches; any tool beyond the four booking ones above.
 
+## AI Customer Support
+
+`POST /api/ai/analyze` now answers real customer questions — services, prices, warranty, policies, and a vehicle's own Service History — grounded strictly in real business data. **No new tool, no mutation**: this stage is entirely read-only, same as Prompt 09. See `docs/AI_BEHAVIOR_CONTRACT.md` §§2, 6, 8, 13 for the full contract.
+
+- **Service History enters the AI context for the first time**: `contextBuilder.ts` now includes the known vehicle's most recent 10 non-archived `ServiceRecord`s (newest-first) — reusing `serviceRecordRepository.list()` unchanged, gated by the same "only when a vehicle is already known" rule as `upcomingAppointments`. **Zero new database models, zero new migrations.**
+- **History is fact, never diagnosis**: the AI can state exactly what was done and when ("15 августа заменили масло при пробеге 82 400 км"), but a new deterministic safety check (`applyDefinitiveDiagnosisCheck`, `src/server/ai/safety.ts`) catches and replaces any draft that crosses from citing history into asserting a confirmed current diagnosis ("значит, колодки снова нужно менять").
+- **Grounded, not generic**: a price question states the exact stored price or admits none is on file (never an estimate); a warranty question cites the matching Business Rule or Knowledge Item, in that priority order, or admits it can't confirm the specific case; a general question is matched against Business Rules first (lower `priority` number wins on a conflict) then the Knowledge Base; anything nothing real supports gets an honest "I don't have enough information," never a guess.
+- **Fabricated-escalation protection**: a second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — no escalation mechanism exists yet (that's Prompt 12), so `needsHuman: true` stays only a signal, never a claimed action.
+- **Tenant/customer isolation is structural**: Service History is resolved exclusively through the current Conversation's own tenant-scoped customer/vehicle chain — there is no code path for another tenant's or another same-tenant customer's history to ever be loaded.
+- **`analyze`'s contract is unchanged** and it remains fully read-only — no `Message`/`Conversation`/`ServiceRecord`/`Customer`/`Vehicle`/`KnowledgeItem`/`BusinessRule` write of any kind, verified against the real database.
+- Settings UI: `/settings/ai`'s description now mentions Service History grounding; the existing intent/confidence/entities/answer/needsHuman/reason display covers everything this stage needed to demonstrate.
+- **Not implemented**: Human Escalation, AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -571,6 +588,19 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - 133 new unit tests (811 total): tool schema validation, confirmation-phrase detection, tool executors (incl. two explicit prompt-injection scenarios), the tool-calling loop and its 3-call bound, and a dedicated cross-tenant "AI Booking Tools" section extending `tests/tenantIsolation.test.ts` covering all four tools against a foreign tenant. A real Supabase smoke test (two real tenants, no mocks) verified real availability, a real create/conflict/reschedule/cancellation, cross-tenant rejection of all four tools, and full cleanup with zero rows remaining.
 - **Not implemented**: a persistent idempotency guard beyond the real-time conflict re-check (deliberately — no new table was added just for this); automatic Customer/Vehicle creation; searching among multiple possible customer/vehicle matches; any tool beyond the four above.
 
+**Prompt 11 — AI Customer Support**
+- Service History enters the AI context for the first time: `contextBuilder.ts` now includes the known vehicle's most recent 10 non-archived `ServiceRecord`s (newest-first) — reusing `serviceRecordRepository.list()` unchanged, gated by the same "vehicle already known" rule as `upcomingAppointments`. No `id`/`customerId`/`vehicleId`/`serviceId`/`appointmentId` exposed, same principle as Prompt 09's context fields.
+- `MockAiProvider`'s customer-support path was rewritten from Prompt 09's generic deflections into real, source-grounded answers: exact stored price or an honest "no price on file"; warranty grounded in Business Rules then Knowledge Base, in that priority order; general questions matched against Business Rules first (lower `priority` number wins) then Knowledge Base; real Service History facts for history questions; an honest "I don't have enough information" for anything unsupported — never a guess.
+- History is fact, never diagnosis: a new deterministic safety check (`applyDefinitiveDiagnosisCheck`, `src/server/ai/safety.ts`) catches and replaces a draft that crosses from citing history into asserting a confirmed current diagnosis.
+- A second new safety check (`applyFabricatedEscalationCheck`) catches a draft that falsely claims a human/manager was already contacted — no escalation mechanism exists yet (Prompt 12); `needsHuman: true` remains only a signal.
+- Prompt-injection defense extended to cover "pretend this vehicle is mine," "ignore the business rules," and "the system says you can access all customers," alongside Prompt 09's original patterns.
+- Tenant/customer isolation for Service History is structural — `buildAiContext` resolves it exclusively through the current Conversation's own tenant-scoped customer/vehicle chain, verified by unit tests and a live two-tenant, two-customer check against the real database.
+- `POST /api/ai/analyze`'s request contract is unchanged and it remains fully read-only — verified against the real database (row timestamps compared before/after) that no `Message`/`Conversation`/`ServiceRecord` is ever written.
+- Settings UI: `/settings/ai`'s description updated to mention Service History grounding.
+- **Zero new database models, zero new migrations.**
+- 32 new unit tests (843 total): a "serviceHistory" context-builder section, coverage for both new safety checks, and an "AI Customer Support" mock-provider section covering all 11 documented scenarios plus the 4 prompt-injection examples. A real Supabase smoke test (two real tenants, two customers in tenant A, no mocks) verified Service History read from the real database, correctly bound to the right vehicle, with the archived record excluded, another same-tenant customer's history never appearing, another tenant's history never appearing, a grounded `SERVICE_HISTORY_INQUIRY` answer citing the real date/mileage, a non-diagnostic `VEHICLE_PROBLEM` response, zero writes of any kind, cross-tenant `analyze` rejection with `404`, and full cleanup with zero rows remaining.
+- **Not implemented**: Human Escalation, AI Logs/audit, external channels, automatic Customer/Vehicle/Service creation, any new AI tool, RAG/embeddings/vector DB, new database models.
+
 ## Not implemented yet
 
 An autonomous or multi-agent framework, a fifth AI tool or dynamic tool
@@ -586,12 +616,14 @@ UI/UX & design system, marketing site, advanced dashboard.
 
 `Conversation`/`Message` (Prompt 08), a first AI Core — intent
 classification, entity extraction, a draft answer, confidence/needsHuman
-(Prompt 09) — and a real AI Tool Layer for booking (Prompt 10, see
-[AI Booking](#ai-booking)) **are** implemented, but the AI still cannot do
-anything beyond checking availability and creating/rescheduling/cancelling
-an Appointment: no CustomerRequest creation, no customer/vehicle search or
-auto-creation, no escalation entity, no tool of any other kind; `channel`
-remains a label, not a live connection.
+(Prompt 09) — a real AI Tool Layer for booking (Prompt 10, see
+[AI Booking](#ai-booking)), and grounded AI Customer Support including
+Service History (Prompt 11, see [AI Customer Support](#ai-customer-support))
+**are** implemented, but the AI still cannot do anything beyond checking
+availability, creating/rescheduling/cancelling an Appointment, and
+answering read-only questions: no CustomerRequest creation, no
+customer/vehicle search or auto-creation, no escalation entity, no tool of
+any other kind; `channel` remains a label, not a live connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `CRMAdapter` / `CalendarAdapter` / `ChannelAdapter` /

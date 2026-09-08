@@ -113,6 +113,26 @@ export interface AiBusinessContext {
     endAtLocal: string
     status: string
   }[]
+  /**
+   * The known vehicle's recent, non-archived ServiceRecords (Prompt 11) —
+   * evidence of past work, never a diagnostic engine. Empty whenever no
+   * vehicle is known. Bounded (see contextBuilder.ts's MAX_SERVICE_HISTORY)
+   * and ordered newest-first, same shape/rationale as
+   * `upcomingAppointments`: no `id`/`customerId`/`vehicleId`/`serviceId`/
+   * `appointmentId` — the AI has no tool that could use one, and Prompt 09's
+   * "no unnecessary internal identifiers" principle applies here too.
+   */
+  serviceHistory: {
+    performedAtLocal: string
+    serviceName: string
+    mileage: number | null
+    totalPrice: string
+    currency: string
+    workDescription: string
+    partsDescription: string | null
+    recommendations: string | null
+    notes: string | null
+  }[]
 }
 
 export interface AiHistoryMessage {

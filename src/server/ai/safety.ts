@@ -50,6 +50,63 @@ export function applyFabricatedActionCheck(result: ValidatedAiResult): Validated
   }
 }
 
+// Prompt 11 §"HUMAN HANDOFF LANGUAGE": needsHuman=true is only a signal on
+// the result — no escalation mechanism exists yet (that's Prompt 12), so a
+// draft claiming staff/a manager was actually notified is the same category
+// of fabricated-action claim as "your appointment is booked" above.
+const FABRICATED_ESCALATION_PATTERNS: RegExp[] = [
+  /я\s+(уже\s+)?передал[а]?\s+(ваш\s+)?(вопрос|запрос|обращение)/iu,
+  /(вопрос|запрос|обращение)\s+(уже\s+)?передан[оа]?\s+(менеджер|сотрудник|специалист)/iu,
+  /я\s+(уже\s+)?связал(ся|ась)\s+с\s+(менеджер|сотрудник)/iu,
+  /i(?:'ve| have)?\s+(escalated|forwarded|passed)\s+(this|your)\s+(question|request|issue)\s+to\s+a\s+(manager|human|specialist|team)/iu,
+  /(a\s+)?manager\s+(has\s+been\s+)?(notified|contacted)/iu,
+]
+
+const SAFE_ESCALATION_FALLBACK_ANSWER = 'Для точного ответа потребуется уточнение со стороны администратора сервиса.'
+
+/** Returns the result unchanged, or a safety-overridden copy if the draft answer falsely claims a human was already notified. */
+export function applyFabricatedEscalationCheck(result: ValidatedAiResult): ValidatedAiResult {
+  const containsClaim = FABRICATED_ESCALATION_PATTERNS.some((pattern) => pattern.test(result.answer))
+  if (!containsClaim) return result
+
+  return {
+    ...result,
+    answer: SAFE_ESCALATION_FALLBACK_ANSWER,
+    needsHuman: true,
+    reason: 'AI_SAFETY_REJECTION: draft answer claimed a human/manager was already notified, but no escalation mechanism exists yet',
+  }
+}
+
+// Prompt 11 §"DO NOT TURN HISTORY INTO DIAGNOSIS" / AI_BEHAVIOR_CONTRACT.md
+// §8: Service History and a customer's description of a symptom are
+// evidence, never a confirmed diagnosis. This is a narrow, deterministic
+// net for the clearest violations (the spec's own worked example: "У вас
+// точно неисправен генератор") — not a general diagnosis classifier; it
+// deliberately does not try to catch every possible diagnostic phrasing,
+// the same way FABRICATED_ACTION_PATTERNS doesn't catch every possible
+// booking claim.
+const DEFINITIVE_DIAGNOSIS_PATTERNS: RegExp[] = [
+  /у\s+вас\s+(точно|однозначно|определённо)\s+(неисправ|сломан|вышел\s+из\s+строя)/iu,
+  /(это|у\s+вас)\s+(точно|однозначно)\s+(проблема|неисправность)\s+(в|с)\s+/iu,
+  /you\s+definitely\s+have\s+a\s+(faulty|broken|failed)/iu,
+]
+
+const SAFE_DIAGNOSIS_FALLBACK_ANSWER =
+  'По имеющейся информации нельзя точно определить причину — рекомендуется очная диагностика в сервисе.'
+
+/** Returns the result unchanged, or a safety-overridden copy if the draft answer states a definitive diagnosis as confirmed fact. */
+export function applyDefinitiveDiagnosisCheck(result: ValidatedAiResult): ValidatedAiResult {
+  const containsDiagnosis = DEFINITIVE_DIAGNOSIS_PATTERNS.some((pattern) => pattern.test(result.answer))
+  if (!containsDiagnosis) return result
+
+  return {
+    ...result,
+    answer: SAFE_DIAGNOSIS_FALLBACK_ANSWER,
+    needsHuman: true,
+    reason: 'AI_SAFETY_REJECTION: draft answer asserted a definitive vehicle diagnosis that available data does not establish',
+  }
+}
+
 export function applySafetyLayer(result: ValidatedAiResult): ValidatedAiResult {
-  return applyConfidencePolicy(applyFabricatedActionCheck(result))
+  return applyConfidencePolicy(applyDefinitiveDiagnosisCheck(applyFabricatedEscalationCheck(applyFabricatedActionCheck(result))))
 }

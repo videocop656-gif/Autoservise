@@ -6,11 +6,15 @@ import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
 import { customerRequestRepository } from '../repositories/customerRequestRepository'
 import { appointmentRepository, CONFLICT_BLOCKING_STATUSES } from '../repositories/appointmentRepository'
+import { serviceRecordRepository } from '../repositories/serviceRecordRepository'
 import { toBusinessLocalDateTime } from '../lib/timezone'
 import type { AiBusinessContext } from './types'
 
 /** Bounded, not a general appointment-history feature — just enough for the AI to name a specific appointment for reschedule/cancel. */
 const MAX_UPCOMING_APPOINTMENTS = 5
+
+/** Bounded, per spec §"RECOMMENDED CONTEXT" (Prompt 11) — "latest 10 relevant ServiceRecords", never unlimited history. */
+const MAX_SERVICE_HISTORY = 10
 
 interface ConversationRef {
   customerId: string | null
@@ -27,12 +31,12 @@ interface ConversationRef {
  *  - Customer.notes: deliberately excluded (spec explicitly calls this out
  *    as "only if truly necessary" — Prompt 09 doesn't have a mechanism to
  *    decide that, so the safe default is to never include it).
- *  - Service history: deliberately NOT included by default (spec: "только
- *    если она действительно нужна для запроса" — deciding *when* it's
- *    needed requires intent-based selective loading, which is exactly the
- *    Tool Layer explicitly deferred to Prompt 10+). Documented as a
- *    conscious NOT IMPLEMENTED choice in the Prompt 09 report, not an
- *    oversight.
+ *  - Service history (Prompt 11): included, but only when a vehicle is
+ *    already known (same gating as `upcomingAppointments` — ServiceRecord
+ *    is always vehicle-scoped, see prisma/schema.prisma), bounded to the
+ *    most recent MAX_SERVICE_HISTORY non-archived records. This is
+ *    evidence of past work for the AI to state as fact — it is never a
+ *    diagnostic engine (see AI_BEHAVIOR_CONTRACT.md §8, promptBuilder.ts).
  *  - Vehicle: Conversation itself has no vehicleId field (see
  *    prisma/schema.prisma) — a vehicle only becomes "known" when the
  *    Conversation is linked to a CustomerRequest that itself has one. If
@@ -54,6 +58,7 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
   let customer: AiBusinessContext['customer'] = null
   let vehicle: AiBusinessContext['vehicle'] = null
   let upcomingAppointments: AiBusinessContext['upcomingAppointments'] = []
+  let serviceHistory: AiBusinessContext['serviceHistory'] = []
 
   if (conversation.customerId) {
     const found = await customerRepository.findById(ctx.tenant.id, ctx.business.id, conversation.customerId)
@@ -104,6 +109,32 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
               status: a.status,
             }
           })
+
+        // Service History (Prompt 11) — real evidence of past work, so the
+        // AI can answer "when was my oil last changed" from fact instead of
+        // deflecting. Archived records are excluded by default (same
+        // convention as the Service History settings page itself); bounded
+        // to a small recent window, never the vehicle's entire history.
+        const { items: historyItems } = await serviceRecordRepository.list(ctx.tenant.id, ctx.business.id, {
+          vehicleId: foundVehicle.id,
+          includeArchived: false,
+          skip: 0,
+          take: MAX_SERVICE_HISTORY,
+        })
+        serviceHistory = historyItems.map((r) => {
+          const performed = toBusinessLocalDateTime(r.performedAt, ctx.business.timezone)
+          return {
+            performedAtLocal: performed.dateKey,
+            serviceName: serviceNameById.get(r.serviceId) ?? 'Unknown service',
+            mileage: r.mileage,
+            totalPrice: r.totalPrice.toFixed(2),
+            currency: r.currency,
+            workDescription: r.workDescription,
+            partsDescription: r.partsDescription,
+            recommendations: r.recommendations,
+            notes: r.notes,
+          }
+        })
       }
     }
   }
@@ -132,5 +163,6 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
     customer,
     vehicle,
     upcomingAppointments,
+    serviceHistory,
   }
 }

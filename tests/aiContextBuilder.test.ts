@@ -9,6 +9,7 @@ const {
   vehicleFindByIdMock,
   customerRequestFindByIdMock,
   appointmentListMock,
+  serviceRecordListMock,
 } = vi.hoisted(() => ({
   serviceListMock: vi.fn(),
   knowledgeListMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   vehicleFindByIdMock: vi.fn(),
   customerRequestFindByIdMock: vi.fn(),
   appointmentListMock: vi.fn(),
+  serviceRecordListMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/serviceRepository', () => ({
@@ -40,6 +42,9 @@ vi.mock('../src/server/repositories/customerRequestRepository', () => ({
 vi.mock('../src/server/repositories/appointmentRepository', () => ({
   appointmentRepository: { list: appointmentListMock },
   CONFLICT_BLOCKING_STATUSES: ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+}))
+vi.mock('../src/server/repositories/serviceRecordRepository', () => ({
+  serviceRecordRepository: { list: serviceRecordListMock },
 }))
 
 import { buildAiContext } from '../src/server/ai/contextBuilder'
@@ -67,6 +72,7 @@ beforeEach(() => {
   vehicleFindByIdMock.mockResolvedValue(null)
   customerRequestFindByIdMock.mockResolvedValue(null)
   appointmentListMock.mockResolvedValue({ items: [], total: 0 })
+  serviceRecordListMock.mockResolvedValue({ items: [], total: 0 })
 })
 
 describe('buildAiContext', () => {
@@ -263,6 +269,106 @@ describe('buildAiContext', () => {
       const ctx = makeAuthContext('owner')
       const context = await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
       expect(context.upcomingAppointments.length).toBeLessThanOrEqual(5)
+    })
+  })
+
+  describe('serviceHistory (Prompt 11)', () => {
+    const customerFixture = { id: 'cust1', firstName: 'Ivan', lastName: null, phone: '1', email: null }
+    const vehicleFixture = { id: 'veh1', make: 'Toyota', model: 'Camry', year: 2018, licensePlate: null, mileage: null }
+
+    function setKnownVehicle() {
+      customerFindByIdMock.mockResolvedValue(customerFixture)
+      customerRequestFindByIdMock.mockResolvedValue({ id: 'req1', vehicleId: 'veh1' })
+      vehicleFindByIdMock.mockResolvedValue(vehicleFixture)
+    }
+
+    function makeRecord(overrides: Record<string, unknown> = {}) {
+      return {
+        serviceId: 'svc1',
+        performedAt: new Date('2026-08-15T09:00:00Z'),
+        mileage: 82400,
+        totalPrice: makeDecimal('3500.00'),
+        currency: 'RUB',
+        workDescription: 'Замена масла и масляного фильтра',
+        partsDescription: null,
+        recommendations: 'Проверить тормозные колодки на следующем визите',
+        notes: null,
+        ...overrides,
+      }
+    }
+
+    it('is empty when no vehicle is known', async () => {
+      const ctx = makeAuthContext('owner')
+      const context = await buildAiContext(ctx, { customerId: null, customerRequestId: null })
+      expect(context.serviceHistory).toEqual([])
+      expect(serviceRecordListMock).not.toHaveBeenCalled()
+    })
+
+    it('is scoped to the known vehicle and excludes archived records by default', async () => {
+      setKnownVehicle()
+      const ctx = makeAuthContext('owner')
+      await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
+      expect(serviceRecordListMock).toHaveBeenCalledWith(
+        ctx.tenant.id,
+        ctx.business.id,
+        expect.objectContaining({ vehicleId: 'veh1', includeArchived: false })
+      )
+    })
+
+    it('is bounded to a small recent window (take <= 10)', async () => {
+      setKnownVehicle()
+      const ctx = makeAuthContext('owner')
+      await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
+      const call = serviceRecordListMock.mock.calls[0]![2] as { take: number }
+      expect(call.take).toBeLessThanOrEqual(10)
+    })
+
+    it('maps real ServiceRecord fields — never raw Decimal, never internal ids', async () => {
+      setKnownVehicle()
+      serviceRecordListMock.mockResolvedValue({ items: [makeRecord()], total: 1 })
+      const ctx = makeAuthContext('owner')
+      const context = await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
+      expect(context.serviceHistory).toEqual([
+        {
+          performedAtLocal: '2026-08-15',
+          serviceName: 'Замена масла',
+          mileage: 82400,
+          totalPrice: '3500.00',
+          currency: 'RUB',
+          workDescription: 'Замена масла и масляного фильтра',
+          partsDescription: null,
+          recommendations: 'Проверить тормозные колодки на следующем визите',
+          notes: null,
+        },
+      ])
+      const serialized = JSON.stringify(context.serviceHistory)
+      expect(serialized).not.toContain('customerId')
+      expect(serialized).not.toContain('vehicleId')
+      expect(serialized).not.toContain('serviceId')
+      expect(serialized).not.toContain('appointmentId')
+    })
+
+    it('falls back to "Unknown service" when the record references a since-deactivated service (same convention as upcomingAppointments)', async () => {
+      setKnownVehicle()
+      serviceRecordListMock.mockResolvedValue({ items: [makeRecord({ serviceId: 'deactivated-svc' })], total: 1 })
+      const ctx = makeAuthContext('owner')
+      const context = await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
+      expect(context.serviceHistory[0]!.serviceName).toBe('Unknown service')
+    })
+
+    it('preserves the repository\'s newest-first ordering (never re-sorted client-side)', async () => {
+      setKnownVehicle()
+      serviceRecordListMock.mockResolvedValue({
+        items: [
+          makeRecord({ performedAt: new Date('2026-08-15T09:00:00Z'), workDescription: 'Newer visit' }),
+          makeRecord({ performedAt: new Date('2026-01-10T09:00:00Z'), workDescription: 'Older visit' }),
+        ],
+        total: 2,
+      })
+      const ctx = makeAuthContext('owner')
+      const context = await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: 'req1' })
+      expect(context.serviceHistory[0]!.workDescription).toBe('Newer visit')
+      expect(context.serviceHistory[1]!.workDescription).toBe('Older visit')
     })
   })
 })

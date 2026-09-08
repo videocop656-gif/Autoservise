@@ -78,17 +78,18 @@ What each layer is for:
 - **CustomerRequest** — the structured, channel-independent record of that inquiry (**implemented today**, manually created/managed by staff, and now optionally linkable to a Conversation). This is the boundary a future AI is meant to operate through instead of touching operational tables directly.
 - **Identify Customer / Identify Vehicle** — resolving the request to a real `Customer`/`Vehicle` row in this tenant's data, never a guess. **Partially implemented** (Prompt 09–10): the AI context builder resolves a Customer/Vehicle already linked to the Conversation, and every booking tool re-validates that id against real tenant-scoped data — but the AI still never *searches for or picks among* several possible matches, and it never creates a Customer/Vehicle on its own; that remains future Tool Layer work.
 - **Understand Intent** — classifying what the customer actually wants. **Implemented today** (Prompt 09): `POST /api/ai/analyze` classifies every message into one of twelve fixed intents (`PRICE_INQUIRY`, `BOOKING_REQUEST`, `VEHICLE_PROBLEM`, etc.) with a `confidence` score.
-- **Knowledge + Business Rules + Service History** — the only allowed sources of business-specific fact (see `AI_BEHAVIOR_CONTRACT.md` §2). Knowledge and Business Rules are **implemented today** as part of the AI context; Service History is deliberately not included yet (see Section 11).
+- **Knowledge + Business Rules + Service History** — the only allowed sources of business-specific fact (see `AI_BEHAVIOR_CONTRACT.md` §2). **Implemented today** (Prompt 09 for Knowledge/Rules, Prompt 11 for Service History): all three are part of the AI context, sourced with the same priority order the behavior contract specifies — Business Rules first, then Services/Knowledge, then Service History as the authoritative record of what actually happened in the past (never contradicted by a generic Knowledge Base statement).
 - **AI Decision** — a structured choice among the actions listed, never free-form unconstrained behavior. **Partially implemented** (Prompt 10): "Offer Appointment" (`check_availability`), "Create Appointment", "Update Appointment" (`reschedule_appointment`), and "Cancel Appointment" now exist as real, whitelisted tools behind a server-controlled tool-calling loop, each gated by explicit customer confirmation before it runs. "Ask Clarifying Question" and "Escalate to Human" remain a plain draft-answer/`needsHuman` flag, not a dedicated tool.
 - **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said; the "Action Log" half (a record of what an AI *decided and did*) remains future work — Roadmap 13.
 
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 10 complete).
+`api/`/`src/` trees at the time of writing (Prompt 11 complete).
 
 - **AI provider**: OpenAI (official `openai` npm SDK), accessed exclusively server-side through a provider-abstraction interface (`AiProvider`) — `src/server/ai/`. Falls back automatically to a deterministic, no-network mock provider when `OPENAI_API_KEY` isn't configured (true in this environment), so the AI Core stays fully exercisable without a real key.
 - **AI Tool Layer** (`src/server/ai/tools/`): the only path from the AI provider to booking data. Four whitelisted tools, each Zod-validated, each re-authorized against `AuthContext` (never model-supplied ids) and an `AiToolAllowedEntities` allow-list (the conversation's own known customer/vehicle/appointments), each calling the existing `appointmentService.ts` — never Prisma directly. A tool result is always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?}`.
+- **AI Customer Support** (Prompt 11): read-only, no new tool — `contextBuilder.ts` additionally loads the known vehicle's recent Service History, and the safety layer (`safety.ts`) gained two more deterministic checks (`applyDefinitiveDiagnosisCheck`, `applyFabricatedEscalationCheck`) alongside Prompt 09's fabricated-action check.
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -98,7 +99,7 @@ Verified directly against `package.json`, `prisma/schema.prisma`, and the
 - **Auth**: fully custom — email + Argon2id password hashing, cryptographically random session tokens (HMAC-SHA256-hashed before storage), server-side `Session` table, HttpOnly/SameSite cookies. No Supabase Auth, no Clerk/Auth0, no JWT-in-localStorage.
 - **Multi-tenant**: every domain table carries `tenantId` + `businessId`; see Section 4.
 
-**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–10, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
+**Discrepancy note**: earlier planning language for this project referred to "React 19" and "Tailwind v4" / "shadcn/ui" as the target stack. The repository, as actually built across Prompts 01–11, uses React 18.3.1 and Tailwind v3 with hand-rolled shadcn-style components instead. This document records the actual, current stack; upgrading is not scheduled on the roadmap and would be its own deliberate step if ever undertaken.
 
 ## 4. Multi-Tenancy
 
@@ -156,6 +157,12 @@ and the existing per-vehicle conflict query — no new schedule/availability
 model, no idempotency table. The one new server-side helper is
 `businessLocalToUtc()` (`src/server/lib/timezone.ts`), the DST-safe inverse
 of the existing `toBusinessLocalDateTime()` — plain code, not schema.
+
+**Prompt 11 (AI Customer Support) also added zero new Prisma models and
+zero new migrations.** `contextBuilder.ts` now additionally reads
+`ServiceRecord` (via the existing `serviceRecordRepository.list()`,
+unchanged) to populate `serviceHistory` — no new history table, no
+duplication of `ServiceRecord` data anywhere.
 
 **Planned, not yet in the schema** (no such Prisma models exist today):
 
@@ -288,11 +295,11 @@ the flow *is*, only who/what executes it.
 
 ## 11. AI Capabilities
 
-**Read — implemented today (Prompt 09–10)**: business profile, active services, active knowledge, active business rules, and — only when already known via the Conversation — customer/vehicle summary fields plus a small bounded list of that vehicle's own upcoming appointments (Prompt 10, needed so the AI can name a specific appointment for reschedule/cancel without inventing an id). **Not yet included**: working hours and service history are still not part of the AI Core context builder (service history in particular remains deliberately deferred — see `DEVELOPMENT_ROADMAP.md` Prompt 09/11 — since deciding *when* it's actually needed requires selective, intent-based loading beyond this stage's scope). Working hours are read internally by `check_availability`, but are never included in the raw context handed to the model.
+**Read — implemented today (Prompt 09–11)**: business profile, active services, active knowledge, active business rules, and — only when already known via the Conversation — customer/vehicle summary fields, a small bounded list of that vehicle's own upcoming appointments (Prompt 10), and now that same vehicle's recent Service History (Prompt 11: latest 10 non-archived `ServiceRecord`s, newest-first). **Not yet included**: working hours are still not part of the raw context handed to the model (they're read internally by `check_availability` only).
 
-**Classify/Draft — implemented today (Prompt 09)**: `POST /api/ai/analyze` classifies a message into one of twelve fixed intents, extracts a small set of structured entities (never fabricated — unknown values are `null`), produces a safe draft answer, and returns a `confidence`/`needsHuman`/`reason` triple. This is read-only analysis, returned to staff as a draft — it is never sent to a customer automatically.
+**Classify/Draft — implemented today (Prompt 09), grounded (Prompt 11)**: `POST /api/ai/analyze` classifies a message into one of twelve fixed intents, extracts a small set of structured entities (never fabricated — unknown values are `null`), and returns a `confidence`/`needsHuman`/`reason` triple. As of Prompt 11, the draft answer for a non-booking question is actually grounded in real data rather than a generic deflection: a price question states the exact stored price or admits none exists; a warranty question cites the matching Business Rule or Knowledge Item or admits it can't be confirmed; a service-history question cites the real record or admits there isn't one; a vehicle-symptom question acknowledges the symptom and cites relevant history as fact without concluding a diagnosis from it. This is read-only analysis, returned to staff as a draft — it is never sent to a customer automatically.
 
-**Perform — partially implemented (Prompt 10)**: `check_availability`, `create_appointment`, `reschedule_appointment`, and `cancel_appointment` exist today as real, whitelisted tools (`src/server/ai/tools/`) behind a server-controlled tool-calling loop (max 3 tool calls per `analyze` request) — each one calls the existing Appointment Service, never Prisma directly, and the three mutating tools each require an explicit customer confirmation phrase in the *current* message before they run at all. **Still future**: create CustomerRequest, find/search among several possible customer or vehicle matches, automatic Customer/Vehicle creation, and create escalation — none of this exists yet.
+**Perform — partially implemented (Prompt 10)**: `check_availability`, `create_appointment`, `reschedule_appointment`, and `cancel_appointment` exist today as real, whitelisted tools (`src/server/ai/tools/`) behind a server-controlled tool-calling loop (max 3 tool calls per `analyze` request) — each one calls the existing Appointment Service, never Prisma directly, and the three mutating tools each require an explicit customer confirmation phrase in the *current* message before they run at all. **Still future**: create CustomerRequest, find/search among several possible customer or vehicle matches, automatic Customer/Vehicle creation, and create escalation — none of this exists yet; Prompt 11 deliberately added no new tool of any kind.
 
 **Ask — future**: today's draft answer can *state* that more information is needed, but there is no multi-turn clarification loop, no follow-up-question tool, and no automatic re-prompting yet — that belongs to the AI Core the same way the rest of "Perform" does, layered on top of the single-shot `analyze` call.
 
@@ -325,7 +332,21 @@ claims) remain unchanged and now additionally cover tool results — a tool
 failure is reported honestly (`errorCode`/`message`), never smoothed over
 into a false success claim. The remaining items (price/rule/working-hours
 *changes*, service creation) still have no code path to violate — no tool
-exists for any of them. Full rationale in `AI_BEHAVIOR_CONTRACT.md`.
+exists for any of them.
+
+**As of Prompt 11**, "state a vehicle diagnosis as fact" and "delete
+service history" both have real code behind them too, in the read-only
+direction: Service History is now part of the AI context specifically so
+the AI can cite it as fact, but a new deterministic safety check
+(`applyDefinitiveDiagnosisCheck`) catches and replaces a draft that
+crosses from citing history into asserting a confirmed current diagnosis;
+Service History itself is never written to by `analyze` (verified against
+the real database — row timestamps unchanged before/after). A second new
+check (`applyFabricatedEscalationCheck`) extends the existing
+fabricated-action protection to escalation claims specifically ("I've
+notified a manager") — meaningful now that Prompt 11 gives the AI many
+more reasons to want to say that. Full rationale in
+`AI_BEHAVIOR_CONTRACT.md`.
 
 ## 13. Human Escalation (Future)
 
@@ -340,8 +361,15 @@ the next step.
 response are the first real implementation of this signal — confidence
 below 0.50 forces it server-side regardless of what the model claims, and
 a detected prompt-injection attempt or fabricated-action claim forces it
-too. What's still entirely future: an actual escalation entity, a queue,
-assignment to a specific manager, and any UI for it (Roadmap 12).
+too. **Prompt 11** adds more triggers for the same honest signal — an
+unanswerable customer-support question, a vehicle-symptom report, an
+ungrounded warranty question — but deliberately does not change what
+happens next: `needsHuman: true` is still only a signal on the result, and
+the AI is now explicitly forbidden (system prompt rule 19, and
+`applyFabricatedEscalationCheck`) from claiming it already notified a
+human, since no such mechanism exists yet. What's still entirely future:
+an actual escalation entity, a queue, assignment to a specific manager,
+and any UI for it (Roadmap 12).
 
 ## 14. Anti-Hallucination Principle
 
@@ -368,7 +396,13 @@ always forces `needsHuman = true` server-side, and a fabricated
 replaced. The `Escalate to human` half of this principle is implemented
 as the `needsHuman`/`reason` fields on `analyze`'s response; there is no
 escalation queue or UI for a human to actually receive that signal yet
-(Roadmap 12).
+(Roadmap 12). **Prompt 11** extends "it doesn't make it up" to Service
+History specifically: a price/service/warranty/history question with no
+real grounding gets an honest "I don't have enough information," never an
+estimate, and a vehicle-symptom question gets an acknowledgment plus a
+recommendation to get an in-person inspection — real history is cited as
+fact, but is never allowed to become the basis for a fabricated current
+diagnosis.
 
 ## 15. Product Evolution
 
@@ -392,13 +426,16 @@ The `Messages`/`Conversations`/`Customer Requests` middle of this chain is
 **implemented today** (Prompts 07–08) — a Conversation and its Messages can
 optionally link to a CustomerRequest, and multiple Conversations can exist
 per Customer. **`AI Core` is implemented** (Prompt 09) as classification and
-draft-answer generation, and **`Tools` is now partially implemented too**
-(Prompt 10) — four whitelisted, confirmation-gated tools connect the AI to
-real `Appointment` rows under `CRM / Operations`. Everything else `Tools`
-would eventually connect to (CustomerRequest creation, customer/vehicle
-search, escalation) remains future, and so does the **Channels** end of the
-chain (Website, Telegram, WhatsApp, Phone — `Manual`, entered by staff
-exactly as done today, is the only "channel" actually wired to anything).
+grounded draft-answer generation — Prompt 11 additionally lets it *read*
+`CRM / Operations` data directly for grounding (Service History), without
+going through `Tools` at all, since this stage is read-only by design —
+and **`Tools` is separately, partially implemented** (Prompt 10) — four
+whitelisted, confirmation-gated tools connect the AI to real `Appointment`
+*writes* under `CRM / Operations`. Everything else `Tools` would
+eventually connect to (CustomerRequest creation, customer/vehicle search,
+escalation) remains future, and so does the **Channels** end of the chain
+(Website, Telegram, WhatsApp, Phone — `Manual`, entered by staff exactly
+as done today, is the only "channel" actually wired to anything).
 No channel integration of any kind exists in this repository.
 
 ## Documentation Source of Truth
