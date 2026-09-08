@@ -75,3 +75,57 @@ export function toBusinessLocalDateTime(date: Date, timeZone: string): BusinessL
     dayOfWeek,
   }
 }
+
+function getZonedEpoch(date: Date, timeZone: string): number {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+  const parts: Record<string, string> = {}
+  for (const part of formatter.formatToParts(date)) {
+    parts[part.type] = part.value
+  }
+  const hour = parts.hour === '24' ? '00' : parts.hour
+  return Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(hour),
+    Number(parts.minute),
+    Number(parts.second)
+  )
+}
+
+/**
+ * The inverse of toBusinessLocalDateTime: converts a Business-local
+ * "YYYY-MM-DD" date + "HH:mm" time to the correct UTC instant, DST-aware.
+ * Needed for Prompt 10's availability slot generation (a local
+ * date+time — e.g. a candidate 09:00 slot — has to become a real UTC
+ * Date before it can be compared against stored Appointment rows or
+ * passed into the existing Appointment Service).
+ *
+ * This is the server-side twin of src/lib/businessTime.ts's
+ * zonedTimeToUtc — same iterative-offset algorithm (two passes converge
+ * even right at a DST transition), deliberately not manual UTC-offset
+ * arithmetic. It didn't exist before Prompt 10 because nothing on the
+ * server previously needed to go local-time -> UTC; every prior stage
+ * only ever needed the other direction (toBusinessLocalDateTime above).
+ */
+export function businessLocalToUtc(dateKey: string, timeKey: string, timeZone: string): Date {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const [hour, minute] = timeKey.split(':').map(Number)
+  const target = Date.UTC(year ?? 1970, (month ?? 1) - 1, day ?? 1, hour ?? 0, minute ?? 0, 0)
+
+  let utc = target
+  for (let i = 0; i < 2; i++) {
+    const offset = getZonedEpoch(new Date(utc), timeZone) - utc
+    utc = target - offset
+  }
+  return new Date(utc)
+}

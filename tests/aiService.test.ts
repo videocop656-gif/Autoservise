@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { makeAuthContext } from './helpers/fixtures'
 
-const { convFindByIdMock, listByConversationMock, buildAiContextMock } = vi.hoisted(() => ({
+const { convFindByIdMock, listByConversationMock, buildAiContextMock, executeToolMock } = vi.hoisted(() => ({
   convFindByIdMock: vi.fn(),
   listByConversationMock: vi.fn(),
   buildAiContextMock: vi.fn(),
+  executeToolMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/conversationRepository', () => ({
@@ -16,11 +17,15 @@ vi.mock('../src/server/repositories/messageRepository', () => ({
 vi.mock('../src/server/ai/contextBuilder', () => ({
   buildAiContext: buildAiContextMock,
 }))
+vi.mock('../src/server/ai/tools/registry', () => ({
+  TOOL_DEFINITIONS: [{ name: 'check_availability', description: 'x', parameters: {} }],
+  executeTool: executeToolMock,
+}))
 
 import { analyzeMessage } from '../src/server/services/aiService'
 import { AiProviderError } from '../src/server/ai/provider'
 import { EMPTY_AI_ENTITIES } from '../src/server/ai/types'
-import type { AiProvider } from '../src/server/ai/provider'
+import type { AiProvider, AiGenerationResult } from '../src/server/ai/provider'
 
 const CONTEXT = {
   business: { name: 'Test Auto Service', description: null, phone: null, email: null, address: null, timezone: 'UTC', currency: 'RUB' },
@@ -29,6 +34,7 @@ const CONTEXT = {
   rules: [],
   customer: null,
   vehicle: null,
+  upcomingAppointments: [],
 }
 
 function makeConversation(overrides: Record<string, unknown> = {}) {
@@ -52,11 +58,22 @@ function validRaw(overrides: Record<string, unknown> = {}) {
 }
 
 function makeStubProvider(raw: unknown): AiProvider {
-  return { generate: vi.fn().mockResolvedValue({ raw }) }
+  return { generate: vi.fn().mockResolvedValue({ type: 'final', raw } as AiGenerationResult) }
 }
 
 function makeFailingProvider(err: unknown): AiProvider {
   return { generate: vi.fn().mockRejectedValue(err) }
+}
+
+/** A provider that requests one tool call per round, forever — used to exercise the max-tool-calls limit. */
+function makeInfiniteToolCaller(): AiProvider {
+  let round = 0
+  return {
+    generate: vi.fn().mockImplementation(async () => {
+      round += 1
+      return { type: 'tool_calls', calls: [{ id: `t${round}`, name: 'check_availability', arguments: {} }] } as AiGenerationResult
+    }),
+  }
 }
 
 const baseInput = { conversationId: 'conv1', message: 'Сколько стоит замена масла?' }
@@ -66,6 +83,7 @@ beforeEach(() => {
   convFindByIdMock.mockResolvedValue(makeConversation())
   listByConversationMock.mockResolvedValue([])
   buildAiContextMock.mockResolvedValue(CONTEXT)
+  executeToolMock.mockResolvedValue({ success: true, tool: 'check_availability', data: { available: true, slots: [] } })
 })
 
 describe('analyzeMessage — permissions', () => {
@@ -97,7 +115,7 @@ describe('analyzeMessage — conversation lookup', () => {
   })
 })
 
-describe('analyzeMessage — successful analysis', () => {
+describe('analyzeMessage — successful analysis (no tool involved)', () => {
   it('returns the validated, safety-checked result', async () => {
     const provider = makeStubProvider(validRaw())
     const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
@@ -112,6 +130,12 @@ describe('analyzeMessage — successful analysis', () => {
     expect(listByConversationMock).toHaveBeenCalledTimes(1)
   })
 
+  it('has no toolExecutions field when no tool was ever called', async () => {
+    const provider = makeStubProvider(validRaw())
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.toolExecutions).toBeUndefined()
+  })
+
   it('passes the untrusted user message and trusted context/history to the provider as separate fields', async () => {
     listByConversationMock.mockResolvedValue([makeMessage('INBOUND', 'previous message', 1)])
     const provider = makeStubProvider(validRaw())
@@ -121,6 +145,7 @@ describe('analyzeMessage — successful analysis', () => {
         userMessage: baseInput.message,
         businessContext: CONTEXT,
         history: [{ direction: 'INBOUND', content: 'previous message' }],
+        toolExchanges: [],
       })
     )
   })
@@ -134,6 +159,68 @@ describe('analyzeMessage — successful analysis', () => {
     expect(call.history).toHaveLength(20)
     expect(call.history[0]!.content).toBe('msg-5')
     expect(call.history[19]!.content).toBe('msg-24')
+  })
+})
+
+describe('analyzeMessage — tool-calling loop', () => {
+  it('executes a requested tool via the registry, tenant-scoped, and feeds the result back to the provider', async () => {
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async (req) => {
+        round += 1
+        if (round === 1) return { type: 'tool_calls', calls: [{ id: 't1', name: 'check_availability', arguments: { date: '2026-09-16' } }] }
+        // Second round must see the tool result already appended.
+        expect(req.toolExchanges).toHaveLength(1)
+        return { type: 'final', raw: validRaw({ intent: 'AVAILABILITY_INQUIRY' }) }
+      }),
+    }
+    const ctx = makeAuthContext('owner')
+    const result = await analyzeMessage(ctx, baseInput, { provider })
+    expect(executeToolMock).toHaveBeenCalledWith(ctx, 'check_availability', { date: '2026-09-16' }, baseInput.message, {
+      customerId: null,
+      vehicleId: null,
+      appointmentIds: [],
+    })
+    expect(result.intent).toBe('AVAILABILITY_INQUIRY')
+    expect(result.toolExecutions).toEqual([{ tool: 'check_availability', success: true, data: { available: true, slots: [] } }])
+  })
+
+  it('summarizes a failed tool execution without exposing internal error details beyond errorCode/message', async () => {
+    executeToolMock.mockResolvedValue({ success: false, tool: 'create_appointment', errorCode: 'CONFIRMATION_REQUIRED', message: 'x' })
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async () => {
+        round += 1
+        if (round === 1) return { type: 'tool_calls', calls: [{ id: 't1', name: 'create_appointment', arguments: {} }] }
+        return { type: 'final', raw: validRaw() }
+      }),
+    }
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.toolExecutions).toEqual([{ tool: 'create_appointment', success: false, errorCode: 'CONFIRMATION_REQUIRED', message: 'x' }])
+  })
+
+  it('enforces the max-3-tool-calls limit and returns a controlled fallback with needsHuman: true, never an infinite loop', async () => {
+    const provider = makeInfiniteToolCaller()
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(result.needsHuman).toBe(true)
+    expect(result.reason).toContain('AI_TOOL_LIMIT_EXCEEDED')
+    // At most MAX_TOOL_CALLS (3) tool executions actually ran — proves the loop is bounded.
+    expect(executeToolMock.mock.calls.length).toBeLessThanOrEqual(3)
+  })
+
+  it('allows exactly 3 tool calls across rounds, then requires a final answer on the next round', async () => {
+    let round = 0
+    const provider: AiProvider = {
+      generate: vi.fn().mockImplementation(async () => {
+        round += 1
+        if (round <= 3) return { type: 'tool_calls', calls: [{ id: `t${round}`, name: 'check_availability', arguments: {} }] }
+        return { type: 'final', raw: validRaw() }
+      }),
+    }
+    const result = await analyzeMessage(makeAuthContext('owner'), baseInput, { provider })
+    expect(executeToolMock).toHaveBeenCalledTimes(3)
+    expect(result.needsHuman).toBe(false)
+    expect(result.toolExecutions).toHaveLength(3)
   })
 })
 

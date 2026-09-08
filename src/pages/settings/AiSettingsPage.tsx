@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, TriangleAlert } from 'lucide-react'
 import Nav from '../../components/Nav'
 import { Button } from '../../components/ui/button'
 import { Textarea } from '../../components/ui/textarea'
@@ -38,6 +38,42 @@ interface AiEntities {
   requestedTime: string | null
 }
 
+/** One check_availability slot — a real, computed slot, never invented (Prompt 10). */
+interface AvailabilitySlotDto {
+  startAt: string
+  endAt: string
+  localStart: string
+  localEnd: string
+}
+
+interface CheckAvailabilityData {
+  available: boolean
+  date: string
+  timezone: string
+  slots: AvailabilitySlotDto[]
+}
+
+/** Sanitized Appointment DTO — what create_appointment/reschedule_appointment/cancel_appointment return on success. */
+interface AppointmentToolData {
+  id: string
+  customerId: string
+  vehicleId: string
+  serviceId: string
+  startAt: string
+  endAt: string
+  status: string
+  notes: string | null
+}
+
+/** One resolved AI tool call — the AI Tool Layer's own result, always one of exactly these two shapes (Prompt 10). */
+interface AiToolExecutionSummary {
+  tool: string
+  success: boolean
+  data?: unknown
+  errorCode?: string
+  message?: string
+}
+
 interface AiResultDto {
   intent: string
   confidence: number
@@ -45,6 +81,24 @@ interface AiResultDto {
   answer: string
   needsHuman: boolean
   reason: string | null
+  /** Present only when at least one real booking tool ran during this analyze call. */
+  toolExecutions?: AiToolExecutionSummary[]
+}
+
+function isCheckAvailabilityData(tool: string, data: unknown): data is CheckAvailabilityData {
+  return tool === 'check_availability' && !!data && typeof data === 'object' && 'slots' in data
+}
+
+function isAppointmentToolData(tool: string, data: unknown): data is AppointmentToolData {
+  return tool !== 'check_availability' && !!data && typeof data === 'object' && 'id' in data && 'status' in data
+}
+
+function formatLocalDateTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
 }
 
 const ENTITY_LABELS: Record<keyof AiEntities, string> = {
@@ -129,11 +183,23 @@ export default function AiSettingsPage() {
               AI Core — Analyze
             </CardTitle>
             <CardDescription>
-              Операционный инструмент для проверки AI Core: анализ тестового сообщения в контексте выбранного разговора.
-              Реальные сообщения не отправляются и никакие записи не создаются, не изменяются и не отменяются.
+              Операционный инструмент для проверки AI Core и AI Booking Tools: анализ тестового сообщения в контексте
+              выбранного разговора. Отправка сообщения клиенту по-прежнему отключена — ответ модели никогда не
+              создаёт Message.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <span className="font-semibold">Внимание: выполнение AI-инструментов реально.</span> Если ответ модели
+                вызовет create_appointment, reschedule_appointment или cancel_appointment, это{' '}
+                <span className="font-semibold">действительно создаст, перенесёт или отменит</span> запись в базе
+                данных этого бизнеса — в отличие от Prompt 09, это не симуляция. check_availability — операция только
+                для чтения и ничего не изменяет.
+              </div>
+            </div>
+
             {loading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
             {listError && <p className="text-sm text-destructive">{listError}</p>}
 
@@ -233,6 +299,83 @@ export default function AiSettingsPage() {
                   ))}
                 </div>
               </div>
+
+              {result.toolExecutions && result.toolExecutions.length > 0 && (
+                <div>
+                  <div className="mb-1 text-sm text-muted-foreground">
+                    Tool executions <span className="font-medium text-amber-700">(real — see warning above)</span>
+                  </div>
+                  <div className="space-y-2">
+                    {result.toolExecutions.map((exec, idx) => (
+                      <div key={idx} className="rounded-md border p-3 text-sm">
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs font-medium text-slate-800">
+                            {exec.tool}
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                              exec.success ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {exec.success ? 'success' : 'failed'}
+                          </span>
+                        </div>
+
+                        {!exec.success && (
+                          <div className="space-y-0.5">
+                            <div>
+                              <span className="text-muted-foreground">Error code: </span>
+                              <span className="font-mono">{exec.errorCode}</span>
+                            </div>
+                            {exec.message && <div className="text-muted-foreground">{exec.message}</div>}
+                          </div>
+                        )}
+
+                        {exec.success && isCheckAvailabilityData(exec.tool, exec.data) && (
+                          <div className="space-y-1">
+                            <div>
+                              <span className="text-muted-foreground">Date: </span>
+                              {exec.data.date} <span className="text-muted-foreground">({exec.data.timezone})</span>
+                            </div>
+                            {exec.data.slots.length === 0 ? (
+                              <div className="text-muted-foreground">No available slots.</div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {exec.data.slots.map((slot, slotIdx) => (
+                                  <span key={slotIdx} className="rounded border bg-muted/50 px-2 py-0.5 font-mono text-xs">
+                                    {slot.localStart}–{slot.localEnd}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {exec.success && isAppointmentToolData(exec.tool, exec.data) && (
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                            <div>
+                              <span className="text-muted-foreground">Appointment: </span>
+                              <span className="font-mono">{exec.data.id}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Status: </span>
+                              <span className="font-medium">{exec.data.status}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Start: </span>
+                              {formatLocalDateTime(exec.data.startAt)}
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">End: </span>
+                              {formatLocalDateTime(exec.data.endAt)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="mb-1 text-sm text-muted-foreground">Draft answer</div>

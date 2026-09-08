@@ -2,7 +2,7 @@ import type { AppointmentStatus } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
-import { toBusinessLocalDateTime } from '../lib/timezone'
+import { toBusinessLocalDateTime, businessLocalToUtc } from '../lib/timezone'
 import { appointmentRepository } from '../repositories/appointmentRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
@@ -25,6 +25,8 @@ const ALLOWED_TRANSITIONS: Record<AppointmentStatus, AppointmentStatus[]> = {
   CANCELLED: [],
   NO_SHOW: [],
 }
+
+const TERMINAL_STATUSES: AppointmentStatus[] = ['COMPLETED', 'CANCELLED', 'NO_SHOW']
 
 function assertValidTransition(from: AppointmentStatus, to: AppointmentStatus): void {
   if (from === to) return
@@ -204,6 +206,20 @@ export async function updateAppointment(ctx: AuthContext, id: string, input: Upd
   const relationsChanged = input.customerId !== undefined || input.vehicleId !== undefined || input.serviceId !== undefined
   const timeChanged = input.startAt !== undefined || input.endAt !== undefined
 
+  // A terminal appointment (COMPLETED/CANCELLED/NO_SHOW) can never leave
+  // that status (assertValidTransition above already guarantees that), but
+  // until Prompt 10 nothing stopped its *time or relations* from being
+  // silently changed by a PATCH that didn't touch `status` at all — a real
+  // gap relative to "rescheduling/cancelling must respect the existing
+  // lifecycle" (Prompt 10's reschedule/cancel tools need this guarantee,
+  // and it was already a latent correctness issue on the plain REST API
+  // too). Plain field edits (e.g. notes) on a terminal appointment remain
+  // allowed, same historical-editing principle as everywhere else in this
+  // app — only time/relation changes are blocked.
+  if ((timeChanged || relationsChanged) && TERMINAL_STATUSES.includes(existing.status)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Cannot modify a ${existing.status} appointment's time or relations`)
+  }
+
   // Only re-validate what's actually changing. In particular, a
   // status-only update (e.g. closing a job out as COMPLETED) must keep
   // working even if the Customer/Vehicle/Service it references has since
@@ -231,4 +247,151 @@ export async function updateAppointment(ctx: AuthContext, id: string, input: Upd
     throw new ApiError(404, 'NOT_FOUND', 'Appointment not found')
   }
   return updated
+}
+
+// --- Availability (Prompt 10) --------------------------------------------
+//
+// Real, computed availability — the AI Booking Tool Layer's
+// check_availability tool calls this directly rather than duplicating any
+// working-hours/timezone/conflict logic of its own. This function contains
+// no AI-specific code at all; it's a plain extension of the existing
+// Appointment domain, reusable by any future caller (a booking widget,
+// etc.) exactly the way createAppointment/updateAppointment already are.
+
+/** Booking granularity — no project convention exists yet, so this uses the value the spec calls out as the default. */
+const SLOT_GRANULARITY_MINUTES = 30
+
+export interface AvailabilitySlot {
+  startAt: Date
+  endAt: Date
+  /** "HH:mm" in Business.timezone — the wall-clock time a human actually reads. */
+  localStart: string
+  localEnd: string
+}
+
+export interface CheckAvailabilityInput {
+  serviceId: string
+  /** Calendar date in Business.timezone, "YYYY-MM-DD" — never a UTC timestamp (spec §"DATE HANDLING"). */
+  date: string
+  customerId?: string | null
+  vehicleId?: string | null
+  preferredTimeFrom?: string | null
+  preferredTimeTo?: string | null
+}
+
+export interface AvailabilityResult {
+  date: string
+  timezone: string
+  slots: AvailabilitySlot[]
+}
+
+function timeKeyToMinutes(timeKey: string): number {
+  const [h, m] = timeKey.split(':').map(Number)
+  return (h ?? 0) * 60 + (m ?? 0)
+}
+
+function minutesToTimeKey(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60)
+  const m = totalMinutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+/**
+ * Computes real, currently-open, non-conflicting slots for one service on
+ * one calendar date — never invented, never approximate. Reuses:
+ *  - BusinessWorkingHours (Prompt 02) for open/closed days and hours —
+ *    no second schedule model, exactly like createAppointment.
+ *  - businessLocalToUtc / toBusinessLocalDateTime (src/server/lib/
+ *    timezone.ts) for every local<->UTC conversion — DST-safe, no manual
+ *    offset arithmetic.
+ *  - appointmentRepository.findConflict — the exact same per-vehicle
+ *    interval-overlap check createAppointment/updateAppointment already
+ *    use, applied once per candidate slot.
+ *
+ * customerId/vehicleId are optional (spec): if given, they're verified to
+ * exist/belong-to-tenant/belong-to-each-other (404/400, same convention as
+ * elsewhere), but only vehicleId actually affects slot filtering — this
+ * app's conflict model is exclusively per-vehicle (see Appointment's own
+ * findConflict), there is no separate business-wide capacity/resource
+ * limit to check. Unlike createAppointment, the vehicle is NOT required to
+ * be active here — offering slots is informational; the existing active
+ * check still applies, unavoidably, at actual creation time.
+ */
+export async function checkAvailability(ctx: AuthContext, input: CheckAvailabilityInput): Promise<AvailabilityResult> {
+  const timezone = ctx.business.timezone
+
+  const service = await serviceRepository.findById(ctx.tenant.id, ctx.business.id, input.serviceId)
+  if (!service) {
+    throw new ApiError(404, 'NOT_FOUND', 'Service not found')
+  }
+  if (!service.isActive) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Service is not active')
+  }
+
+  if (input.customerId) {
+    const customer = await customerRepository.findById(ctx.tenant.id, ctx.business.id, input.customerId)
+    if (!customer) {
+      throw new ApiError(404, 'NOT_FOUND', 'Customer not found')
+    }
+  }
+
+  if (input.vehicleId) {
+    const vehicle = await vehicleRepository.findById(ctx.tenant.id, ctx.business.id, input.vehicleId)
+    if (!vehicle) {
+      throw new ApiError(404, 'NOT_FOUND', 'Vehicle not found')
+    }
+    if (input.customerId && vehicle.customerId !== input.customerId) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Vehicle does not belong to the specified customer')
+    }
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid date — expected YYYY-MM-DD')
+  }
+
+  // Local noon safely identifies the weekday for this calendar date
+  // regardless of DST — unlike midnight, noon is never ambiguous or
+  // skipped by a DST transition.
+  const referenceInstant = businessLocalToUtc(input.date, '12:00', timezone)
+  const { dayOfWeek } = toBusinessLocalDateTime(referenceInstant, timezone)
+
+  const days = await workingHoursRepository.listByBusiness(ctx.business.id)
+  const day = days.find((d) => d.dayOfWeek === dayOfWeek)
+
+  // Closed day: no availability, not an error — the caller (e.g. the AI
+  // Booking tool) decides how to phrase that to the customer.
+  if (!day || !day.isOpen || !day.openTime || !day.closeTime) {
+    return { date: input.date, timezone, slots: [] }
+  }
+
+  const duration = service.durationMinutes
+  const openMinutes = timeKeyToMinutes(day.openTime)
+  const closeMinutes = timeKeyToMinutes(day.closeTime)
+  const now = Date.now()
+
+  const slots: AvailabilitySlot[] = []
+  for (let start = openMinutes; start + duration <= closeMinutes; start += SLOT_GRANULARITY_MINUTES) {
+    const localStart = minutesToTimeKey(start)
+    const localEnd = minutesToTimeKey(start + duration)
+
+    if (input.preferredTimeFrom && localStart < input.preferredTimeFrom) continue
+    if (input.preferredTimeTo && localEnd > input.preferredTimeTo) continue
+
+    const startAt = businessLocalToUtc(input.date, localStart, timezone)
+    const endAt = businessLocalToUtc(input.date, localEnd, timezone)
+
+    // Never offer a slot that has already started — a requested date
+    // entirely in the past naturally yields zero slots this same way,
+    // with no separate "is this date in the past" special case needed.
+    if (startAt.getTime() <= now) continue
+
+    if (input.vehicleId) {
+      const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, input.vehicleId, startAt, endAt)
+      if (conflict) continue
+    }
+
+    slots.push({ startAt, endAt, localStart, localEnd })
+  }
+
+  return { date: input.date, timezone, slots }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { makeAuthContext, makeBusiness } from './helpers/fixtures'
 
 const {
@@ -46,7 +46,7 @@ vi.mock('../src/server/repositories/workingHoursRepository', () => ({
   workingHoursRepository: { listByBusiness: hoursListByBusinessMock },
 }))
 
-import { listAppointments, getAppointment, createAppointment, updateAppointment } from '../src/server/services/appointmentService'
+import { listAppointments, getAppointment, createAppointment, updateAppointment, checkAvailability } from '../src/server/services/appointmentService'
 
 const CUSTOMER_ID = 'c1'
 const VEHICLE_ID = 'v1'
@@ -59,7 +59,7 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
   return { id: VEHICLE_ID, tenantId: 't1', businessId: 'b1', customerId: CUSTOMER_ID, make: 'Toyota', isActive: true, ...overrides }
 }
 function makeSvc(overrides: Record<string, unknown> = {}) {
-  return { id: SERVICE_ID, tenantId: 't1', businessId: 'b1', name: 'Oil change', isActive: true, ...overrides }
+  return { id: SERVICE_ID, tenantId: 't1', businessId: 'b1', name: 'Oil change', isActive: true, durationMinutes: 60, ...overrides }
 }
 function makeAppointment(overrides: Record<string, unknown> = {}) {
   return {
@@ -379,5 +379,165 @@ describe('updateAppointment', () => {
     await expect(
       updateAppointment(makeAuthContext('owner'), 'a1', { startAt: new Date('2026-09-07T06:30:00Z') } as never)
     ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  describe('terminal-status guard (Prompt 10)', () => {
+    it.each(['COMPLETED', 'CANCELLED', 'NO_SHOW'] as const)(
+      'rejects a time change on a %s appointment even when status is not part of the same PATCH',
+      async (status) => {
+        aptFindByIdMock.mockResolvedValue(makeAppointment({ status }))
+        await expect(
+          updateAppointment(makeAuthContext('owner'), 'a1', { startAt: new Date('2026-09-07T08:00:00Z') } as never)
+        ).rejects.toMatchObject({ statusCode: 400 })
+        expect(aptUpdateByIdMock).not.toHaveBeenCalled()
+      }
+    )
+
+    it.each(['COMPLETED', 'CANCELLED', 'NO_SHOW'] as const)('rejects a relation change on a %s appointment', async (status) => {
+      aptFindByIdMock.mockResolvedValue(makeAppointment({ status }))
+      await expect(
+        updateAppointment(makeAuthContext('owner'), 'a1', { vehicleId: 'other-vehicle' } as never)
+      ).rejects.toMatchObject({ statusCode: 400 })
+    })
+
+    it('still allows a plain field edit (e.g. notes) on a terminal appointment — historical editing is never blocked', async () => {
+      aptFindByIdMock.mockResolvedValue(makeAppointment({ status: 'COMPLETED' }))
+      aptUpdateByIdMock.mockResolvedValue(makeAppointment({ status: 'COMPLETED', notes: 'Updated' }))
+      await expect(updateAppointment(makeAuthContext('owner'), 'a1', { notes: 'Updated' } as never)).resolves.toBeDefined()
+    })
+
+    it('a same-status no-op PATCH combined with a time change on an already-terminal appointment is still rejected', async () => {
+      aptFindByIdMock.mockResolvedValue(makeAppointment({ status: 'CANCELLED' }))
+      await expect(
+        updateAppointment(makeAuthContext('owner'), 'a1', { status: 'CANCELLED', startAt: new Date('2026-09-07T08:00:00Z') } as never)
+      ).rejects.toMatchObject({ statusCode: 400 })
+    })
+
+    it('does not affect a non-terminal appointment (SCHEDULED/CONFIRMED/IN_PROGRESS can still be rescheduled)', async () => {
+      aptFindByIdMock.mockResolvedValue(makeAppointment({ status: 'CONFIRMED' }))
+      aptUpdateByIdMock.mockResolvedValue(makeAppointment({ status: 'CONFIRMED', startAt: new Date('2026-09-07T08:00:00Z') }))
+      await expect(
+        updateAppointment(makeAuthContext('owner'), 'a1', { startAt: new Date('2026-09-07T08:00:00Z'), endAt: new Date('2026-09-07T09:00:00Z') } as never)
+      ).resolves.toBeDefined()
+    })
+  })
+})
+
+describe('checkAvailability', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-01T00:00:00Z')) // well before every date used below
+  })
+
+  it('returns 404 when the service belongs to another tenant / does not exist', async () => {
+    serviceFindByIdMock.mockResolvedValue(null)
+    await expect(checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })).rejects.toMatchObject({
+      statusCode: 404,
+    })
+  })
+
+  it('returns 400 when the service is inactive', async () => {
+    serviceFindByIdMock.mockResolvedValue(makeSvc({ isActive: false }))
+    await expect(checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })).rejects.toMatchObject({
+      statusCode: 400,
+    })
+  })
+
+  it('returns 404 when the given vehicle belongs to another tenant / does not exist', async () => {
+    vehicleFindByIdMock.mockResolvedValue(null)
+    await expect(
+      checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07', vehicleId: VEHICLE_ID })
+    ).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('returns 400 when the given vehicle does not belong to the given customer', async () => {
+    vehicleFindByIdMock.mockResolvedValue(makeVehicle({ customerId: 'someone-else' }))
+    await expect(
+      checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07', vehicleId: VEHICLE_ID, customerId: CUSTOMER_ID })
+    ).rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  it('rejects a malformed date', async () => {
+    await expect(checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: 'not-a-date' })).rejects.toMatchObject({
+      statusCode: 400,
+    })
+  })
+
+  it('returns no slots (not an error) on a day the business is closed', async () => {
+    // 2026-09-06 is a Sunday, closed in STANDARD_WEEK.
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-06' })
+    expect(result.slots).toEqual([])
+  })
+
+  it('returns real, working-hours-bounded slots on an open day', async () => {
+    // Monday 09:00-18:00, 60-minute service -> last bookable slot starts at 17:00.
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    expect(result.slots.length).toBeGreaterThan(0)
+    expect(result.slots[0]!.localStart).toBe('09:00')
+    expect(result.slots[result.slots.length - 1]!.localStart).toBe('17:00')
+    for (const slot of result.slots) {
+      expect(slot.localStart >= '09:00').toBe(true)
+      expect(slot.localEnd <= '18:00').toBe(true)
+    }
+  })
+
+  it('never offers a slot that has already started (no past slots)', async () => {
+    // "Now" is fixed far in the past (2026-09-01) relative to every date
+    // used in this describe block, so this is exercised by a date that is
+    // *today* relative to a later fake-now instead.
+    vi.setSystemTime(new Date('2026-09-07T10:30:00Z')) // 13:30 Moscow time, still Monday
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    expect(result.slots.every((s) => s.startAt.getTime() > Date.now())).toBe(true)
+    expect(result.slots.some((s) => s.localStart === '09:00')).toBe(false)
+  })
+
+  it('a date entirely in the past yields zero slots, not an error', async () => {
+    vi.setSystemTime(new Date('2026-09-10T00:00:00Z'))
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    expect(result.slots).toEqual([])
+  })
+
+  it('excludes a slot that overlaps an existing blocking appointment for the given vehicle', async () => {
+    // Existing appointment 09:00-10:00 blocks that slot when vehicleId is given.
+    aptFindConflictMock.mockImplementation(async (_t, _b, _v, startAt: Date) => {
+      const localHour = startAt.getUTCHours() + 3 // Europe/Moscow UTC+3
+      return localHour === 9 ? makeAppointment() : null
+    })
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07', vehicleId: VEHICLE_ID })
+    expect(result.slots.some((s) => s.localStart === '09:00')).toBe(false)
+    expect(result.slots.some((s) => s.localStart === '11:00')).toBe(true)
+  })
+
+  it('does not check conflicts at all when no vehicleId is given — this app has no business-wide capacity limit', async () => {
+    await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    expect(aptFindConflictMock).not.toHaveBeenCalled()
+  })
+
+  it('respects preferredTimeFrom/preferredTimeTo as a narrowing filter', async () => {
+    const result = await checkAvailability(makeAuthContext('owner'), {
+      serviceId: SERVICE_ID,
+      date: '2026-09-07',
+      preferredTimeFrom: '14:00',
+      preferredTimeTo: '16:00',
+    })
+    expect(result.slots.every((s) => s.localStart >= '14:00' && s.localEnd <= '16:00')).toBe(true)
+    expect(result.slots.length).toBeGreaterThan(0)
+  })
+
+  it('never invents a slot outside the real working hours, even at the boundary', async () => {
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    expect(result.slots.some((s) => s.localEnd > '18:00')).toBe(false)
+    expect(result.slots.some((s) => s.localStart < '09:00')).toBe(false)
+  })
+
+  it('is DST-safe: computing availability across a Europe/Moscow date (no DST since 2014) still produces correct UTC instants', async () => {
+    const result = await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
+    const nineAm = result.slots.find((s) => s.localStart === '09:00')!
+    // 09:00 Europe/Moscow (UTC+3) is 06:00 UTC.
+    expect(nineAm.startAt.toISOString()).toBe('2026-09-07T06:00:00.000Z')
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 })

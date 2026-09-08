@@ -10,11 +10,16 @@ vehicle, when, at what mileage, and for how much — **Prompt 07
 inquiry, captured before any Appointment exists — **Prompt 08
 (Conversations + Messages Foundation)**: the communication plumbing between
 a future channel layer and a `CustomerRequest`, with no channel connected
-to anything real yet — and **Prompt 09 (AI Core Foundation)**: a read-only
-AI layer that classifies a message's intent and drafts a safe answer, but
-performs no actions of any kind. Still no live communication channels
-(Telegram/WhatsApp/website chat/phone), no AI actions/booking/tools, no
-full CRM pipeline, no external calendar sync, and no final design.
+to anything real yet — **Prompt 09 (AI Core Foundation)**: a read-only
+AI layer that classifies a message's intent and drafts a safe answer — and
+**Prompt 10 (AI Booking)**: a real, whitelisted Tool Layer
+(`check_availability`/`create_appointment`/`reschedule_appointment`/
+`cancel_appointment`) that lets the AI check real availability and
+create/reschedule/cancel a real `Appointment` — always through the
+existing Appointment Service, always gated by explicit customer
+confirmation. Still no live communication channels (Telegram/WhatsApp/
+website chat/phone), no AI actions beyond booking, no full CRM pipeline,
+no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -299,6 +304,21 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - Settings UI: `/settings/ai` — select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft answer/needsHuman/reason. Explicitly labeled "Draft only — message was not sent." No chat UI, no send button, no auto-send.
 - **Zero new database models.** Reuses `Conversation`, `Message`, `Business`, `Service`, `KnowledgeItem`, `BusinessRule`, `Customer`, `Vehicle`, `CustomerRequest` through their existing repositories; everything under `src/server/ai/` is plain TypeScript/Zod with nothing persisted.
 
+## AI Booking
+
+`POST /api/ai/analyze` can now go beyond a draft: when the model decides a real action is needed, it requests one of exactly four whitelisted tools, and the server — never the model — decides whether that tool actually runs. See `docs/AI_BEHAVIOR_CONTRACT.md` §§6, 11–13 for the full contract.
+
+- **Tools, not direct DB access**: `check_availability`, `create_appointment`, `reschedule_appointment`, `cancel_appointment` (`src/server/ai/tools/`). No dynamic registration, no other tool name, no eval/SQL/shell — an unrecognized name is rejected by the registry before anything runs. Every tool calls the existing, unmodified `appointmentService.ts` (plus a new `checkAvailability()` added to it) — never Prisma directly.
+- **Zero new database models, zero new migrations.** Availability reuses `BusinessWorkingHours` (Prompt 02) and the existing per-vehicle conflict check (Prompt 05). The only new server-side code is `businessLocalToUtc()` (`src/server/lib/timezone.ts`), the DST-safe inverse of the existing `toBusinessLocalDateTime()`.
+- **Two-phase booking, enforced in code**: `create_appointment`, `reschedule_appointment`, and `cancel_appointment` all refuse to run unless the customer's *current* message is an explicit, unambiguous confirmation (`isExplicitConfirmation()`, `src/server/ai/confirmation.ts`) — a model deciding to call the tool is never itself sufficient. The AI can never claim an appointment was booked/moved/cancelled before the tool actually returns success.
+- **Concurrency**: `create_appointment`/`reschedule_appointment` always re-check conflict against the real, current database state — a `check_availability` result from earlier in the same request (or an older one) is never assumed still valid.
+- **Anti-injection entity allow-list**: the three mutating tools additionally reject a `customerId`/`vehicleId`/`appointmentId` that isn't the one this conversation's own context already knows about (`AiToolAllowedEntities`, derived server-side, never from model output) — even a real, same-tenant id is rejected as `FORBIDDEN` if it isn't this conversation's own.
+- **Server-controlled tool-calling loop**: bounded at 3 tool calls per `analyze` request; exceeding it degrades to a controlled `needsHuman: true` result, never an infinite loop.
+- **Tool results** are always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?}` — never a raw Prisma object, never `tenantId`/`businessId`. Error codes: `INVALID_INPUT`, `NOT_FOUND`, `FORBIDDEN`, `SERVICE_INACTIVE`, `CUSTOMER_INACTIVE`, `VEHICLE_INACTIVE`, `OUTSIDE_WORKING_HOURS`, `NO_AVAILABILITY`, `APPOINTMENT_CONFLICT`, `APPOINTMENT_NOT_CANCELLABLE`, `APPOINTMENT_NOT_RESCHEDULABLE`, `CONFIRMATION_REQUIRED`, `TENANT_SCOPE_ERROR`.
+- **`analyze`'s contract is unchanged** — same `{conversationId, message}` request; an additive, optional `toolExecutions` field appears only when a tool actually ran. `analyze` still never auto-creates a Message, even after a successful booking.
+- Settings UI: `/settings/ai` shows a visible "tool execution is real" warning and, per analyze call, each tool's name/outcome — availability slots, or the resulting appointment's id/status/start/end. Sending a message to the customer remains disabled.
+- **Not implemented**: a persistent idempotency guard beyond the real-time conflict re-check (deliberately — inventing a table just for this was explicitly out of scope); automatic Customer/Vehicle creation; searching among several possible customer/vehicle matches; any tool beyond the four booking ones above.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -538,11 +558,24 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - No AI actions, function calling, tools, external channels, RAG, embeddings, vector database, AI logs, or escalation database — exactly as scoped.
 - 75 new unit tests (678 total): AI result/request schema validation, mock provider behavior (incl. prompt-injection resistance), safety layer, context builder (active-only filtering, no-secrets-leak assertions), provider configuration/factory selection, full service-layer orchestration, and a dedicated cross-tenant test proving `analyzeMessage` returns 404 for a foreign-tenant Conversation.
 
+**Prompt 10 — AI Booking**
+- A real Tool Layer (`src/server/ai/tools/`): exactly four whitelisted tools — `check_availability`, `create_appointment`, `reschedule_appointment`, `cancel_appointment` — no dynamic registration, no other tool name, no eval/SQL. Every tool calls the existing `appointmentService.ts` (never Prisma directly); a new `checkAvailability()` was added to it, reusing `BusinessWorkingHours` and the existing per-vehicle conflict check — no new schedule/availability model.
+- Two-phase booking enforced in code, not just prompted: `isExplicitConfirmation()` (`src/server/ai/confirmation.ts`) gates all three mutating tools against the customer's *current* message before any business logic runs; the AI can never claim success before the tool actually returns it.
+- `AiToolAllowedEntities`: a server-derived (never model-supplied) allow-list of the customer/vehicle/appointments this conversation actually knows about — closes a real prompt-injection gap found while writing this stage's own tests, where a same-tenant but unrelated entity id would otherwise have been silently honored.
+- `create_appointment`/`reschedule_appointment` always re-check conflict against the real, current database state — a stale `check_availability` result is never trusted.
+- Server-controlled tool-calling loop in `analyzeMessage` (`aiService.ts`), bounded at 3 tool calls per request; exceeding it degrades to `needsHuman: true`, never an infinite loop.
+- `businessLocalToUtc()` added to `src/server/lib/timezone.ts` — the DST-safe inverse of Prompt 05's `toBusinessLocalDateTime()`, needed to turn a candidate local slot time back into a real UTC instant.
+- `POST /api/ai/analyze`'s request contract is unchanged; an additive, optional `toolExecutions` field appears only when a tool ran. `analyze` still never auto-creates a Message.
+- Settings UI: `/settings/ai` gained a visible "tool execution is real" warning and a tool-execution results panel (availability slots, or the resulting appointment's id/status/start/end).
+- **Zero new database models, zero new migrations.**
+- 133 new unit tests (811 total): tool schema validation, confirmation-phrase detection, tool executors (incl. two explicit prompt-injection scenarios), the tool-calling loop and its 3-call bound, and a dedicated cross-tenant "AI Booking Tools" section extending `tests/tenantIsolation.test.ts` covering all four tools against a foreign tenant. A real Supabase smoke test (two real tenants, no mocks) verified real availability, a real create/conflict/reschedule/cancellation, cross-tenant rejection of all four tools, and full cleanup with zero rows remaining.
+- **Not implemented**: a persistent idempotency guard beyond the real-time conflict re-check (deliberately — no new table was added just for this); automatic Customer/Vehicle creation; searching among multiple possible customer/vehicle matches; any tool beyond the four above.
+
 ## Not implemented yet
 
-LLM-driven booking/actions, function calling, AI tools, an autonomous or
-multi-agent framework, embeddings, vector database, RAG, semantic search,
-AI decision logs/audit trail, an escalation entity/queue/UI, Telegram,
+An autonomous or multi-agent framework, a fifth AI tool or dynamic tool
+registration, embeddings, vector database, RAG, semantic search, AI
+decision logs/audit trail, an escalation entity/queue/UI, Telegram,
 WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website chat,
 email integration, SMS, voice AI, phone integration, webhooks, CRM
 (pipeline/kanban), Kommo, external calendar sync (Google Calendar/Outlook),
@@ -551,12 +584,14 @@ self-service portal, recurring appointments, drag-and-drop calendar UI,
 reminders/follow-ups, analytics, notifications, automation engine, final
 UI/UX & design system, marketing site, advanced dashboard.
 
-`Conversation`/`Message` (Prompt 08) and a first AI Core — intent
+`Conversation`/`Message` (Prompt 08), a first AI Core — intent
 classification, entity extraction, a draft answer, confidence/needsHuman
-(Prompt 09, see [AI Core](#ai-core)) — **are** implemented, but only as
-read-only classification and drafting: no tool exists for the AI to call,
-so it cannot book, cancel, reschedule, or change anything, regardless of
-what intent it detects; `channel` remains a label, not a live connection.
+(Prompt 09) — and a real AI Tool Layer for booking (Prompt 10, see
+[AI Booking](#ai-booking)) **are** implemented, but the AI still cannot do
+anything beyond checking availability and creating/rescheduling/cancelling
+an Appointment: no CustomerRequest creation, no customer/vehicle search or
+auto-creation, no escalation entity, no tool of any other kind; `channel`
+remains a label, not a live connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
 for them (e.g. `CRMAdapter` / `CalendarAdapter` / `ChannelAdapter` /

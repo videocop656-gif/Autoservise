@@ -5,7 +5,12 @@ import { businessRuleRepository } from '../repositories/businessRuleRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
 import { customerRequestRepository } from '../repositories/customerRequestRepository'
+import { appointmentRepository, CONFLICT_BLOCKING_STATUSES } from '../repositories/appointmentRepository'
+import { toBusinessLocalDateTime } from '../lib/timezone'
 import type { AiBusinessContext } from './types'
+
+/** Bounded, not a general appointment-history feature — just enough for the AI to name a specific appointment for reschedule/cancel. */
+const MAX_UPCOMING_APPOINTMENTS = 5
 
 interface ConversationRef {
   customerId: string | null
@@ -48,11 +53,12 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
 
   let customer: AiBusinessContext['customer'] = null
   let vehicle: AiBusinessContext['vehicle'] = null
+  let upcomingAppointments: AiBusinessContext['upcomingAppointments'] = []
 
   if (conversation.customerId) {
     const found = await customerRepository.findById(ctx.tenant.id, ctx.business.id, conversation.customerId)
     if (found) {
-      customer = { firstName: found.firstName, lastName: found.lastName, phone: found.phone, email: found.email }
+      customer = { id: found.id, firstName: found.firstName, lastName: found.lastName, phone: found.phone, email: found.email }
     }
   }
 
@@ -62,12 +68,42 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
       const foundVehicle = await vehicleRepository.findById(ctx.tenant.id, ctx.business.id, request.vehicleId)
       if (foundVehicle) {
         vehicle = {
+          id: foundVehicle.id,
           make: foundVehicle.make,
           model: foundVehicle.model,
           year: foundVehicle.year,
           licensePlate: foundVehicle.licensePlate,
           mileage: foundVehicle.mileage,
         }
+
+        // Only the known vehicle's own upcoming, still-blocking appointments
+        // — this is the sole way the AI can reference a specific
+        // appointment for reschedule_appointment/cancel_appointment
+        // without inventing an id (spec: "AI must not control IDs
+        // arbitrarily"). Not paginated/exhaustive — a small, bounded
+        // lookahead is all the Tool Layer needs.
+        const { items } = await appointmentRepository.list(ctx.tenant.id, ctx.business.id, {
+          vehicleId: foundVehicle.id,
+          dateFrom: new Date(),
+          includeCancelled: false,
+          skip: 0,
+          take: MAX_UPCOMING_APPOINTMENTS * 2,
+        })
+        const serviceNameById = new Map(services.map((s) => [s.id, s.name]))
+        upcomingAppointments = items
+          .filter((a) => CONFLICT_BLOCKING_STATUSES.includes(a.status))
+          .slice(0, MAX_UPCOMING_APPOINTMENTS)
+          .map((a) => {
+            const start = toBusinessLocalDateTime(a.startAt, ctx.business.timezone)
+            const end = toBusinessLocalDateTime(a.endAt, ctx.business.timezone)
+            return {
+              id: a.id,
+              serviceName: serviceNameById.get(a.serviceId) ?? 'Unknown service',
+              startAtLocal: `${start.dateKey} ${start.timeKey}`,
+              endAtLocal: `${end.dateKey} ${end.timeKey}`,
+              status: a.status,
+            }
+          })
       }
     }
   }
@@ -83,6 +119,7 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
       currency: ctx.business.currency,
     },
     services: services.map((s) => ({
+      id: s.id,
       name: s.name,
       description: s.description,
       priceFrom: s.priceFrom ? s.priceFrom.toFixed(2) : null,
@@ -94,5 +131,6 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
     rules: rules.map((r) => ({ name: r.name, description: r.description, category: r.category, priority: r.priority })),
     customer,
     vehicle,
+    upcomingAppointments,
   }
 }

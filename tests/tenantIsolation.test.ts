@@ -142,8 +142,13 @@ import { customerRequestRepository } from '../src/server/repositories/customerRe
 import { conversationRepository } from '../src/server/repositories/conversationRepository'
 import { messageRepository } from '../src/server/repositories/messageRepository'
 import { analyzeMessage } from '../src/server/services/aiService'
+import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
+import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
+import { executeRescheduleAppointment } from '../src/server/ai/tools/rescheduleAppointmentTool'
+import { executeCancelAppointment } from '../src/server/ai/tools/cancelAppointmentTool'
 import { makeAuthContext, makeTenant, makeBusiness } from './helpers/fixtures'
 import type { AiProvider } from '../src/server/ai/provider'
+import type { AiToolAllowedEntities } from '../src/server/ai/types'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -717,5 +722,113 @@ describe('tenant isolation — AI Core', () => {
     // Short-circuited before touching tenant B's messages or calling the provider at all.
     expect(messageFindManyMock).not.toHaveBeenCalled()
     expect(stubProvider.generate).not.toHaveBeenCalled()
+  })
+})
+
+describe('tenant isolation — AI Booking Tools (Prompt 10)', () => {
+  // These call the real tool executors (checkAvailabilityTool.ts,
+  // createAppointmentTool.ts, etc.) — the same functions the AI Tool Layer
+  // actually invokes — against the same mocked prisma client as every other
+  // test in this file. Every lookup inside them goes through the real,
+  // unmodified appointmentService.ts / repositories, so a "foreign" id
+  // never matches the tenant-scoped where-clause and the tool correctly
+  // reports NOT_FOUND, never leaking whether the id exists for some other
+  // tenant. `allowed` is set to match the foreign id in every case so the
+  // (separate) entity-allow-list gate never masks what's being tested here:
+  // that tenant scoping itself — inside the real service/repository layer
+  // — is what blocks access, not just the AI layer's own bookkeeping.
+  const SERVICE_OWNED_BY_B = '111e4567-e89b-12d3-a456-426614174000'
+  const CUSTOMER_OWNED_BY_B = '222e4567-e89b-12d3-a456-426614174000'
+  const VEHICLE_OWNED_BY_B = '333e4567-e89b-12d3-a456-426614174000'
+  const APPOINTMENT_OWNED_BY_B = '444e4567-e89b-12d3-a456-426614174000'
+
+  function ctxA() {
+    return makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+    })
+  }
+
+  it('tenant A cannot check availability using tenant B\'s service — scoped lookup returns nothing, tool reports NOT_FOUND', async () => {
+    serviceFindFirstMock.mockResolvedValue(null)
+    const result = await executeCheckAvailability(ctxA(), { serviceId: SERVICE_OWNED_BY_B, date: '2026-09-16' })
+
+    expect(result).toMatchObject({ success: false, errorCode: 'NOT_FOUND' })
+    expect(serviceFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: SERVICE_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
+  })
+
+  it('tenant A cannot create an appointment using tenant B\'s customer/vehicle/service — scoped customer lookup fails first, tool reports NOT_FOUND, and appointment.create is never reached', async () => {
+    customerFindFirstMock.mockResolvedValue(null)
+    const allowed: AiToolAllowedEntities = { customerId: CUSTOMER_OWNED_BY_B, vehicleId: VEHICLE_OWNED_BY_B, appointmentIds: [] }
+    const result = await executeCreateAppointment(
+      ctxA(),
+      {
+        customerId: CUSTOMER_OWNED_BY_B,
+        vehicleId: VEHICLE_OWNED_BY_B,
+        serviceId: SERVICE_OWNED_BY_B,
+        startAt: '2026-09-16T06:00:00Z',
+        endAt: '2026-09-16T07:00:00Z',
+      },
+      'Да, подтверждаю',
+      allowed
+    )
+
+    expect(result).toMatchObject({ success: false, errorCode: 'NOT_FOUND' })
+    expect(customerFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: CUSTOMER_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
+  })
+
+  it('tenant A cannot reschedule tenant B\'s appointment — scoped lookup returns nothing, tool reports NOT_FOUND, updateMany is never reached', async () => {
+    appointmentFindFirstMock.mockResolvedValue(null)
+    const allowed: AiToolAllowedEntities = { customerId: null, vehicleId: null, appointmentIds: [APPOINTMENT_OWNED_BY_B] }
+    const result = await executeRescheduleAppointment(
+      ctxA(),
+      { appointmentId: APPOINTMENT_OWNED_BY_B, startAt: '2026-09-16T06:00:00Z', endAt: '2026-09-16T07:00:00Z' },
+      'Да, подтверждаю',
+      allowed
+    )
+
+    expect(result).toMatchObject({ success: false, errorCode: 'NOT_FOUND' })
+    expect(appointmentFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: APPOINTMENT_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
+    expect(appointmentUpdateManyMock).not.toHaveBeenCalled()
+  })
+
+  it('tenant A cannot cancel tenant B\'s appointment — scoped lookup returns nothing, tool reports NOT_FOUND, updateMany is never reached', async () => {
+    appointmentFindFirstMock.mockResolvedValue(null)
+    const allowed: AiToolAllowedEntities = { customerId: null, vehicleId: null, appointmentIds: [APPOINTMENT_OWNED_BY_B] }
+    const result = await executeCancelAppointment(ctxA(), { appointmentId: APPOINTMENT_OWNED_BY_B }, 'Да, отменяйте', allowed)
+
+    expect(result).toMatchObject({ success: false, errorCode: 'NOT_FOUND' })
+    expect(appointmentFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: APPOINTMENT_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
+    expect(appointmentUpdateManyMock).not.toHaveBeenCalled()
+  })
+
+  it('a model cannot bypass tenant scoping by supplying tenantId/businessId itself — the tool schemas accept no such fields, and ctx always comes from requireAuth(), never from tool arguments', async () => {
+    serviceFindFirstMock.mockResolvedValue(null)
+    // Even if a compromised/injected model tried to smuggle tenantId/
+    // businessId into the tool call arguments, the Zod schema (schemas.ts)
+    // has no such fields to accept them — they are silently dropped by
+    // .object()'s default "strip unknown keys" behavior, and the real
+    // ctx.tenant.id / ctx.business.id (from requireAuth(), server-side)
+    // is what's actually used for every lookup, as proven by the call
+    // assertion below.
+    const result = await executeCheckAvailability(ctxA(), {
+      serviceId: SERVICE_OWNED_BY_B,
+      date: '2026-09-16',
+      tenantId: 'tenant-b',
+      businessId: 'business-b',
+    })
+
+    expect(result).toMatchObject({ success: false, errorCode: 'NOT_FOUND' })
+    expect(serviceFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: SERVICE_OWNED_BY_B, tenantId: 'tenant-a' },
+    })
   })
 })

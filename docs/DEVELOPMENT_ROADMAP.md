@@ -120,21 +120,35 @@
 - One new dependency: `openai` (official SDK) — server-side only, verified absent from the built frontend bundle.
 - No AI actions, function calling, tools, external channels, RAG, embeddings, vector database, AI logs, or escalation database — exactly as scoped.
 
-## Current
-
-**Status: 10 — AI Booking is CURRENT / NEXT IMPLEMENTATION.**
-
-Every stage through AI Core (01–09) is verified complete in the code.
-Prompt 10 (AI checks real availability, proposes slots, creates/updates/
-cancels appointments through the existing Appointment service/validation)
-has not been started — `POST /api/ai/analyze` performs no actions and no
-Tool Layer exists yet.
-
-## Future Roadmap
-
 ### 10 — AI Booking
 
-**Goal**: the AI checks availability, proposes slots, creates/updates/cancels appointments. All existing booking rules (working hours, conflict detection, active-entity checks, status transitions from Prompt 05) remain the server-side source of truth — the AI calls the same backend logic, it does not get a separate/looser path.
+**Status: COMPLETED**
+
+- **Tool Layer, not direct AI-to-DB access.** Exactly four whitelisted tools — `check_availability`, `create_appointment`, `reschedule_appointment`, `cancel_appointment` (`src/server/ai/tools/`) — are the only way the AI can ever touch booking data. Every tool calls the existing, unmodified `appointmentService.ts` (or a new `checkAvailability()` added to it) — never Prisma directly. No dynamic tool registration, no eval, no arbitrary tool names; an unknown name is rejected by the registry (`tools/registry.ts`) before anything executes.
+- **Zero new Prisma models, zero new migrations.** `checkAvailability()` reuses `BusinessWorkingHours` (Prompt 02) and the existing per-vehicle conflict check (Prompt 05); the only new server-side primitive is `businessLocalToUtc()` (`src/server/lib/timezone.ts`), the DST-safe inverse of Prompt 05's `toBusinessLocalDateTime()`, needed to turn a candidate local time back into a real UTC instant for slot generation.
+- **Two-phase booking is enforced in code, not just prompted.** A deterministic, regex-based `isExplicitConfirmation()` (`src/server/ai/confirmation.ts`) gates `create_appointment`, `reschedule_appointment`, and `cancel_appointment` against the *current* customer message before any business logic runs — a model deciding to call a mutating tool is never itself sufficient authorization. Positive/negative phrasing is covered by 25 dedicated tests (`tests/confirmation.test.ts`).
+- **Entity allow-list — the anti-injection mechanism.** `AiToolAllowedEntities` (derived server-side from the resolved `AiBusinessContext` — the conversation's own known customer/vehicle/upcoming appointments — never from model output) additionally restricts every mutating tool call to the entity this conversation actually knows about; a same-tenant but unrelated customer/vehicle/appointment id is rejected as `FORBIDDEN` even though it would otherwise pass tenant scoping. This closes a real gap found while writing this stage's own prompt-injection tests (a message merely containing a confirmation phrase was, before this fix, otherwise sufficient).
+- **Concurrency**: `create_appointment` always re-validates against the real, current database state via the existing conflict check — an earlier `check_availability` result (this request or a prior one) is never assumed still valid. Verified by both a unit test and the real-database smoke test (identical slot booked twice → the second attempt gets a real `409`-derived `APPOINTMENT_CONFLICT`, not a stale-cache false positive).
+- **Idempotency**: no new persistent model was introduced for this (deliberately, per this stage's own instruction not to invent schema to look complete) — the practical safeguard is the same real-time conflict re-check above. A dedicated request-level idempotency key is a known, documented limitation, not an oversight (see the Prompt 10 completion report for detail).
+- **Server-controlled tool-calling loop** (`analyzeMessage` in `aiService.ts`): bounded at a maximum of 3 tool calls per `/api/ai/analyze` request, with the last allowed round reserved to let the provider see the final tool result rather than being cut off one round early. Exceeding the bound degrades to a controlled `needsHuman: true` result, never an infinite loop or a 5xx.
+- **Every tool argument is Zod-validated** (`tools/schemas.ts`) before execution; tenant/business context always comes from `requireAuth()` via `AuthContext`, never from anything the model supplies (including if a compromised model tries to smuggle `tenantId`/`businessId` into tool arguments — the schemas have no such fields, so they're silently stripped and never reach any query). Tool results are always one of exactly two shapes — `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?}` — never a raw Prisma object, never `tenantId`/`businessId`.
+- **`POST /api/ai/analyze`'s contract is unchanged** — same `{conversationId, message}` request; the additive, optional `toolExecutions` field only appears when a tool actually ran this request. `analyze` still never auto-creates a Message, even after a successful booking.
+- Manager granted the same operational access as every other booking-adjacent domain.
+- Frontend: `/settings/ai` extended with a visible "tool execution is real" warning banner and a tool-execution results panel (tool name, success/failure, availability slots, or the resulting appointment's id/status/start/end) — sending a message to the customer remains disabled.
+- Tests: `tests/aiTools.test.ts` (36), `tests/aiToolSchemas.test.ts` (18), `tests/confirmation.test.ts` (25) are new; `tests/appointmentService.test.ts`, `tests/aiContextBuilder.test.ts`, `tests/aiService.test.ts`, `tests/mockAiProvider.test.ts` were extended; `tests/tenantIsolation.test.ts` gained a dedicated "AI Booking Tools" section covering all four tools against a foreign tenant. 811 tests total, all passing, zero mocked-OpenAI-key dependency (`MockAiProvider` drives every documented scenario, including two explicit prompt-injection cases).
+- A full real-Supabase smoke test (two real tenants, no mocks) verified: real computed availability slots against real working hours; a real `create_appointment` through the real Appointment Service (row exists, correctly scoped, correct relations/time/status); a real conflict on re-booking the identical slot; a real reschedule and a real cancellation (row still present, `status: CANCELLED`, never deleted); complete tenant-isolation rejection of all four tools from a second tenant; and full cleanup with zero rows remaining afterward.
+- No customer/vehicle auto-creation, no invented/ambiguous Service resolution, no price modification, no AI logs/audit, no escalation model, no external channels, no RAG/embeddings/vector DB, no multi-agent/autonomous agent behavior — exactly as scoped.
+
+## Current
+
+**Status: 11 — AI Customer Support is CURRENT / NEXT IMPLEMENTATION.**
+
+Every stage through AI Booking (01–10) is verified complete in the code,
+including a real Supabase smoke test with full cleanup. Prompt 11 (the AI
+answering questions about services/prices/hours/policies from the existing
+Knowledge Base + Services + Business Rules) has not been started.
+
+## Future Roadmap
 
 ### 11 — AI Customer Support
 
