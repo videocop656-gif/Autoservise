@@ -14,6 +14,7 @@ import AppointmentsSettingsPage from './pages/settings/AppointmentsSettingsPage'
 import ServiceHistorySettingsPage from './pages/settings/ServiceHistorySettingsPage'
 import CustomerRequestsSettingsPage from './pages/settings/CustomerRequestsSettingsPage'
 import ConversationsSettingsPage from './pages/settings/ConversationsSettingsPage'
+import AiSettingsPage from './pages/settings/AiSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -122,6 +123,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <ConversationsSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/ai"
+        element={
+          <ProtectedRoute>
+            <AiSettingsPage />
           </ProtectedRoute>
         }
       />

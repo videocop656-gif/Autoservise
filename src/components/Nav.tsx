@@ -18,6 +18,7 @@ const LINKS = [
   { to: '/settings/service-history', label: 'Service History' },
   { to: '/settings/customer-requests', label: 'Customer Requests' },
   { to: '/settings/conversations', label: 'Conversations' },
+  { to: '/settings/ai', label: 'AI Core' },
 ]
 
 /** Shown on every authenticated page. Only lists routes — role-based action buttons live inside each page. */

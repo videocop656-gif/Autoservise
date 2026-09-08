@@ -141,6 +141,9 @@ import { serviceRecordRepository } from '../src/server/repositories/serviceRecor
 import { customerRequestRepository } from '../src/server/repositories/customerRequestRepository'
 import { conversationRepository } from '../src/server/repositories/conversationRepository'
 import { messageRepository } from '../src/server/repositories/messageRepository'
+import { analyzeMessage } from '../src/server/services/aiService'
+import { makeAuthContext, makeTenant, makeBusiness } from './helpers/fixtures'
+import type { AiProvider } from '../src/server/ai/provider'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -685,5 +688,34 @@ describe('tenant isolation — Message', () => {
       where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
       data: { lastMessageAt: expect.any(Date) },
     })
+  })
+})
+
+describe('tenant isolation — AI Core', () => {
+  // These run analyzeMessage() itself — the real service, against the same
+  // mocked prisma client as every other test in this file — rather than
+  // re-testing conversationRepository in isolation, since the spec calls
+  // for proving the AI *endpoint's own* behavior end-to-end: "Tenant A не
+  // может анализировать Conversation B. Ожидается: 404. И никаких
+  // изменений в данных Tenant B."
+  const stubProvider: AiProvider = { generate: vi.fn().mockResolvedValue({ raw: {} }) }
+
+  it('tenant A cannot analyze a conversation owned by tenant B — 404, and no context is ever built or provider called for it', async () => {
+    conversationFindFirstMock.mockResolvedValue(null) // scoped query never matches tenant B's row
+    const ctxA = makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+    })
+
+    await expect(
+      analyzeMessage(ctxA, { conversationId: 'conversation-owned-by-tenant-b', message: 'hijack attempt' }, { provider: stubProvider })
+    ).rejects.toMatchObject({ statusCode: 404 })
+
+    expect(conversationFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-a', id: 'conversation-owned-by-tenant-b', tenantId: 'tenant-a' },
+    })
+    // Short-circuited before touching tenant B's messages or calling the provider at all.
+    expect(messageFindManyMock).not.toHaveBeenCalled()
+    expect(stubProvider.generate).not.toHaveBeenCalled()
   })
 })

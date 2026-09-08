@@ -103,21 +103,34 @@
 - No AI, LLM, embeddings, or external channel integration of any kind — channel values are labels only.
 - 65 tests covering schema validation, service-layer business rules, and cross-tenant isolation (part of the project's 603-test suite as of this stage).
 
-## Current
-
-**Status: 09 — AI Core is CURRENT / NEXT IMPLEMENTATION.**
-
-Every stage through Conversations + Messages (01–08) is verified complete
-in the code. Prompt 09 (AI Core: intent detection, context assembly,
-knowledge/rules retrieval, structured AI decision output) has not been
-started — no AI/LLM code of any kind exists in this repository as of this
-writing.
-
-## Future Roadmap
-
 ### 09 — AI Core
 
-**Goal**: intent detection; context assembly; knowledge retrieval; rules retrieval; customer context; vehicle context; service-history context; structured AI decision output. No AI/LLM code of any kind exists in this repository yet.
+**Status: COMPLETED**
+
+- **Read-only, no actions.** `POST /api/ai/analyze` classifies a test message in the context of an existing Conversation and returns a structured draft — it never creates a Message, never touches Appointment/Customer/Vehicle/ServiceRecord/KnowledgeItem/BusinessRule, and never calls any external channel. Zero new Prisma models — the entire feature reuses existing tables (`Conversation`, `Message`, `Business`, `Service`, `KnowledgeItem`, `BusinessRule`, `Customer`, `Vehicle`, `CustomerRequest`) plus a handful of plain TypeScript/Zod types under `src/server/ai/` that persist nothing.
+- **Provider abstraction**: `AiProvider` interface (`src/server/ai/provider.ts`) with two implementations — `OpenAiProvider` (official `openai` SDK, Chat Completions with Structured Outputs / `json_schema` response format) and `MockAiProvider` (deterministic, keyword-based, zero network access). `aiProviderFactory.ts` selects `OpenAiProvider` when `OPENAI_API_KEY` is configured and transparently falls back to `MockAiProvider` when it isn't — this environment has no real key, so `MockAiProvider` is what actually answers every request here, including the real Supabase smoke test.
+- **Context builder** (`src/server/ai/contextBuilder.ts`): assembles only business name/description/contact/timezone/currency, active Services, active KnowledgeItems, active BusinessRules, and — only when actually known via the Conversation's `customerId`/linked `CustomerRequest.vehicleId` — a Customer/Vehicle summary. No `tenantId`/`businessId`/internal ids/Customer notes/session data/secrets ever leave this function; every lookup is tenant-scoped through the existing repositories. Service history is deliberately **not** included by default — deciding when it's actually needed requires the intent-based tool-calling mechanism explicitly deferred to Prompt 10+.
+- **Prompt architecture**: system instructions, business context, conversation history (last 20 messages), and the current user message are always passed to the provider as four separate fields, never concatenated — the user's own message is the only untrusted value in the whole request, and the system prompt explicitly tells the model to treat it as data, not instructions.
+- **Structured output + Zod gate**: the model is constrained via OpenAI's `json_schema` Structured Outputs, and the result is independently re-validated server-side against `aiResultSchema` regardless of what the API claims to guarantee. A result that fails this validation never throws — it degrades to a safe `{ intent: "UNKNOWN", needsHuman: true, ... }` fallback, since the provider did respond, just not usably.
+- **Safety layer**: confidence `< 0.50` always forces `needsHuman = true` server-side (never trusting the model's own flag alone); a regex-based check rejects and replaces any draft answer that falsely claims a real action was taken ("I've booked you...", "your appointment is confirmed...") with a safe fallback, also forcing `needsHuman = true`.
+- **Errors**: `AI_PROVIDER_UNAVAILABLE` (502) and `AI_CONFIGURATION_ERROR` (500) for genuine provider/config failures where no model output exists at all; `404`/`409` for an unknown/foreign-tenant/closed Conversation, matching existing conventions exactly (reusing Conversation/Message's own `CONVERSATION_CLOSED` code).
+- Manager granted the same operational read access as Appointment/Conversation/Customer Requests.
+- Frontend: `/settings/ai` — select an existing Conversation, type a test message, Analyze, see intent/confidence/entities/draft answer/needsHuman/reason, with an explicit "Draft only — message was not sent." notice. No chat UI, no send button.
+- 75 new tests (678 total): AI result schema validation, request schema validation, mock provider behavior (incl. prompt-injection resistance), safety layer (confidence policy + fabricated-action rejection), context builder (active-only filtering, customer/vehicle inclusion rules, no-secrets-leak assertions), provider configuration/factory selection, full service-layer orchestration (successful analysis, provider failure, malformed provider result, low-confidence escalation, closed-conversation rejection, conversation-not-found), and a dedicated cross-tenant test in `tests/tenantIsolation.test.ts` proving `analyzeMessage` itself returns 404 for a foreign-tenant Conversation without ever building context or calling the provider.
+- One new dependency: `openai` (official SDK) — server-side only, verified absent from the built frontend bundle.
+- No AI actions, function calling, tools, external channels, RAG, embeddings, vector database, AI logs, or escalation database — exactly as scoped.
+
+## Current
+
+**Status: 10 — AI Booking is CURRENT / NEXT IMPLEMENTATION.**
+
+Every stage through AI Core (01–09) is verified complete in the code.
+Prompt 10 (AI checks real availability, proposes slots, creates/updates/
+cancels appointments through the existing Appointment service/validation)
+has not been started — `POST /api/ai/analyze` performs no actions and no
+Tool Layer exists yet.
+
+## Future Roadmap
 
 ### 10 — AI Booking
 

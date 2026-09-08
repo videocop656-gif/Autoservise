@@ -1,0 +1,258 @@
+import { useEffect, useState, type FormEvent } from 'react'
+import { Sparkles } from 'lucide-react'
+import Nav from '../../components/Nav'
+import { Button } from '../../components/ui/button'
+import { Textarea } from '../../components/ui/textarea'
+import { Label } from '../../components/ui/label'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import { apiFetch, ApiClientError } from '../../lib/apiClient'
+
+type ConversationStatus = 'OPEN' | 'CLOSED'
+
+interface ConversationDto {
+  id: string
+  subject: string | null
+  status: ConversationStatus
+  channel: string
+  customerId: string | null
+}
+
+interface CustomerDto {
+  id: string
+  firstName: string
+  lastName: string | null
+}
+
+interface Paginated<T> {
+  items: T[]
+}
+
+interface AiEntities {
+  customerName: string | null
+  phone: string | null
+  vehicleMake: string | null
+  vehicleModel: string | null
+  licensePlate: string | null
+  serviceName: string | null
+  requestedDate: string | null
+  requestedTime: string | null
+}
+
+interface AiResultDto {
+  intent: string
+  confidence: number
+  entities: AiEntities
+  answer: string
+  needsHuman: boolean
+  reason: string | null
+}
+
+const ENTITY_LABELS: Record<keyof AiEntities, string> = {
+  customerName: 'Customer name',
+  phone: 'Phone',
+  vehicleMake: 'Vehicle make',
+  vehicleModel: 'Vehicle model',
+  licensePlate: 'License plate',
+  serviceName: 'Service',
+  requestedDate: 'Requested date',
+  requestedTime: 'Requested time',
+}
+
+export default function AiSettingsPage() {
+  const [conversations, setConversations] = useState<ConversationDto[]>([])
+  const [customers, setCustomers] = useState<CustomerDto[]>([])
+  const [conversationId, setConversationId] = useState('')
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [listError, setListError] = useState<string | null>(null)
+
+  const [analyzing, setAnalyzing] = useState(false)
+  const [result, setResult] = useState<AiResultDto | null>(null)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+
+  function customerLabel(id: string | null): string {
+    if (!id) return '—'
+    const c = customers.find((x) => x.id === id)
+    return c ? `${c.firstName} ${c.lastName ?? ''}`.trim() : id
+  }
+
+  async function loadConversations() {
+    setLoading(true)
+    setListError(null)
+    try {
+      const [conversationsResult, customersResult] = await Promise.all([
+        apiFetch<Paginated<ConversationDto>>('/api/conversations?pageSize=100'),
+        apiFetch<Paginated<CustomerDto>>('/api/customers?pageSize=100&includeInactive=true'),
+      ])
+      setConversations(conversationsResult.items)
+      setCustomers(customersResult.items)
+    } catch {
+      setListError('Не удалось загрузить разговоры.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadConversations()
+  }, [])
+
+  const selectedConversation = conversations.find((c) => c.id === conversationId) ?? null
+  const isClosed = selectedConversation?.status === 'CLOSED'
+
+  async function handleAnalyze(e: FormEvent) {
+    e.preventDefault()
+    setAnalyzeError(null)
+    setResult(null)
+    setAnalyzing(true)
+    try {
+      const response = await apiFetch<AiResultDto>('/api/ai/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ conversationId, message }),
+      })
+      setResult(response)
+    } catch (err) {
+      setAnalyzeError(err instanceof ApiClientError ? err.message : 'Не удалось проанализировать сообщение.')
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-muted/30">
+      <Nav />
+      <div className="mx-auto max-w-3xl space-y-6 p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              AI Core — Analyze
+            </CardTitle>
+            <CardDescription>
+              Операционный инструмент для проверки AI Core: анализ тестового сообщения в контексте выбранного разговора.
+              Реальные сообщения не отправляются и никакие записи не создаются, не изменяются и не отменяются.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {loading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
+            {listError && <p className="text-sm text-destructive">{listError}</p>}
+
+            {!loading && conversations.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                Сначала создайте разговор на странице{' '}
+                <a href="/settings/conversations" className="underline">
+                  Conversations
+                </a>
+                .
+              </p>
+            )}
+
+            {!loading && conversations.length > 0 && (
+              <form onSubmit={handleAnalyze} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="ai-conversation">Conversation</Label>
+                  <select
+                    id="ai-conversation"
+                    required
+                    value={conversationId}
+                    onChange={(e) => {
+                      setConversationId(e.target.value)
+                      setResult(null)
+                      setAnalyzeError(null)
+                    }}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  >
+                    <option value="" disabled>
+                      Select a conversation...
+                    </option>
+                    {conversations.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.subject ?? '(без темы)'} · {customerLabel(c.customerId)} · {c.channel} · {c.status}
+                      </option>
+                    ))}
+                  </select>
+                  {isClosed && (
+                    <p className="text-sm text-destructive">
+                      Этот разговор закрыт — анализ невозможен, пока он не будет открыт заново на странице Conversations.
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="ai-message">Test message</Label>
+                  <Textarea
+                    id="ai-message"
+                    required
+                    maxLength={4000}
+                    placeholder="Например: Сколько стоит замена масла?"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                  />
+                </div>
+
+                {analyzeError && <p className="text-sm text-destructive">{analyzeError}</p>}
+
+                <Button type="submit" disabled={analyzing || isClosed || !conversationId}>
+                  {analyzing ? 'Analyzing...' : 'Analyze'}
+                </Button>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+
+        {result && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Result</CardTitle>
+              <CardDescription>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                  Draft only — message was not sent.
+                </span>
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="text-muted-foreground">Intent</div>
+                  <div className="font-medium">{result.intent}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Confidence</div>
+                  <div className="font-medium">{(result.confidence * 100).toFixed(0)}%</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-sm text-muted-foreground">Extracted entities</div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border p-3 text-sm">
+                  {(Object.keys(ENTITY_LABELS) as (keyof AiEntities)[]).map((key) => (
+                    <div key={key} className="flex justify-between gap-2">
+                      <span className="text-muted-foreground">{ENTITY_LABELS[key]}</span>
+                      <span className="font-medium">{result.entities[key] ?? '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-sm text-muted-foreground">Draft answer</div>
+                <div className="rounded-md border bg-muted/50 p-3 text-sm">{result.answer}</div>
+              </div>
+
+              <div className="flex items-center gap-2 text-sm">
+                <span
+                  className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                    result.needsHuman ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'
+                  }`}
+                >
+                  {result.needsHuman ? 'Needs human' : 'Confident'}
+                </span>
+                {result.reason && <span className="text-muted-foreground">{result.reason}</span>}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  )
+}

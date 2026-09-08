@@ -1,11 +1,18 @@
 # AI Administrator — Behavior Contract
 
-> **Nothing in this document is implemented yet.** No LLM, no AI provider
-> integration, no tool-calling framework, no conversation/message model
-> exists in this repository at the time of writing (confirmed against
-> `prisma/schema.prisma`, `api/`, and `src/`). This is a specification for
-> the AI layer described in `DEVELOPMENT_ROADMAP.md` Prompts 08–13, binding
-> on whoever implements it.
+> **Updated after Prompt 09.** `Conversation`/`Message` (Prompt 08) and a
+> first AI Core — intent classification, entity extraction, a draft
+> answer, and the `needsHuman`/`reason` escalation signal, behind an
+> `AiProvider` abstraction with an OpenAI implementation and a
+> network-free mock (Prompt 09) — now exist in this repository, confirmed
+> against `prisma/schema.prisma`, `api/`, and `src/`. What's still
+> entirely unimplemented, and remains this document's actual "future
+> spec" portion: any tool-calling framework, any mechanism for the AI to
+> perform a real action (booking, cancellation, CRM writes of any kind),
+> escalation as a real queue/entity, AI decision logging/auditability, and
+> every external channel. See `DEVELOPMENT_ROADMAP.md` Prompts 10–13 for
+> where those land. This document remains binding on whoever implements
+> them.
 
 ## 1. Core Principle
 
@@ -213,15 +220,20 @@ Nothing the AI does may be irreversible or hidden from staff.
 
 ## 16. Development Boundary
 
-At the current stage, **this document is a specification of future
-behavior only.**
+As of Prompt 09, this document is **partly** a specification of already-
+implemented behavior (§§1–4, 9, 13–15's core principles) and **partly**
+still future-only (most of §§5–8, 10–12: no tool actually exists for the
+AI to call, so none of those sections' rules have real code to violate
+yet — they remain binding on whoever builds the Tool Layer).
 
-Do not implement AI now. Do not add: an LLM; OpenAI/Anthropic/other
-provider integration; embeddings; a vector database; RAG; AI tools;
-conversations; channels.
+Do not add: embeddings; a vector database; RAG; AI tools / function
+calling; an autonomous or multi-agent framework; conversation memory
+beyond the existing bounded message history; external channel
+integrations (Telegram/WhatsApp/phone/website chat); AI decision logging
+or an audit trail; an escalation entity, queue, or UI.
 
 These arrive only at their corresponding stage in
-`DEVELOPMENT_ROADMAP.md` (Prompts 08 and onward) — none of them exist in
+`DEVELOPMENT_ROADMAP.md` (Prompt 10 and onward) — none of them exist in
 this repository today.
 
 ## Documentation Source of Truth

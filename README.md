@@ -7,12 +7,14 @@ Vehicles & Leads)**, **Prompt 05 (Appointments & Booking Foundation)**, and
 **Prompt 06 (Service History Foundation)**: what was actually done to which
 vehicle, when, at what mileage, and for how much — **Prompt 07
 (Customer Request Foundation)**: a structured record of a customer's
-inquiry, captured before any Appointment exists — and **Prompt 08
+inquiry, captured before any Appointment exists — **Prompt 08
 (Conversations + Messages Foundation)**: the communication plumbing between
 a future channel layer and a `CustomerRequest`, with no channel connected
-to anything real yet. Still no AI, no live communication channels
-(Telegram/WhatsApp/website chat/phone), no full CRM pipeline, no external
-calendar sync, and no final design.
+to anything real yet — and **Prompt 09 (AI Core Foundation)**: a read-only
+AI layer that classifies a message's intent and drafts a safe answer, but
+performs no actions of any kind. Still no live communication channels
+(Telegram/WhatsApp/website chat/phone), no AI actions/booking/tools, no
+full CRM pipeline, no external calendar sync, and no final design.
 
 > Отдельный проект и кодбейс. Не связан с другими продуктами, не переиспользует
 > их код, Supabase project, стили или настройки.
@@ -73,6 +75,8 @@ Variables:
 | `SESSION_SECRET` | Long random secret used to hash session tokens. Generate with: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"` |
 | `NODE_ENV`       | `development` locally, `production` when deployed                   |
 | `APP_URL`        | Public URL of the app (used for cookie/security decisions)          |
+| `OPENAI_API_KEY` | Optional. If unset, AI Core automatically uses a deterministic mock provider instead of calling OpenAI — see [AI Core](#ai-core) |
+| `OPENAI_MODEL`   | Optional, defaults to `gpt-4o-mini`. Only read when `OPENAI_API_KEY` is set |
 
 ## Install
 
@@ -279,6 +283,22 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - **Manager has full read/write access, including sending messages** — same operational exception as Appointment/Service History/Customer Requests.
 - This stage adds no AI, LLM, embeddings, or external channel integration of any kind — see `docs/AI_BEHAVIOR_CONTRACT.md` for what a future AI layer built on top of this will and will not be allowed to do.
 
+## AI Core
+
+`POST /api/ai/analyze` classifies a message in the context of an existing `Conversation` and returns a structured draft — **it performs no actions of any kind**: no Message is created, no Appointment/Customer/Vehicle/ServiceRecord/KnowledgeItem/BusinessRule is ever touched, and no external channel is called. See `docs/AI_BEHAVIOR_CONTRACT.md` for the full behavior contract this stage starts enforcing in code.
+
+- **Provider abstraction**: `AiProvider` (`src/server/ai/provider.ts`) with two implementations — `OpenAiProvider` (official `openai` SDK, Chat Completions with Structured Outputs) and `MockAiProvider` (deterministic, keyword-based, zero network access, zero configuration). `aiProviderFactory.ts` picks `OpenAiProvider` when `OPENAI_API_KEY` is set and falls back to `MockAiProvider` otherwise — no route or service code anywhere ever imports the OpenAI SDK, model name, or API key directly.
+- **Intent**: one of twelve fixed values (`GENERAL_QUESTION`, `SERVICE_INQUIRY`, `PRICE_INQUIRY`, `AVAILABILITY_INQUIRY`, `BOOKING_REQUEST`, `RESCHEDULE_REQUEST`, `CANCELLATION_REQUEST`, `VEHICLE_PROBLEM`, `SERVICE_HISTORY_INQUIRY`, `WARRANTY_INQUIRY`, `CUSTOMER_INFORMATION`, `UNKNOWN`) — a classification only; nothing acts on it.
+- **Context**: business profile, active Services, active Knowledge, active Business Rules, and — only if already known via the Conversation's `customerId`/linked `CustomerRequest.vehicleId` — a Customer/Vehicle summary. Never included: `tenantId`/`businessId`/internal ids, Customer notes, session data, secrets, or another tenant's data. Service history is deliberately not included yet — see `docs/DEVELOPMENT_ROADMAP.md` Prompt 09.
+- **Message history**: the conversation's last 20 messages, chronological, bounded — never the entire history.
+- **Structured output + Zod gate**: the model is constrained via OpenAI's `json_schema` Structured Outputs, then independently re-validated server-side against `aiResultSchema` regardless of what the API claims. A result that fails validation degrades to a safe `{ intent: "UNKNOWN", needsHuman: true }` fallback rather than throwing.
+- **Safety layer**: `confidence < 0.50` always forces `needsHuman = true` server-side, overriding the model's own claim; a regex-based check catches and replaces any draft that falsely asserts a real action was taken ("I've booked you...", "Ваша запись подтверждена") with a safe fallback answer, also forcing `needsHuman = true`.
+- **Prompt injection**: the user's message is the only untrusted value in the whole request — system instructions, business context, and conversation history are always passed as separate fields, never concatenated into one prompt string, and the system prompt explicitly tells the model to treat the user's text as data, not instructions.
+- **Errors**: `404` (foreign-tenant/unknown Conversation), `409 CONVERSATION_CLOSED` (same code Conversations/Messages already use), `502 AI_PROVIDER_UNAVAILABLE` / `500 AI_CONFIGURATION_ERROR` for genuine provider/config failures — never a raw OpenAI SDK error, stack trace, or internal prompt.
+- **Manager has full read access** — same operational exception as Appointment/Conversation/Customer Requests.
+- Settings UI: `/settings/ai` — select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft answer/needsHuman/reason. Explicitly labeled "Draft only — message was not sent." No chat UI, no send button, no auto-send.
+- **Zero new database models.** Reuses `Conversation`, `Message`, `Business`, `Service`, `KnowledgeItem`, `BusinessRule`, `Customer`, `Vehicle`, `CustomerRequest` through their existing repositories; everything under `src/server/ai/` is plain TypeScript/Zod with nothing persisted.
+
 ## Roles
 
 | Action                                 | owner | admin | manager |
@@ -308,8 +328,9 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 | List/read conversations                        | ✅ | ✅ | ✅ |
 | Create / update a conversation (incl. status)  | ✅ | ✅ | ✅ |
 | Send a message                                 | ✅ | ✅ | ✅ |
+| Analyze a message with AI Core                 | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, and Conversations are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), and [Conversations](#conversations)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, and AI Core are the deliberate exceptions: manager has full read/write access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), and [AI Core](#ai-core)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
@@ -403,6 +424,7 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | POST   | `/api/conversations`               | owner, admin, **manager** | always creates `status: OPEN`; `customerId`/`customerRequestId` optional but cross-checked for consistency if both given |
 | PATCH  | `/api/conversations/:id`           | owner, admin, **manager** | partial update, ≥1 field, incl. `status`; no DELETE — always `405` |
 | POST   | `/api/conversations/:id/messages`  | owner, admin, **manager** | append-only; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; no PATCH/DELETE for a message ever |
+| POST   | `/api/ai/analyze`                  | owner, admin, **manager** | `{ conversationId, message }`; read-only, creates nothing; `409 CONVERSATION_CLOSED` if the conversation isn't `OPEN`; `502`/`500` for provider/config failures |
 
 ## Security
 
@@ -501,31 +523,50 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 - No AI, LLM, embeddings, vector database, external channel integration (Telegram/WhatsApp/website chat/phone/webhooks), or CRM pipeline added — channel values are labels only, exactly as scoped.
 - 65 new unit tests (603 total): schema validation, service-layer relation/consistency/lifecycle checks, and cross-tenant isolation extending `tests/tenantIsolation.test.ts` (incl. proving a message create against a foreign-tenant conversation never touches that tenant's `lastMessageAt`).
 
+**Prompt 09 — AI Core Foundation**
+- `POST /api/ai/analyze`: reads a `Conversation` + test message, classifies intent (12 fixed values), extracts entities (never fabricated — unknown values are `null`), drafts a safe answer, and returns `confidence`/`needsHuman`/`reason`. Performs no action of any kind — never creates a Message, never touches any other table.
+- `AiProvider` abstraction (`src/server/ai/provider.ts`): `OpenAiProvider` (official `openai` SDK, Structured Outputs) and `MockAiProvider` (deterministic, keyword-based, zero network access). `aiProviderFactory.ts` picks `OpenAiProvider` when `OPENAI_API_KEY` is configured, otherwise `MockAiProvider` — this environment has no real key, so every test and the real Supabase smoke test both ran against the mock.
+- Context builder assembles only business profile + active Services/Knowledge/Rules + (if already known via the Conversation) a Customer/Vehicle summary — no `tenantId`/`businessId`/internal ids/Customer notes/secrets ever leave it; service history is deliberately not included yet.
+- Structured output is independently re-validated server-side (`aiResultSchema`, Zod) regardless of what the provider claims; a result that fails validation degrades to a safe `needsHuman: true` fallback rather than throwing.
+- Safety layer: confidence `< 0.50` always forces `needsHuman = true` server-side; a regex check catches and replaces any draft that falsely claims a real action was taken.
+- System instructions, business context, conversation history (last 20 messages), and the current user message are always passed to the provider as four separate fields — the user's message is the only untrusted value, never merged into system instructions.
+- **Local dev API router unaffected** — `POST /api/ai/analyze` is a flat file (`api/ai/analyze.ts`), no new routing capability needed.
+- Manager granted the same operational read access as Appointment/Conversation/Customer Requests.
+- Settings UI: `/settings/ai` — select a Conversation, type a test message, Analyze, see the structured result, explicitly labeled "Draft only — message was not sent." No chat UI, no send button.
+- **Zero new database models** — reuses eight existing tables through their existing repositories; `src/server/ai/` persists nothing.
+- One new dependency: `openai` (official SDK), server-side only — verified absent from the built frontend bundle.
+- No AI actions, function calling, tools, external channels, RAG, embeddings, vector database, AI logs, or escalation database — exactly as scoped.
+- 75 new unit tests (678 total): AI result/request schema validation, mock provider behavior (incl. prompt-injection resistance), safety layer, context builder (active-only filtering, no-secrets-leak assertions), provider configuration/factory selection, full service-layer orchestration, and a dedicated cross-tenant test proving `analyzeMessage` returns 404 for a foreign-tenant Conversation.
+
 ## Not implemented yet
 
-AI / LLM / OpenAI / Anthropic / Gemini, embeddings, vector database, RAG,
-semantic search, prompt templates, AI administrator logic, AI receptionist,
-Telegram, WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website
-chat, email integration, SMS, voice AI, CRM (pipeline/kanban), Kommo, external
-calendar sync (Google Calendar/Outlook), webhooks, background jobs, online
-payments, billing, subscriptions, customer self-service portal, recurring
-appointments, drag-and-drop calendar UI, reminders/follow-ups, analytics,
-notifications, automation engine, final UI/UX & design system, marketing
-site, advanced dashboard.
+LLM-driven booking/actions, function calling, AI tools, an autonomous or
+multi-agent framework, embeddings, vector database, RAG, semantic search,
+AI decision logs/audit trail, an escalation entity/queue/UI, Telegram,
+WhatsApp, Instagram, Facebook Messenger, Avito, VK, MAX, website chat,
+email integration, SMS, voice AI, phone integration, webhooks, CRM
+(pipeline/kanban), Kommo, external calendar sync (Google Calendar/Outlook),
+background jobs, online payments, billing, subscriptions, customer
+self-service portal, recurring appointments, drag-and-drop calendar UI,
+reminders/follow-ups, analytics, notifications, automation engine, final
+UI/UX & design system, marketing site, advanced dashboard.
 
-`Conversation`/`Message` (the communication foundation between a future
-channel layer and `CustomerRequest`) **are** implemented as of Prompt 08 —
-see [Conversations](#conversations) — but carry no channel integration,
-AI, or automatic behavior of any kind; `channel` is a label, not a
-connection.
+`Conversation`/`Message` (Prompt 08) and a first AI Core — intent
+classification, entity extraction, a draft answer, confidence/needsHuman
+(Prompt 09, see [AI Core](#ai-core)) — **are** implemented, but only as
+read-only classification and drafting: no tool exists for the AI to call,
+so it cannot book, cancel, reschedule, or change anything, regardless of
+what intent it detects; `channel` remains a label, not a live connection.
 
 These are intentionally out of scope for this stage. The codebase leaves room
-for them (e.g. `AIProvider` / `CRMAdapter` / `CalendarAdapter` /
-`ChannelAdapter` / `PaymentAdapter` integration layers, and future domain
-models like `AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`,
-`Escalation`) without committing to their shape yet.
-`KnowledgeItem`/`BusinessRule` are deliberately kept separate from any future
-AI/RAG layer, and `Lead` is deliberately kept separate from `Appointment` — a
+for them (e.g. `CRMAdapter` / `CalendarAdapter` / `ChannelAdapter` /
+`PaymentAdapter` integration layers, and future domain models like
+`AutomationRule`, `Subscription`, `UsageEvent`, `AuditLog`, `Escalation`)
+without committing to their shape yet.
+`KnowledgeItem`/`BusinessRule` were built as plain structured data, with no
+embeddings/RAG layer of any kind — AI Core (Prompt 09) reads them directly
+as-is, the same way it reads Services, rather than through any semantic
+search. `Lead` is deliberately kept separate from `Appointment` — a
 Lead is an inquiry, an Appointment is a confirmed booking (see
 [Leads](#leads) and [Appointments](#appointments)); `Appointment` itself is
 foundation-only, with no recurrence, external calendar sync, or reminders yet.
