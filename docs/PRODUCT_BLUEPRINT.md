@@ -80,18 +80,19 @@ What each layer is for:
 - **Understand Intent** — classifying what the customer actually wants. **Implemented today** (Prompt 09): `POST /api/ai/analyze` classifies every message into one of twelve fixed intents (`PRICE_INQUIRY`, `BOOKING_REQUEST`, `VEHICLE_PROBLEM`, etc.) with a `confidence` score.
 - **Knowledge + Business Rules + Service History** — the only allowed sources of business-specific fact (see `AI_BEHAVIOR_CONTRACT.md` §2). **Implemented today** (Prompt 09 for Knowledge/Rules, Prompt 11 for Service History): all three are part of the AI context, sourced with the same priority order the behavior contract specifies — Business Rules first, then Services/Knowledge, then Service History as the authoritative record of what actually happened in the past (never contradicted by a generic Knowledge Base statement).
 - **AI Decision** — a structured choice among the actions listed, never free-form unconstrained behavior. **Partially implemented** (Prompt 10, 12): "Offer Appointment" (`check_availability`), "Create Appointment", "Update Appointment" (`reschedule_appointment`), and "Cancel Appointment" exist as real, whitelisted tools behind a server-controlled tool-calling loop, each gated by explicit customer confirmation before it runs. "Escalate to Human" is now real too (Prompt 12) — a persisted `AiEscalation` row a staff member actually sees and acts on, not just a flag — but "Ask Clarifying Question" remains a plain draft-answer behavior, not a dedicated tool.
-- **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said. The "Action Log" half is now **implemented** (Prompt 13): `AiLog` records every `analyze` call's outcome, every genuine tool execution, and every escalation create/reuse/claim/resolve/cancel — a safe, minimal technical audit trail (`/settings/ai-logs`), not a substitute for the full Conversation transcript and never containing chain-of-thought, a raw provider response, or full message content. Analytics/dashboards built on top of this data remain future work (Roadmap 14).
+- **Conversation / Action Log** — `Conversation`/`Message` (the "Conversation" half) are **implemented today** (Prompt 08) as a durable, append-only record of what was said. The "Action Log" half is **implemented** (Prompt 13): `AiLog` records every `analyze` call's outcome, every genuine tool execution, and every escalation create/reuse/claim/resolve/cancel — a safe, minimal technical audit trail (`/settings/ai-logs`), not a substitute for the full Conversation transcript and never containing chain-of-thought, a raw provider response, or full message content. **As of Prompt 14**, this data is also aggregated (never re-read row-by-row) into a real operational Dashboard (`/dashboard`) — see Section 8.
 
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 13 complete).
+`api/`/`src/` trees at the time of writing (Prompt 14 complete).
 
 - **AI provider**: OpenAI (official `openai` npm SDK), accessed exclusively server-side through a provider-abstraction interface (`AiProvider`) — `src/server/ai/`. Falls back automatically to a deterministic, no-network mock provider when `OPENAI_API_KEY` isn't configured (true in this environment), so the AI Core stays fully exercisable without a real key.
 - **AI Tool Layer** (`src/server/ai/tools/`): the only path from the AI provider to booking data. Four whitelisted tools, each Zod-validated, each re-authorized against `AuthContext` (never model-supplied ids) and an `AiToolAllowedEntities` allow-list (the conversation's own known customer/vehicle/appointments), each calling the existing `appointmentService.ts` — never Prisma directly. A tool result is always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?, attempted}` — `attempted` (Prompt 13) distinguishes a genuine execution failure from a gate rejection (confirmation missing, invalid input, forbidden entity) that never reached `appointmentService.ts` at all.
 - **AI Customer Support** (Prompt 11): read-only, no new tool — `contextBuilder.ts` additionally loads the known vehicle's recent Service History, and the safety layer (`safety.ts`) gained two more deterministic checks (`applyDefinitiveDiagnosisCheck`, `applyFabricatedEscalationCheck`) alongside Prompt 09's fabricated-action check.
 - **Human Escalation** (Prompt 12): `src/server/services/escalationService.ts` + `escalationRepository.ts` — the only path from `aiService.ts` to the new `AiEscalation` table, called only when a fully-validated, non-safety-rejected `needsHuman: true` result exists. Idempotency is a real Postgres unique constraint (`AiEscalation.activeConversationId` + `@@unique([tenantId, businessId, activeConversationId])`), not just an application-level check. AI creates or reuses; only staff (`/api/escalations/:id/claim|resolve|cancel`) can change its state afterward.
 - **AI Logs / Audit** (Prompt 13): `src/server/services/aiLogService.ts` + `aiLogRepository.ts` — a safe, minimal technical audit trail (`AiLog`) written from three call sites (`aiService.ts`'s analyze loop and tool-calling loop, `escalationService.ts`'s create/reuse/claim/resolve/cancel), never from a client request and never with direct AI/Prisma access. `aiLogService.ts` sanitizes every field before it's persisted — a fixed metadata key whitelist, truncated `reason`, no raw provider response, no chain-of-thought, no full prompt or transcript — and writes are fire-and-forget: a logging failure is caught and reported, never allowed to roll back or mask the real business action it describes.
+- **Dashboard / Analytics** (Prompt 14): `src/server/services/analyticsService.ts` + `analyticsRepository.ts` — every number is a real-time Postgres aggregation (`count`/`groupBy`/`aggregate`, plus a small number of parameterized raw SQL queries for timezone-aware day-bucketing that Prisma's query builder cannot express) over the existing domain tables, never a pre-computed/denormalized table and never a client-side calculation. Period (`today`/`7d`/`30d`/`90d`) is interpreted in `Business.timezone` via the same `toBusinessLocalDateTime()`/`businessLocalToUtc()` pair Prompt 10 introduced. **Zero new Prisma models, zero migrations.**
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -198,9 +199,14 @@ the three staff-action operations). Deliberately **not** a substitute for
 chain-of-thought, a raw provider response, a full prompt, or full message
 content.
 
-**Planned, not yet in the schema** (no such Prisma model exists today):
+**Prompt 14 (Dashboard / Analytics) deliberately added zero new Prisma
+models and zero migrations** — confirmed as this stage's preferred,
+spec-mandated outcome. `analyticsRepository.ts` reads the existing tables
+above directly, aggregating in Postgres at request time; no denormalized
+counter table, no materialized view, no pre-aggregated analytics store of
+any kind exists in this schema.
 
-- Any Dashboard/Analytics-specific aggregate or metrics table (Prompt 14) — `AiLog` itself is a plain audit trail, not a pre-aggregated analytics store.
+**Planned, not yet in the schema** (no such Prisma model exists today): none specific to a future stage at this point — Team Management (Roadmap 15) is expected to reuse the existing `User`/`UserRole` model rather than add a new one.
 
 ## 6. CRM Structure
 
@@ -258,7 +264,7 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | Group | Screens | Status |
 |---|---|---|
 | **Authentication** | Login, Register | Implemented |
-| **Dashboard** | Dashboard (summary) | Implemented |
+| **Dashboard** | Dashboard: business summary (Prompt 02) + real, server-aggregated operational analytics (period selector, KPI cards, AI/tool/escalation/appointment/service breakdowns, daily time series — Prompt 14) | Implemented (`/dashboard`) |
 | **Customer Requests** | Customer Requests list, Customer Request detail (embedded in the edit form, incl. status history) | Implemented (`/settings/customer-requests`) |
 | **Conversations** | Conversations list, Conversation detail (messages, send-message form, Close/Reopen) | Implemented (`/settings/conversations`) — no channel is actually connected to anything real yet |
 | **CRM** | Customers, Customer profile (detail is the edit form; no separate profile page), Vehicles, Vehicle profile (same) | Implemented (`/settings/customers`, `/settings/vehicles`) |
@@ -267,7 +273,7 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | **Users / Team** | Team management, invitations | **Future** — roles exist (`owner`/`admin`/`manager`, set at registration/via DB only), but there is no team/invitation UI or API today |
 | **AI Operations** | AI Core + Booking Tools test tool (`/settings/ai`: select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft/needsHuman, and — since Prompt 10 — any real tool executions: availability slots, or the resulting appointment's id/status/start/end) | Implemented (`/settings/ai`) — a testing tool, not an operations dashboard; tool execution is real (a clearly-labeled warning banner says so), but sending a message to the customer stays disabled |
 | **AI Escalations** | Escalations list (status/priority/unassigned filters), detail (customer/conversation/assigned-staff summary, AI's reason/summary, Claim/Resolve/Cancel) | Implemented (`/settings/escalations`, Prompt 12) — an internal staff workflow tool, not a customer-facing feature; no external notification of any kind |
-| **AI Logs** | AI Logs list (operation/outcome/date-range filters), detail (intent/confidence/needsHuman/tool/reason, conversation/escalation links, actor, safe whitelisted metadata) | Implemented (`/settings/ai-logs`, Prompt 13) — a technical audit trail, not a dashboard/analytics screen (no charts, no aggregates — that's Roadmap 14); raw prompts/provider responses/chain-of-thought are never shown because they are never persisted |
+| **AI Logs** | AI Logs list (operation/outcome/date-range filters), detail (intent/confidence/needsHuman/tool/reason, conversation/escalation links, actor, safe whitelisted metadata) | Implemented (`/settings/ai-logs`, Prompt 13) — a technical audit trail, distinct from the Dashboard's aggregate view (Prompt 14) even though the Dashboard reads this same table; raw prompts/provider responses/chain-of-thought are never shown because they are never persisted |
 
 Every "Implemented" screen above lives under `/settings/...` and is gated
 by `ProtectedRoute` + session auth; "detail" views in this codebase are
@@ -506,7 +512,13 @@ remains future, and so does the **Channels** end of the chain (Website,
 Telegram, WhatsApp, Phone — `Manual`, entered by staff exactly as done
 today, is the only "channel" actually wired to anything). No channel
 integration or external notification of any kind exists in this
-repository.
+repository. **Prompt 14 adds a read-only observer on top of the entire
+diagram, not a new node in the chain**: the Dashboard (`/dashboard`)
+aggregates `Customer Requests`/`Conversations`/`AI Core`'s own `AiLog`
+audit trail/`EscalationService`'s `AiEscalation` rows/`CRM / Operations`'
+`Appointment`/`ServiceRecord` tables into real-time counts and rates — it
+never writes to any of them, and every number is computed fresh from
+Postgres on each request, never a separately-maintained running total.
 
 ## Documentation Source of Truth
 

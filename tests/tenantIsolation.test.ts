@@ -44,6 +44,18 @@ const {
   aiLogFindManyMock,
   aiLogCountMock,
   aiLogCreateMock,
+  aiLogGroupByMock,
+  aiLogAggregateMock,
+  customerRequestGroupByMock,
+  conversationGroupByMock,
+  messageGroupByMock,
+  aiEscalationGroupByMock,
+  appointmentGroupByMock,
+  serviceRecordGroupByMock,
+  serviceCountMock,
+  customerCountMock,
+  vehicleCountMock,
+  queryRawMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -92,6 +104,18 @@ const {
     aiLogFindManyMock: vi.fn(),
     aiLogCountMock: vi.fn(),
     aiLogCreateMock: vi.fn(),
+    aiLogGroupByMock: vi.fn(),
+    aiLogAggregateMock: vi.fn(),
+    customerRequestGroupByMock: vi.fn(),
+    conversationGroupByMock: vi.fn(),
+    messageGroupByMock: vi.fn(),
+    aiEscalationGroupByMock: vi.fn(),
+    appointmentGroupByMock: vi.fn(),
+    serviceRecordGroupByMock: vi.fn(),
+    serviceCountMock: vi.fn(),
+    customerCountMock: vi.fn(),
+    vehicleCountMock: vi.fn(),
+    queryRawMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -111,25 +135,36 @@ const {
 vi.mock('../src/server/db/prisma', () => {
   const prismaMock = {
     business: { findMany: businessFindManyMock, findFirst: businessFindFirstMock, updateMany: businessUpdateManyMock },
-    service: { findMany: serviceFindManyMock, findFirst: serviceFindFirstMock, updateMany: serviceUpdateManyMock },
+    service: {
+      findMany: serviceFindManyMock,
+      findFirst: serviceFindFirstMock,
+      updateMany: serviceUpdateManyMock,
+      count: serviceCountMock,
+    },
     knowledgeItem: { findFirst: knowledgeFindFirstMock, updateMany: knowledgeUpdateManyMock },
     businessRule: { findFirst: ruleFindFirstMock, updateMany: ruleUpdateManyMock },
-    customer: { findFirst: customerFindFirstMock, updateMany: customerUpdateManyMock },
-    vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock },
+    customer: { findFirst: customerFindFirstMock, updateMany: customerUpdateManyMock, count: customerCountMock },
+    vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock, count: vehicleCountMock },
     lead: { findFirst: leadFindFirstMock, updateMany: leadUpdateManyMock },
-    appointment: { findFirst: appointmentFindFirstMock, updateMany: appointmentUpdateManyMock },
+    appointment: {
+      findFirst: appointmentFindFirstMock,
+      updateMany: appointmentUpdateManyMock,
+      groupBy: appointmentGroupByMock,
+    },
     serviceRecord: {
       findFirst: serviceRecordFindFirstMock,
       findMany: serviceRecordFindManyMock,
       count: serviceRecordCountMock,
       updateMany: serviceRecordUpdateManyMock,
       aggregate: serviceRecordAggregateMock,
+      groupBy: serviceRecordGroupByMock,
     },
     customerRequest: {
       findFirst: customerRequestFindFirstMock,
       findMany: customerRequestFindManyMock,
       count: customerRequestCountMock,
       updateMany: customerRequestUpdateManyMock,
+      groupBy: customerRequestGroupByMock,
     },
     customerRequestStatusHistory: { create: customerRequestStatusHistoryCreateMock },
     conversation: {
@@ -137,23 +172,28 @@ vi.mock('../src/server/db/prisma', () => {
       findMany: conversationFindManyMock,
       count: conversationCountMock,
       updateMany: conversationUpdateManyMock,
+      groupBy: conversationGroupByMock,
     },
-    message: { findMany: messageFindManyMock, create: messageCreateMock },
+    message: { findMany: messageFindManyMock, create: messageCreateMock, groupBy: messageGroupByMock },
     aiEscalation: {
       findFirst: aiEscalationFindFirstMock,
       findMany: aiEscalationFindManyMock,
       count: aiEscalationCountMock,
       updateMany: aiEscalationUpdateManyMock,
       create: aiEscalationCreateMock,
+      groupBy: aiEscalationGroupByMock,
     },
     aiLog: {
       findFirst: aiLogFindFirstMock,
       findMany: aiLogFindManyMock,
       count: aiLogCountMock,
       create: aiLogCreateMock,
+      groupBy: aiLogGroupByMock,
+      aggregate: aiLogAggregateMock,
     },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
+    $queryRaw: queryRawMock,
   }
   txTargetRef.current = prismaMock
   return { prisma: prismaMock }
@@ -176,6 +216,7 @@ import { escalationRepository } from '../src/server/repositories/escalationRepos
 import { getEscalation, claimEscalation, resolveEscalation, cancelEscalation } from '../src/server/services/escalationService'
 import { aiLogRepository } from '../src/server/repositories/aiLogRepository'
 import { getAiLog, listAiLogs } from '../src/server/services/aiLogService'
+import { analyticsRepository } from '../src/server/repositories/analyticsRepository'
 import { analyzeMessage } from '../src/server/services/aiService'
 import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
 import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
@@ -230,6 +271,18 @@ beforeEach(() => {
   aiLogFindManyMock.mockResolvedValue([])
   aiLogCountMock.mockResolvedValue(0)
   aiLogCreateMock.mockResolvedValue({})
+  aiLogGroupByMock.mockResolvedValue([])
+  aiLogAggregateMock.mockResolvedValue({ _avg: { confidence: null } })
+  customerRequestGroupByMock.mockResolvedValue([])
+  conversationGroupByMock.mockResolvedValue([])
+  messageGroupByMock.mockResolvedValue([])
+  aiEscalationGroupByMock.mockResolvedValue([])
+  appointmentGroupByMock.mockResolvedValue([])
+  serviceRecordGroupByMock.mockResolvedValue([])
+  serviceCountMock.mockResolvedValue(0)
+  customerCountMock.mockResolvedValue(0)
+  vehicleCountMock.mockResolvedValue(0)
+  queryRawMock.mockResolvedValue([])
 })
 
 describe('tenant isolation — Business', () => {
@@ -1018,5 +1071,175 @@ describe('tenant isolation — AI Log (Prompt 13)', () => {
     const call = aiLogFindManyMock.mock.calls[0]![0] as { where: { businessId: string; tenantId: string } }
     expect(call.where.businessId).toBe('business-a')
     expect(call.where.tenantId).toBe('tenant-a')
+  })
+})
+
+describe('tenant isolation — Analytics / Dashboard (Prompt 14)', () => {
+  // Every analyticsRepository function is called directly here (the same
+  // functions analyticsService.ts calls) against the same mocked prisma
+  // client as every other test in this file — proving every aggregation
+  // query is scoped by BOTH tenantId and businessId, never tenantId alone
+  // (spec §37's "wrong business" requirement), and that the small number of
+  // raw SQL day-bucket queries (spec §35) bind tenantId/businessId/timezone
+  // as real parameters rather than ever interpolating them into the SQL text.
+  const range = { start: new Date('2026-08-01T00:00:00Z'), end: new Date('2026-09-01T00:00:00Z') }
+
+  /** Reads the `where` clause of a call — defaults to the MOST RECENT call, since several tests below reuse the same shared mock (e.g. aiLogGroupByMock) across more than one analyticsRepository function in sequence. */
+  function whereOf(mock: { mock: { calls: unknown[][] } }, callIndex = -1): Record<string, unknown> {
+    const calls = mock.mock.calls
+    const idx = callIndex < 0 ? calls.length + callIndex : callIndex
+    return (calls[idx]![0] as { where: Record<string, unknown> }).where
+  }
+
+  it('customerRequestsByStatus is scoped by tenantId + businessId + createdAt range', async () => {
+    await analyticsRepository.customerRequestsByStatus('tenant-a', 'business-a', range)
+    expect(whereOf(customerRequestGroupByMock)).toMatchObject({
+      tenantId: 'tenant-a',
+      businessId: 'business-a',
+      createdAt: { gte: range.start, lt: range.end },
+    })
+  })
+
+  it('conversationsByChannel/conversationsByStatus are both scoped by tenantId + businessId', async () => {
+    await analyticsRepository.conversationsByChannel('tenant-a', 'business-a', range)
+    expect(whereOf(conversationGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+    await analyticsRepository.conversationsByStatus('tenant-a', 'business-a', range)
+    expect(whereOf(conversationGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+  })
+
+  it('messagesByDirection is scoped by tenantId + businessId', async () => {
+    await analyticsRepository.messagesByDirection('tenant-a', 'business-a', range)
+    expect(whereOf(messageGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+  })
+
+  it('aiAnalyzeByOutcome/aiAnalyzeByIntent/aiAnalyzeAverageConfidence are scoped by tenantId + businessId AND filtered to operation=AI_ANALYZE — never AI_TOOL_EXECUTION/AI_ESCALATION_* rows', async () => {
+    await analyticsRepository.aiAnalyzeByOutcome('tenant-a', 'business-a', range)
+    expect(whereOf(aiLogGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a', operation: 'AI_ANALYZE' })
+
+    await analyticsRepository.aiAnalyzeByIntent('tenant-a', 'business-a', range)
+    expect(whereOf(aiLogGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a', operation: 'AI_ANALYZE', intent: { not: null } })
+
+    await analyticsRepository.aiAnalyzeAverageConfidence('tenant-a', 'business-a', range)
+    const aggCall = aiLogAggregateMock.mock.calls[0]![0] as { where: Record<string, unknown> }
+    expect(aggCall.where).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a', operation: 'AI_ANALYZE', confidence: { not: null } })
+  })
+
+  it('never reveals tenant B\'s AiLog rows: a foreign business within the same tenant gets its own independent scoped query', async () => {
+    await analyticsRepository.aiAnalyzeByOutcome('tenant-a', 'business-other', range)
+    expect(whereOf(aiLogGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-other' })
+  })
+
+  it('toolExecutionsBySuccess/toolExecutionsByName are scoped AND filtered to operation=AI_TOOL_EXECUTION', async () => {
+    await analyticsRepository.toolExecutionsBySuccess('tenant-a', 'business-a', range)
+    expect(whereOf(aiLogGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a', operation: 'AI_TOOL_EXECUTION' })
+
+    await analyticsRepository.toolExecutionsByName('tenant-a', 'business-a', range)
+    expect(whereOf(aiLogGroupByMock)).toMatchObject({
+      tenantId: 'tenant-a',
+      businessId: 'business-a',
+      operation: 'AI_TOOL_EXECUTION',
+      toolName: { not: null },
+    })
+  })
+
+  it('escalationsByStatus/escalationsByPriority are scoped by tenantId + businessId + createdAt (never resolvedAt)', async () => {
+    await analyticsRepository.escalationsByStatus('tenant-a', 'business-a', range)
+    expect(whereOf(aiEscalationGroupByMock)).toMatchObject({
+      tenantId: 'tenant-a',
+      businessId: 'business-a',
+      createdAt: { gte: range.start, lt: range.end },
+    })
+    expect(whereOf(aiEscalationGroupByMock)).not.toHaveProperty('resolvedAt')
+
+    await analyticsRepository.escalationsByPriority('tenant-a', 'business-a', range)
+    expect(whereOf(aiEscalationGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+  })
+
+  it('appointmentsByStatus is scoped by tenantId + businessId', async () => {
+    await analyticsRepository.appointmentsByStatus('tenant-a', 'business-a', range)
+    expect(whereOf(appointmentGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+  })
+
+  it('serviceRecordCount counts ALL records created in the period (archived or not) — a separate, more restrictive query handles revenue', async () => {
+    await analyticsRepository.serviceRecordCount('tenant-a', 'business-a', range)
+    const call = serviceRecordCountMock.mock.calls[0]![0] as { where: Record<string, unknown> }
+    expect(call.where).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a' })
+    expect(call.where).not.toHaveProperty('isArchived')
+  })
+
+  it('serviceRecordRevenueByCurrency ALWAYS filters isArchived: false — spec §16', async () => {
+    await analyticsRepository.serviceRecordRevenueByCurrency('tenant-a', 'business-a', range)
+    expect(whereOf(serviceRecordGroupByMock)).toMatchObject({ tenantId: 'tenant-a', businessId: 'business-a', isArchived: false })
+  })
+
+  it('serviceSnapshot (active/total) is a current, unscoped-by-period snapshot, but still tenant/business scoped', async () => {
+    await analyticsRepository.serviceSnapshot('tenant-a', 'business-a')
+    const calls = serviceCountMock.mock.calls as { where: Record<string, unknown> }[][]
+    expect(calls.every((c) => c[0]!.where.tenantId === 'tenant-a' && c[0]!.where.businessId === 'business-a')).toBe(true)
+    expect(calls.some((c) => c[0]!.where.isActive === true)).toBe(true)
+    expect(calls.some((c) => !('isActive' in c[0]!.where))).toBe(true)
+  })
+
+  it('customerCounts never counts a deactivated customer as active, and scopes "new" to the period', async () => {
+    await analyticsRepository.customerCounts('tenant-a', 'business-a', range)
+    const calls = customerCountMock.mock.calls as { where: Record<string, unknown> }[][]
+    expect(calls.some((c) => c[0]!.where.isActive === true && !('createdAt' in c[0]!.where))).toBe(true)
+    expect(calls.some((c) => c[0]!.where.createdAt !== undefined)).toBe(true)
+    expect(calls.every((c) => c[0]!.where.tenantId === 'tenant-a' && c[0]!.where.businessId === 'business-a')).toBe(true)
+  })
+
+  it('vehicleCounts follows the same active-snapshot/new-in-period split, tenant/business scoped', async () => {
+    await analyticsRepository.vehicleCounts('tenant-a', 'business-a', range)
+    const calls = vehicleCountMock.mock.calls as { where: Record<string, unknown> }[][]
+    expect(calls.every((c) => c[0]!.where.tenantId === 'tenant-a' && c[0]!.where.businessId === 'business-a')).toBe(true)
+  })
+
+  it('customerRequestConversion uses the real appointmentId relation, scoped by tenantId + businessId', async () => {
+    await analyticsRepository.customerRequestConversion('tenant-a', 'business-a', range)
+    const calls = customerRequestCountMock.mock.calls as { where: Record<string, unknown> }[][]
+    expect(calls.every((c) => c[0]!.where.tenantId === 'tenant-a' && c[0]!.where.businessId === 'business-a')).toBe(true)
+    expect(calls.some((c) => JSON.stringify(c[0]!.where.appointmentId) === JSON.stringify({ not: null }))).toBe(true)
+  })
+
+  describe('day-bucket raw SQL queries — parameterized, never string-interpolated (spec §35)', () => {
+    it('customerRequestsByDay binds tenantId/businessId/timezone as real query parameters, not embedded in the SQL text', async () => {
+      await analyticsRepository.customerRequestsByDay('tenant-a', 'business-a', range, 'Europe/Moscow')
+      const [strings, ...values] = queryRawMock.mock.calls[0]! as [TemplateStringsArray, ...unknown[]]
+      // The bound values array must contain the tenant/business/timezone —
+      // proving they were passed as parameters, not spliced into the SQL text.
+      expect(values).toContain('tenant-a')
+      expect(values).toContain('business-a')
+      expect(values).toContain('Europe/Moscow')
+      // And the raw SQL text itself never contains the literal id/timezone —
+      // it only ever contains the fixed table/column names and placeholders.
+      const rawText = strings.join('')
+      expect(rawText).not.toContain('tenant-a')
+      expect(rawText).not.toContain('Europe/Moscow')
+      expect(rawText).toContain('customer_requests')
+    })
+
+    it('aiAnalysesByDay is scoped to operation = AI_ANALYZE directly in the fixed SQL text (a literal, never a client-controlled value)', async () => {
+      await analyticsRepository.aiAnalysesByDay('tenant-a', 'business-a', range, 'UTC')
+      const [strings] = queryRawMock.mock.calls[0]! as [TemplateStringsArray, ...unknown[]]
+      expect(strings.join('')).toContain('ai_logs')
+      expect(strings.join('')).toContain("'AI_ANALYZE'")
+    })
+
+    it('escalationsByDay and appointmentsByDay each bind tenantId/businessId as parameters too', async () => {
+      await analyticsRepository.escalationsByDay('tenant-a', 'business-a', range, 'Asia/Almaty')
+      let [, ...values] = queryRawMock.mock.calls[0]! as [TemplateStringsArray, ...unknown[]]
+      expect(values).toEqual(expect.arrayContaining(['tenant-a', 'business-a', 'Asia/Almaty']))
+
+      await analyticsRepository.appointmentsByDay('tenant-a', 'business-a', range, 'Asia/Almaty')
+      ;[, ...values] = queryRawMock.mock.calls[1]! as [TemplateStringsArray, ...unknown[]]
+      expect(values).toEqual(expect.arrayContaining(['tenant-a', 'business-a', 'Asia/Almaty']))
+    })
+
+    it('a tenant B id never leaks into a tenant A query\'s bound parameters', async () => {
+      await analyticsRepository.customerRequestsByDay('tenant-a', 'business-a', range, 'UTC')
+      const [, ...values] = queryRawMock.mock.calls[0]! as [TemplateStringsArray, ...unknown[]]
+      expect(values).not.toContain('tenant-b')
+      expect(values).not.toContain('business-b')
+    })
   })
 })
