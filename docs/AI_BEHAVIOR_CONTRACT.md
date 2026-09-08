@@ -1,19 +1,23 @@
 # AI Administrator — Behavior Contract
 
-> **Updated after Prompt 10.** `Conversation`/`Message` (Prompt 08), a
+> **Updated after Prompt 11.** `Conversation`/`Message` (Prompt 08), a
 > first AI Core — intent classification, entity extraction, a draft
-> answer, and the `needsHuman`/`reason` escalation signal (Prompt 09) —
-> and now a real, whitelisted AI Tool Layer (Prompt 10: `check_availability`,
+> answer, and the `needsHuman`/`reason` escalation signal (Prompt 09) — a
+> real, whitelisted AI Tool Layer (Prompt 10: `check_availability`,
 > `create_appointment`, `reschedule_appointment`, `cancel_appointment`,
 > behind a server-controlled tool-calling loop and an explicit two-phase
-> confirmation gate) all now exist in this repository, confirmed against
-> `prisma/schema.prisma`, `api/`, and `src/`. What's still entirely
-> unimplemented, and remains this document's actual "future spec" portion:
-> `findCustomer`/`findVehicle`/CRM-write tools beyond Appointment,
-> automatic Customer/Vehicle creation, escalation as a real queue/entity,
-> AI decision logging/auditability, and every external channel. See
-> `DEVELOPMENT_ROADMAP.md` Prompts 11–13 for where those land. This
-> document remains binding on whoever implements them.
+> confirmation gate) — and now grounded, read-only AI Customer Support
+> (Prompt 11: Service History enters the AI context; price/warranty/
+> service/knowledge/history answers are grounded in real data instead of
+> generic deflection; two new deterministic safety checks catch a
+> fabricated diagnosis or a fabricated escalation claim) all now exist in
+> this repository, confirmed against `prisma/schema.prisma`, `api/`, and
+> `src/`. What's still entirely unimplemented, and remains this document's
+> actual "future spec" portion: `findCustomer`/`findVehicle`/CRM-write
+> tools beyond Appointment, automatic Customer/Vehicle creation, escalation
+> as a real queue/entity, AI decision logging/auditability, and every
+> external channel. See `DEVELOPMENT_ROADMAP.md` Prompts 12–13 for where
+> those land. This document remains binding on whoever implements them.
 
 ## 1. Core Principle
 
@@ -45,6 +49,16 @@ working hour, whether a part is in stock — unless that fact is actually
 present in this system. General knowledge may only help the AI phrase
 things naturally or reason about generic automotive terminology, never to
 fill in a business-specific gap.
+
+**As of Prompt 11**, this priority order has real code behind it for the
+first time: a general customer-support question is matched against
+Business Rules before Knowledge Base (a lower `priority` number always
+wins on a conflict between two matching rules — a lower-priority rule can
+never override a higher-priority one), and Service History is treated as
+authoritative for what actually happened in the past — it is never
+contradicted by a generic Knowledge Base statement. When none of these
+sources has an answer, the AI says so honestly rather than falling back to
+general model knowledge.
 
 ## 3. Tenant Isolation
 
@@ -123,6 +137,12 @@ historical context). The AI must not:
 - change `Service.priceFrom`/`priceTo`;
 - promise a final repair cost the system hasn't confirmed.
 
+**As of Prompt 11**, price-question answers are grounded exactly this way:
+a range when both `priceFrom` and `priceTo` exist, a lower bound only when
+just `priceFrom` exists (never an invented upper bound), and an honest "no
+price on file — please confirm with staff" when neither exists — never an
+estimate ("this usually costs around...").
+
 ## 8. Vehicle Diagnosis
 
 The AI may help structure a customer's complaint into something staff can
@@ -134,6 +154,19 @@ act on. It must never present a guess as a confirmed diagnosis.
 **Allowed:**
 > "По описанию одной из возможных причин может быть проблема с системой
 > зарядки. Для точного определения потребуется диагностика."
+
+**As of Prompt 11**, Service History is part of the AI context
+specifically so the AI can cite real past work as fact ("15 августа
+заменили масло при пробеге 82 400 км") — but citing history is not the
+same as diagnosing the present: a customer reporting a new symptom that
+happens to relate to a past service ("колодки меняли 8 месяцев назад,
+значит опять менять?") must get the symptom acknowledged, the history
+cited as fact, and an explicit statement that the current cause cannot be
+established from history alone — never a conclusion drawn from the
+history. A new deterministic safety check
+(`applyDefinitiveDiagnosisCheck`, `src/server/ai/safety.ts`) catches and
+replaces a draft that crosses this line as a defense-in-depth backstop to
+the system prompt.
 
 ## 9. Missing Information
 
@@ -163,7 +196,20 @@ Escalate when:
 - there's a complaint or conflict;
 - the situation is safety-critical;
 - it's an unusual operational case the AI hasn't been given rules for;
-- the customer explicitly asks for a human.
+- the customer explicitly asks for a human;
+- (Prompt 11) a customer-support question cannot be grounded in any real source (Service/Knowledge Base/Business Rule/Service History) — an honest "I don't have enough information" plus `needsHuman: true`, never a guess.
+
+**"Escalate" today means only `needsHuman: true` on the result — never a
+claimed action.** No escalation entity, queue, or notification mechanism
+exists yet (Roadmap 12), so the AI must never say "I've forwarded this to
+a manager" or "a manager has been notified" — that would be a fabricated
+action claim, the same category `applyFabricatedActionCheck` already
+catches for booking. A new dedicated check
+(`applyFabricatedEscalationCheck`, Prompt 11) catches this specific claim
+as a defense-in-depth backstop. The correct phrasing is "для точного
+ответа потребуется уточнение со стороны администратора сервиса" — a
+statement that a human's involvement is needed, not a claim that it has
+already happened.
 
 ## 11. AI Tools
 
@@ -236,6 +282,15 @@ computation against real `BusinessWorkingHours` and the real appointment
 conflict check — there is no path for the AI to state a slot it wasn't
 handed by that tool.
 
+**As of Prompt 11**, "service history" and "warranties" also have real
+code behind them: `serviceHistory` is now populated in the AI context from
+real `ServiceRecord` rows (bounded to the 10 most recent, non-archived,
+for the known vehicle only), so a history answer is either grounded in a
+real record or an honest "no records" — never invented. A warranty answer
+is grounded in a matching `BusinessRule` or `KnowledgeItem`, or an honest
+"cannot confirm for this specific case" when neither covers it — never an
+invented term or duration.
+
 ## 14. Auditability
 
 The future system must be able to answer, for any AI-driven action:
@@ -263,24 +318,25 @@ Nothing the AI does may be irreversible or hidden from staff.
 
 ## 16. Development Boundary
 
-As of Prompt 10, this document is **mostly** a specification of already-
-implemented behavior — §§1–4, 6, 9, 11–13, 15's core principles now have
-real code behind them (a real Tool Layer, real confirmation gating, real
-tenant/entity scoping) — and **partly** still future-only (§5's
-multiple-match search, §7's pricing changes, §8's diagnosis tooling, §10's
-escalation queue: no tool exists yet for any of these, so those specific
-rules have no code to violate yet — they remain binding on whoever
-extends the Tool Layer next).
+As of Prompt 11, this document is **almost entirely** a specification of
+already-implemented behavior — §§1–4, 6–9, 11–13, 15's core principles now
+have real code behind them (a real Tool Layer, real confirmation gating,
+real tenant/entity scoping, grounded customer-support answers, real
+diagnosis/escalation-claim safety checks) — and **partly** still
+future-only (§5's multiple-match search, §7's pricing *changes* [reading a
+price is implemented; changing one is not], §10's escalation queue: no
+tool exists yet for any of these, so those specific rules have no code to
+violate yet — they remain binding on whoever builds Prompt 12+).
 
 Do not add: embeddings; a vector database; RAG; an autonomous or
 multi-agent framework; a fifth AI tool or any dynamically-registered tool;
 conversation memory beyond the existing bounded message history; external
 channel integrations (Telegram/WhatsApp/phone/website chat); AI decision
 logging or an audit trail; an escalation entity, queue, or UI; automatic
-Customer/Vehicle creation.
+Customer/Vehicle/Service creation.
 
 These arrive only at their corresponding stage in
-`DEVELOPMENT_ROADMAP.md` (Prompt 11 and onward) — none of them exist in
+`DEVELOPMENT_ROADMAP.md` (Prompt 12 and onward) — none of them exist in
 this repository today.
 
 ## Documentation Source of Truth
