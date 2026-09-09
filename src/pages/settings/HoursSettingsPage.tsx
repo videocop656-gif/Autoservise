@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import Nav from '../../components/Nav'
+import { PageContainer } from '../../components/layout/PageContainer'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
@@ -76,9 +76,7 @@ export default function HoursSettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <Nav />
-      <div className="mx-auto max-w-3xl p-6">
+    <PageContainer className="max-w-3xl">
         <Card>
           <CardHeader>
             <CardTitle>Часы работы</CardTitle>
@@ -140,7 +138,6 @@ export default function HoursSettingsPage() {
             )}
           </CardContent>
         </Card>
-      </div>
-    </div>
+    </PageContainer>
   )
 }

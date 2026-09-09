@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import Nav from '../../components/Nav'
+import { PageContainer } from '../../components/layout/PageContainer'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
@@ -79,18 +79,11 @@ export default function BusinessSettingsPage() {
   }
 
   if (!form) {
-    return (
-      <div className="min-h-screen bg-muted/30">
-        <Nav />
-        <div className="p-6 text-sm text-muted-foreground">Загрузка...</div>
-      </div>
-    )
+    return <PageContainer className="text-sm text-muted-foreground">Загрузка...</PageContainer>
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <Nav />
-      <div className="mx-auto max-w-3xl p-6">
+    <PageContainer className="max-w-3xl">
         <Card>
           <CardHeader>
             <CardTitle>Профиль автосервиса</CardTitle>
@@ -196,7 +189,6 @@ export default function BusinessSettingsPage() {
             </form>
           </CardContent>
         </Card>
-      </div>
-    </div>
+    </PageContainer>
   )
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Plus, MessageSquare, Lock, Unlock } from 'lucide-react'
-import Nav from '../../components/Nav'
+import { PageContainer } from '../../components/layout/PageContainer'
+import { PageHeader } from '../../components/layout/PageHeader'
 import Pagination from '../../components/Pagination'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -294,9 +295,8 @@ export default function ConversationsSettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <Nav />
-      <div className="mx-auto max-w-4xl space-y-6 p-6">
+    <PageContainer className="max-w-4xl space-y-6">
+      <PageHeader title="Диалоги" subtitle="Customer conversations across connected channels" />
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
@@ -587,7 +587,6 @@ export default function ConversationsSettingsPage() {
             </CardContent>
           </Card>
         )}
-      </div>
-    </div>
+    </PageContainer>
   )
 }

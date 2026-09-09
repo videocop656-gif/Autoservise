@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Sparkles, TriangleAlert } from 'lucide-react'
-import Nav from '../../components/Nav'
+import { PageContainer } from '../../components/layout/PageContainer'
+import { PageHeader } from '../../components/layout/PageHeader'
 import { Button } from '../../components/ui/button'
 import { Textarea } from '../../components/ui/textarea'
 import { Label } from '../../components/ui/label'
@@ -175,9 +176,8 @@ export default function AiSettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      <Nav />
-      <div className="mx-auto max-w-3xl space-y-6 p-6">
+    <PageContainer className="max-w-3xl space-y-6">
+      <PageHeader title="AI-администратор" subtitle="Configure how your AI assistant communicates with customers" />
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -410,7 +410,6 @@ export default function AiSettingsPage() {
             </CardContent>
           </Card>
         )}
-      </div>
-    </div>
+    </PageContainer>
   )
 }
