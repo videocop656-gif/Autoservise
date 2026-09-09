@@ -1,141 +1,42 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import {
-  Plus,
-  Lock,
-  Unlock,
-  Search,
-  RefreshCw,
-  AlertTriangle,
-  Globe,
-  Send,
-  Phone,
-  MessageCircle,
-  HelpCircle,
-  UserRound,
-  type LucideIcon,
-} from 'lucide-react'
+import { Plus, Search, RefreshCw, AlertTriangle } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import { PageHeader } from '../../components/layout/PageHeader'
 import Pagination from '../../components/Pagination'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
-import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import { Card, CardContent, CardHeader } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
+import { ConversationDetailPanel } from '../../components/conversations/ConversationDetailPanel'
+import {
+  type ConversationChannel,
+  type ConversationStatus,
+  type ConversationDto,
+  type CustomerRefDto,
+  type CustomerRequestRefDto,
+  type VehicleRefDto,
+  type ServiceRefDto,
+  type EscalationDto,
+  type EscalationPriority,
+  type Paginated,
+  STATUS_LABELS,
+  CHANNEL_LABELS,
+  CHANNEL_ICONS,
+  customerName,
+  attentionBadgeVariant,
+  formatActivity,
+} from '../../components/conversations/shared'
 
 // ---------------------------------------------------------------------------
-// Prompt 21 — Conversations v1 (рабочий inbox), built strictly on the
-// existing backend from Prompts 02/16/17. No new endpoint, no schema change.
-//
-// UI field -> real data source:
-//   Client name      -> Conversation.customerId, resolved against
-//                        GET /api/customers?pageSize=100 (same reference-
-//                        data-lookup pattern as the Dashboard/Appointments
-//                        pages). Falls back to "Неизвестный клиент".
-//   Channel           -> Conversation.channel (real enum, GET /api/conversations)
-//   Status            -> Conversation.status (OPEN/CLOSED, real enum)
-//   Last activity     -> Conversation.lastMessageAt, falling back to createdAt
-//   Attention         -> derived, not a stored field: a conversation is
-//                        flagged when it has a currently OPEN or IN_PROGRESS
-//                        AiEscalation (GET /api/escalations?status=..., the
-//                        same two-call pattern the Dashboard uses because
-//                        escalationStatusFilterSchema only accepts one
-//                        status at a time).
-//   Search            -> GET /api/conversations?search= (server-side,
-//                        matches Conversation.subject only — see Known
-//                        Limitations in the Final Report)
-//   Message preview   -> NOT available: GET /api/conversations (list) never
-//                        includes `messages` (only the single-GET detail
-//                        endpoint does — see conversationRepository.ts).
-//                        Fetching it per row would mean one extra request
-//                        per conversation, which spec §15 explicitly
-//                        forbids. Rows show metadata only.
-//   AI / human state  -> no honest per-row signal exists without an extra
-//                        request per row (AiInteractionLog is keyed by
-//                        conversationId with no bulk-by-many-ids query), so
-//                        no "AI handled" badge is shown — only the real,
-//                        cheap "Требует внимания" signal above.
+// Prompt 21/22 — Conversations Inbox + Conversation Detail v1, built
+// strictly on the existing backend from Prompts 02/16/17. No new endpoint,
+// no schema change. Shared types/labels/helpers live in
+// components/conversations/shared.ts, reused by both this inbox and the
+// ConversationDetailPanel opened below.
 // ---------------------------------------------------------------------------
-
-type ConversationChannel = 'MANUAL' | 'WEBSITE' | 'TELEGRAM' | 'WHATSAPP' | 'PHONE' | 'OTHER'
-type ConversationStatus = 'OPEN' | 'CLOSED'
-type MessageDirection = 'INBOUND' | 'OUTBOUND'
-type MessageSenderType = 'CUSTOMER' | 'STAFF' | 'SYSTEM'
-type EscalationStatus = 'OPEN' | 'IN_PROGRESS'
-type EscalationPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT'
-
-type ChannelDeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED'
-
-interface ChannelDeliveryDto {
-  id: string
-  messageId: string
-  channelConnectionId: string
-  status: ChannelDeliveryStatus
-  attemptCount: number
-  externalMessageId: string | null
-  lastAttemptAt: string | null
-  sentAt: string | null
-  errorCode: string | null
-  errorMessage: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-interface MessageDto {
-  id: string
-  conversationId: string
-  direction: MessageDirection
-  senderType: MessageSenderType
-  content: string
-  createdAt: string
-  // Channel Operations & Delivery Foundation (Prompt 17) — present only once a send through a channel has been attempted for this message.
-  delivery?: ChannelDeliveryDto
-}
-
-interface ConversationDto {
-  id: string
-  customerId: string | null
-  customerRequestId: string | null
-  channel: ConversationChannel
-  status: ConversationStatus
-  subject: string | null
-  startedAt: string
-  lastMessageAt: string | null
-  closedAt: string | null
-  createdAt: string
-  updatedAt: string
-  // Prompt 17 — null for a manually-created conversation; set for one linked to a real ChannelConnection (Prompt 16).
-  channelConnectionId: string | null
-  customer?: { id: string; firstName: string; lastName: string | null } | null
-  customerRequest?: { id: string; subject: string; status: string } | null
-  messages?: MessageDto[]
-}
-
-interface CustomerDto {
-  id: string
-  firstName: string
-  lastName: string | null
-}
-interface CustomerRequestDto {
-  id: string
-  subject: string
-  customerId: string
-}
-interface EscalationLiteDto {
-  conversationId: string
-  priority: EscalationPriority
-}
-
-interface Paginated<T> {
-  items: T[]
-  page: number
-  pageSize: number
-  total: number
-  totalPages: number
-}
 
 interface CreateFormState {
   customerId: string
@@ -154,29 +55,6 @@ const EMPTY_CREATE_FORM: CreateFormState = {
 const STATUSES: ConversationStatus[] = ['OPEN', 'CLOSED']
 const CHANNELS: ConversationChannel[] = ['MANUAL', 'WEBSITE', 'TELEGRAM', 'WHATSAPP', 'PHONE', 'OTHER']
 
-const STATUS_LABELS: Record<ConversationStatus, string> = {
-  OPEN: 'Открыт',
-  CLOSED: 'Закрыт',
-}
-
-const CHANNEL_LABELS: Record<ConversationChannel, string> = {
-  MANUAL: 'Вручную',
-  WEBSITE: 'Сайт',
-  TELEGRAM: 'Telegram',
-  WHATSAPP: 'WhatsApp',
-  PHONE: 'Телефон',
-  OTHER: 'Другое',
-}
-
-const CHANNEL_ICONS: Record<ConversationChannel, LucideIcon> = {
-  MANUAL: UserRound,
-  WEBSITE: Globe,
-  TELEGRAM: Send,
-  WHATSAPP: MessageCircle,
-  PHONE: Phone,
-  OTHER: HelpCircle,
-}
-
 /** 300ms debounce on the search box only — avoids firing a request on every keystroke while still using the real server-side `search` param (spec §6). */
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -187,29 +65,15 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
-/** "5 мин назад" for very recent activity, "Сегодня/Вчера, HH:MM" for today/yesterday, else an absolute short date — one consistent format across every row (spec §14). */
-function formatActivity(iso: string): string {
-  const date = new Date(iso)
-  const now = new Date()
-  const diffMin = Math.floor((now.getTime() - date.getTime()) / 60000)
-  if (diffMin < 1) return 'только что'
-  if (diffMin < 60) return `${diffMin} мин назад`
-
-  const time = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(date)
-  if (date.toDateString() === now.toDateString()) return `Сегодня, ${time}`
-  const yesterday = new Date(now)
-  yesterday.setDate(now.getDate() - 1)
-  if (date.toDateString() === yesterday.toDateString()) return `Вчера, ${time}`
-  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).format(date)
-}
-
 export default function ConversationsSettingsPage() {
   const { user } = useAuth()
   const canManage = user?.role === 'owner' || user?.role === 'admin' || user?.role === 'manager'
 
   const [data, setData] = useState<Paginated<ConversationDto> | null>(null)
-  const [customers, setCustomers] = useState<CustomerDto[]>([])
-  const [customerRequests, setCustomerRequests] = useState<CustomerRequestDto[]>([])
+  const [customers, setCustomers] = useState<CustomerRefDto[]>([])
+  const [customerRequests, setCustomerRequests] = useState<CustomerRequestRefDto[]>([])
+  const [vehicles, setVehicles] = useState<VehicleRefDto[]>([])
+  const [services, setServices] = useState<ServiceRefDto[]>([])
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<ConversationStatus | ''>('')
   const [channelFilter, setChannelFilter] = useState<ConversationChannel | ''>('')
@@ -234,40 +98,30 @@ export default function ConversationsSettingsPage() {
   const [saving, setSaving] = useState(false)
 
   const [openId, setOpenId] = useState<string | null>(null)
-  const [detail, setDetail] = useState<ConversationDto | null>(null)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [messageContent, setMessageContent] = useState('')
-  const [messageDirection, setMessageDirection] = useState<MessageDirection>('OUTBOUND')
-  const [messageSenderType, setMessageSenderType] = useState<MessageSenderType>('STAFF')
-  const [sendError, setSendError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
-  const [channelSendError, setChannelSendError] = useState<string | null>(null)
-  const [channelSendingId, setChannelSendingId] = useState<string | null>(null)
-
-  function customerLabel(id: string | null): string {
-    if (!id) return 'Неизвестный клиент'
-    const c = customers.find((x) => x.id === id)
-    return c ? `${c.firstName} ${c.lastName ?? ''}`.trim() : 'Неизвестный клиент'
-  }
 
   async function loadReferenceData() {
     try {
-      const [customersResult, requestsResult] = await Promise.all([
-        apiFetch<Paginated<CustomerDto>>('/api/customers?pageSize=100&includeInactive=true'),
-        apiFetch<Paginated<CustomerRequestDto>>('/api/customer-requests?pageSize=100'),
+      const [customersResult, requestsResult, vehiclesResult, servicesResult] = await Promise.all([
+        apiFetch<Paginated<CustomerRefDto>>('/api/customers?pageSize=100&includeInactive=true'),
+        apiFetch<Paginated<CustomerRequestRefDto>>('/api/customer-requests?pageSize=100'),
+        apiFetch<Paginated<VehicleRefDto>>('/api/vehicles?pageSize=100&includeInactive=true'),
+        apiFetch<{ services: ServiceRefDto[] }>('/api/services?activeOnly=false'),
       ])
       setCustomers(customersResult.items)
       setCustomerRequests(requestsResult.items)
+      setVehicles(vehiclesResult.items)
+      setServices(servicesResult.services)
     } catch {
-      // Non-fatal: the conversation list still works, just falls back to "Неизвестный клиент".
+      // Non-fatal: the conversation list/detail still work, just fall back
+      // to "Неизвестный клиент" / omitted context-panel sections.
     }
   }
 
   async function loadAttention() {
     try {
       const [open, inProgress] = await Promise.all([
-        apiFetch<Paginated<EscalationLiteDto>>('/api/escalations?status=OPEN&pageSize=100'),
-        apiFetch<Paginated<EscalationLiteDto>>('/api/escalations?status=IN_PROGRESS&pageSize=100'),
+        apiFetch<Paginated<EscalationDto>>('/api/escalations?status=OPEN&pageSize=100'),
+        apiFetch<Paginated<EscalationDto>>('/api/escalations?status=IN_PROGRESS&pageSize=100'),
       ])
       const map = new Map<string, EscalationPriority>()
       for (const e of [...open.items, ...inProgress.items]) map.set(e.conversationId, e.priority)
@@ -335,26 +189,18 @@ export default function ConversationsSettingsPage() {
 
   const visibleItems = attentionOnly ? (data?.items.filter((c) => attentionMap.has(c.id)) ?? []) : (data?.items ?? [])
 
-  async function loadDetail(id: string) {
-    setDetailError(null)
-    try {
-      const result = await apiFetch<{ conversation: ConversationDto }>(`/api/conversations/${id}`)
-      setDetail(result.conversation)
-    } catch {
-      setDetailError('Не удалось загрузить разговор.')
-    }
-  }
-
   function openDetail(id: string) {
     setOpenId(id)
-    setDetail(null)
-    setSendError(null)
-    void loadDetail(id)
   }
 
   function closeDetail() {
     setOpenId(null)
-    setDetail(null)
+  }
+
+  /** Detail panel changed something (new message, status toggle) — refresh the list/attention data behind it so it's accurate when the user goes back. */
+  function handleDetailChanged() {
+    void loadConversations()
+    void loadAttention()
   }
 
   function openCreateForm() {
@@ -393,60 +239,27 @@ export default function ConversationsSettingsPage() {
     }
   }
 
-  async function handleToggleStatus() {
-    if (!detail) return
-    const nextStatus: ConversationStatus = detail.status === 'OPEN' ? 'CLOSED' : 'OPEN'
-    try {
-      await apiFetch(`/api/conversations/${detail.id}`, { method: 'PATCH', body: JSON.stringify({ status: nextStatus }) })
-      await loadDetail(detail.id)
-      await loadConversations()
-    } catch (err) {
-      setDetailError(err instanceof ApiClientError ? err.message : 'Не удалось изменить статус.')
-    }
-  }
-
-  // Channel Operations & Delivery Foundation (Prompt 17) — minimal
-  // operational action only: send one already-existing OUTBOUND/STAFF
-  // message through the conversation's own ChannelConnection. No AI send
-  // button, no auto-reply, no new messaging surface.
-  async function handleSendViaChannel(messageId: string) {
-    if (!detail?.channelConnectionId) return
-    setChannelSendError(null)
-    setChannelSendingId(messageId)
-    try {
-      await apiFetch(`/api/channels/${detail.channelConnectionId}/messages/${messageId}/send`, { method: 'POST' })
-      await loadDetail(detail.id)
-    } catch (err) {
-      setChannelSendError(err instanceof ApiClientError ? err.message : 'Не удалось отправить сообщение через канал.')
-    } finally {
-      setChannelSendingId(null)
-    }
-  }
-
-  async function handleSendMessage(e: FormEvent) {
-    e.preventDefault()
-    if (!detail) return
-    setSendError(null)
-    setSending(true)
-    try {
-      await apiFetch(`/api/conversations/${detail.id}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ direction: messageDirection, senderType: messageSenderType, content: messageContent }),
-      })
-      setMessageContent('')
-      await loadDetail(detail.id)
-      await loadConversations()
-    } catch (err) {
-      setSendError(err instanceof ApiClientError ? err.message : 'Не удалось отправить сообщение.')
-    } finally {
-      setSending(false)
-    }
-  }
-
-  function attentionBadgeVariant(priority: EscalationPriority): 'destructive' | 'warning' | 'gold' {
-    if (priority === 'URGENT') return 'destructive'
-    if (priority === 'HIGH') return 'warning'
-    return 'gold'
+  // Conversation Detail v1 (Prompt 22) — an open conversation takes over
+  // the whole screen (its own header/back action) instead of stacking an
+  // inline card below the list, matching spec §4's "full operational
+  // screen" intent while staying on the same /conversations route (no new
+  // route was created — see ConversationDetailPanel.tsx's own header
+  // comment for the audit reasoning).
+  if (openId) {
+    return (
+      <PageContainer className="max-w-5xl">
+        <ConversationDetailPanel
+          conversationId={openId}
+          canManage={canManage}
+          customers={customers}
+          vehicles={vehicles}
+          services={services}
+          customerRequests={customerRequests}
+          onBack={closeDetail}
+          onChanged={handleDetailChanged}
+        />
+      </PageContainer>
+    )
   }
 
   return (
@@ -570,7 +383,7 @@ export default function ConversationsSettingsPage() {
                       <ChannelIcon className="h-4 w-4" />
                     </div>
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{customerLabel(conv.customerId)}</div>
+                      <div className="truncate font-medium">{customerName(customers, conv.customerId)}</div>
                       {conv.subject && <div className="truncate text-sm text-muted-foreground">{conv.subject}</div>}
                       <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
                         <span>{CHANNEL_LABELS[conv.channel]}</span>
@@ -599,7 +412,7 @@ export default function ConversationsSettingsPage() {
       {showCreateForm && canManage && (
         <Card>
           <CardHeader>
-            <CardTitle>Новый разговор</CardTitle>
+            <h2 className="text-lg font-semibold leading-none tracking-tight">Новый разговор</h2>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleCreateSubmit} className="space-y-4">
@@ -678,129 +491,6 @@ export default function ConversationsSettingsPage() {
                 </Button>
               </div>
             </form>
-          </CardContent>
-        </Card>
-      )}
-
-      {openId && (
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div className="min-w-0">
-              <CardTitle className="truncate">{detail?.subject ?? '(без темы)'}</CardTitle>
-              <CardDescription>
-                {detail ? `${CHANNEL_LABELS[detail.channel]} · ${customerLabel(detail.customerId)}` : 'Загрузка...'}
-                {detail?.customerRequest ? ` · заявка: ${detail.customerRequest.subject}` : ''}
-              </CardDescription>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {detail && canManage && (
-                <Button variant="outline" size="sm" onClick={handleToggleStatus}>
-                  {detail.status === 'OPEN' ? (
-                    <>
-                      <Lock className="mr-1 h-4 w-4" />
-                      Закрыть
-                    </>
-                  ) : (
-                    <>
-                      <Unlock className="mr-1 h-4 w-4" />
-                      Открыть заново
-                    </>
-                  )}
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={closeDetail}>
-                Закрыть панель
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {detailError && <p className="text-sm text-destructive">{detailError}</p>}
-            {!detail && !detailError && <p className="text-sm text-muted-foreground">Загрузка...</p>}
-
-            {detail && (
-              <>
-                <div className="space-y-2 rounded-md border p-3">
-                  {detail.messages?.length === 0 && <p className="text-sm text-muted-foreground">Сообщений пока нет.</p>}
-                  {detail.messages?.map((m) => {
-                    const canSendViaChannel = !!detail.channelConnectionId && m.direction === 'OUTBOUND' && m.senderType === 'STAFF'
-                    return (
-                      <div key={m.id} className={`rounded-md p-2 text-sm ${m.direction === 'INBOUND' ? 'bg-muted' : 'bg-accent'}`}>
-                        <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>{m.direction}</span>
-                          <span>·</span>
-                          <span>{m.senderType}</span>
-                          <span>·</span>
-                          <span>{new Date(m.createdAt).toLocaleString()}</span>
-                        </div>
-                        <div>{m.content}</div>
-                        {canSendViaChannel && (
-                          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
-                            {m.delivery && (
-                              <Badge variant={m.delivery.status === 'SENT' ? 'success' : m.delivery.status === 'FAILED' ? 'destructive' : 'default'}>
-                                {m.delivery.status} · попыток: {m.delivery.attemptCount}
-                              </Badge>
-                            )}
-                            {canManage && m.delivery?.status !== 'SENT' && m.delivery?.status !== 'SENDING' && (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                disabled={channelSendingId === m.id}
-                                onClick={() => handleSendViaChannel(m.id)}
-                              >
-                                {channelSendingId === m.id
-                                  ? 'Отправка...'
-                                  : m.delivery?.status === 'FAILED'
-                                    ? 'Повторить отправку'
-                                    : 'Отправить через канал'}
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                  {channelSendError && <p className="text-sm text-destructive">{channelSendError}</p>}
-                </div>
-
-                {canManage && (
-                  <form onSubmit={handleSendMessage} className="space-y-3">
-                    <Textarea
-                      placeholder="Текст сообщения..."
-                      value={messageContent}
-                      onChange={(e) => setMessageContent(e.target.value)}
-                      required
-                    />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <select
-                        value={messageDirection}
-                        onChange={(e) => setMessageDirection(e.target.value as MessageDirection)}
-                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                      >
-                        <option value="INBOUND">INBOUND</option>
-                        <option value="OUTBOUND">OUTBOUND</option>
-                      </select>
-                      <select
-                        value={messageSenderType}
-                        onChange={(e) => setMessageSenderType(e.target.value as MessageSenderType)}
-                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                      >
-                        <option value="CUSTOMER">CUSTOMER</option>
-                        <option value="STAFF">STAFF</option>
-                        <option value="SYSTEM">SYSTEM</option>
-                      </select>
-                      <Button type="submit" size="sm" disabled={sending}>
-                        {sending ? 'Отправка...' : 'Отправить'}
-                      </Button>
-                    </div>
-                    {sendError && <p className="text-sm text-destructive">{sendError}</p>}
-                    {detail.status === 'CLOSED' && (
-                      <p className="text-sm text-muted-foreground">Разговор закрыт — сначала откройте его заново.</p>
-                    )}
-                  </form>
-                )}
-              </>
-            )}
           </CardContent>
         </Card>
       )}
