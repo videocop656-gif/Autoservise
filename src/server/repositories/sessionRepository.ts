@@ -13,4 +13,8 @@ export const sessionRepository = {
   deleteByTokenHash(tokenHash: string) {
     return prisma.session.deleteMany({ where: { tokenHash } })
   },
+  /** Team Management (Prompt 15): revokes every active session for a user in one shot — called from within deactivateTeamMember()'s transaction, so it never leaves a session dangling for a user that was just marked inactive. */
+  deleteByUserId(userId: string) {
+    return prisma.session.deleteMany({ where: { userId } })
+  },
 }

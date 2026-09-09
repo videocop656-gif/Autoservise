@@ -17,6 +17,7 @@ import ConversationsSettingsPage from './pages/settings/ConversationsSettingsPag
 import AiSettingsPage from './pages/settings/AiSettingsPage'
 import EscalationsSettingsPage from './pages/settings/EscalationsSettingsPage'
 import AiLogsSettingsPage from './pages/settings/AiLogsSettingsPage'
+import TeamSettingsPage from './pages/settings/TeamSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -149,6 +150,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <AiLogsSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/team"
+        element={
+          <ProtectedRoute>
+            <TeamSettingsPage />
           </ProtectedRoute>
         }
       />

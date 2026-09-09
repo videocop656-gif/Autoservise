@@ -198,8 +198,18 @@ model User {
   passwordHash String
   name         String
   role         UserRole @default(owner)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  // Team Management (Prompt 15): a soft-deactivation flag, never a hard
+  // delete — historical relations (assigned escalations, AiLog actorUserId,
+  // CustomerRequestStatusHistory.changedByUserId) must survive a
+  // deactivated team member unchanged. Checked by both requireAuth() (a
+  // stale session for an already-deactivated user is rejected) and
+  // authService.ts's loginUser() (a deactivated user cannot start a new
+  // session either). Deactivating a user also deletes their Session rows
+  // outright (teamService.ts) — isActive is the durable state, session
+  // deletion is the immediate revocation.
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant                         Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sessions                       Session[]

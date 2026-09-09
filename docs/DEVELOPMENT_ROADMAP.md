@@ -213,20 +213,35 @@
 - **0 database migrations** — the preferred, spec-mandated outcome; no new Prisma model, no denormalized counter table, no materialized view.
 - No Team Management, no external channels/notifications, no realtime/websockets, no RAG/embeddings, no new AI capabilities, no billing/subscriptions, no forecasting/predictive analytics/ML — exactly as scoped.
 
-## Current
-
-**Status: 15 — Team Management is CURRENT / NEXT IMPLEMENTATION.**
-
-Every stage through Dashboard / Analytics (01–14) is verified complete in
-the code, including a real Supabase smoke test with full cleanup. Prompt 15
-(user list, role management, invitations, team administration UI) has not
-been started.
-
-## Future Roadmap
-
 ### 15 — Team Management
 
-**Goal**: user list, role management, invitations, team administration UI. Roles (`owner`/`admin`/`manager`) already exist as an enum and are enforced everywhere, but there is no UI or API to invite/manage team members today — the only way to create a `User` is the registration flow, which creates exactly one `owner`.
+**Status: COMPLETED**
+
+- **One additive migration**: `User.isActive Boolean @default(true)` (migration `20260909075339_team_management_user_status`) — the only schema change this stage needed. `User` already had no `businessId` column at all (every tenant has exactly one `Business`, so tenant-scoping alone is the correct and complete isolation boundary for team members — the same invariant every other stage's docs already record); `name`/`email`/`role` were reused exactly as they already existed, deliberately never duplicated into a `firstName`/`lastName` split the original prompt suggested.
+- **Multiple active owners are a first-class, explicitly-supported state**, not an edge case: `owner → owner` creation is allowed, and the *only* constraint is that an operation may never bring the active-owner count to `0`. Every other owner-vs-owner interaction (profile editing, in particular) is unrestricted.
+- **A precise, authoritative permission matrix** (`teamService.ts`): owner manages everyone (subject to the last-owner rule below); admin manages admin/manager only — never touching an owner's profile, role, or active status, and never creating or promoting to owner; manager is read-only (list/view) everywhere, enforced with a real `403` for every mutation endpoint regardless of what the frontend hides.
+- **Profile updates are structurally incapable of changing authorization state.** `updateTeamMemberProfile()` only ever reads `name`/`email` off its input — not "validates and rejects the rest," but never even looks at any other field, so `role`/`isActive`/`tenantId`/`businessId`/`passwordHash` have no path into Prisma through this function no matter what a client sends (the Zod schema also silently strips them beforehand, a second, independent layer). Verified end-to-end against the real database: a request that also carried `role: "owner"`, `isActive: false`, and foreign `tenantId`/`businessId` values changed only the name.
+- **Last-owner protection is genuinely race-safe**, not a naive count-then-update: `teamRepository.ts`'s `changeRole()`/`deactivate()` run inside a Postgres `SERIALIZABLE` transaction that counts other active owners and aborts the whole transaction if the count would reach zero — real predicate-lock-based write-skew detection (the classic "two concurrent requests each individually see one other active owner, but committing both leaves zero" anomaly), not just an isolation level chosen for show. A genuine serialization conflict (Postgres error `P2034`) is caught and reported as a distinct, honest `409 CONCURRENT_UPDATE` — never misrepresented as a last-owner violation it didn't actually detect.
+- **Self-protection is checked before, and independent of, the last-owner rule**: a user can never deactivate or change the role of their own account through Team Management, full stop — verified by triggering self-deactivation *while being the sole remaining active owner* and confirming the error is `CANNOT_DEACTIVATE_SELF`, not `LAST_OWNER_REQUIRED` (proving the self-check genuinely runs first, not just that both would have blocked it).
+- **Deactivation invalidates sessions atomically** with the `isActive` flip — `teamRepository.deactivate()`'s transaction also deletes every `Session` row for that user in the same commit, and `requireAuth()` independently re-checks `isActive` on every request as a second guarantee. `loginUser()` rejects a deactivated account with `403 USER_INACTIVE`, checked only after password verification (an attacker without the password learns nothing about the account's state). Verified live: an old session cookie is rejected with `401` immediately after deactivation, login as the deactivated user fails, and after reactivation a fresh login produces a session that works again.
+- **`AiEscalation.assignedUserId`/`AiLog.actorUserId` are untouched by this stage** — deactivation never triggers reassignment (the spec explicitly forbids inventing that logic); the existing `SetNull` relations only matter for an actual row deletion, which Team Management never performs.
+- **API**: `GET /api/team`, `GET /api/team/:id`, `POST /api/team`, `PATCH /api/team/:id` (profile fields only), `POST /api/team/:id/role`, `POST /api/team/:id/activate`, `POST /api/team/:id/deactivate` — role and status changes deliberately have no path through the generic `PATCH`.
+- Frontend: `/settings/team` — a table (name/email/role/status/created/actions), a create form (role options narrowed to what the current user may actually assign), a profile-edit form, an inline role-change select, and activate/deactivate with a confirmation step for deactivation. The frontend narrows options for UX only; the backend is the actual boundary in every case.
+- Tests: `tests/teamService.test.ts` is new (41 — the full permission matrix, every self-protection and last-owner scenario, the multiple-owners profile-editing matrix from the prompt's own worked example, duplicate-email handling, and the P2034→409 translation); `tests/tenantIsolation.test.ts` gained a "Team Management" section (+15); `tests/authService.test.ts` and `tests/requireAuth.test.ts` each gained a deactivated-user rejection test. 1056 tests total, all passing.
+- A full real-Supabase smoke test (two tenants — one with two owners, an admin, and a manager — no mocks, 36 checks) verified every item in the prompt's own 24-point smoke checklist: mutual owner-to-owner profile editing, admin-cannot-manage-owner across all five mutation endpoints, manager mutation rejection, the complete login → deactivate → old-session-401 → login-rejected → reactivate → new-session-works cycle, last-owner rejection from a genuinely different actor (not just self-protection), cross-tenant `404`s on all four mutation endpoints, DTO field absence, and the profile-update privilege-escalation attempt changing nothing but the allowed field; full cleanup with a post-cleanup re-count confirming zero rows remain.
+- **No existing authentication/session architecture was replaced** — `isActive` is checked at the two existing points (`loginUser()`, `requireAuth()`) that already resolve a fresh `User` row per request/login; no caching, no token-embedded role, nothing new to invalidate beyond the `Session` table that already existed.
+- No external channels, no realtime/websockets, no new AI capabilities, no billing/subscriptions, no unrelated business-logic changes — exactly as scoped.
+
+## Current
+
+**Status: 16 — Channel Integrations is CURRENT / NEXT IMPLEMENTATION.**
+
+Every stage through Team Management (01–15) is verified complete in the
+code, including a real Supabase smoke test with full cleanup. Prompt 16
+(Website/Telegram/WhatsApp/Phone channel integrations) has not been
+started.
+
+## Future Roadmap
 
 ### 16 — Channel Integrations
 

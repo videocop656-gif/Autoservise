@@ -31,6 +31,16 @@ export async function requireAuth(req: ApiRequest): Promise<AuthContext> {
   if (!user) {
     throw new ApiError(401, 'UNAUTHORIZED', 'User not found')
   }
+  // Team Management (Prompt 15): a deactivated user's stale session is
+  // rejected here too, not just at login — deactivateTeamMember() already
+  // deletes the row's own sessions outright, but this is the second,
+  // independent guarantee (e.g. a session created in the same instant a
+  // concurrent deactivation commits). A generic "session invalid" message,
+  // same as an expired session — never a distinct "you were deactivated"
+  // message to a request presenting a stale cookie.
+  if (!user.isActive) {
+    throw new ApiError(401, 'UNAUTHORIZED', 'Session expired or invalid')
+  }
 
   const tenant = await tenantRepository.findById(user.tenantId)
   if (!tenant) {

@@ -121,6 +121,7 @@ describe('loginUser', () => {
       passwordHash: 'hashed:correct',
       name: 'A',
       role: 'owner',
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     })
@@ -151,6 +152,7 @@ describe('loginUser', () => {
       passwordHash: 'hashed:correct',
       name: 'A',
       role: 'owner',
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     })
@@ -161,6 +163,27 @@ describe('loginUser', () => {
     })
   })
 
+  // Team Management (Prompt 15): a deactivated user cannot start a new session — checked after password verification, before the tenant check, so the caller learns nothing without first proving they know the password.
+  it('rejects login for a deactivated user (spec §26 step 8), never revealing the account is deactivated to an unauthenticated caller', async () => {
+    userFindUnique.mockResolvedValue({
+      id: 'u1',
+      tenantId: 't1',
+      email: 'a@b.com',
+      passwordHash: 'hashed:correct',
+      name: 'A',
+      role: 'owner',
+      isActive: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    await expect(loginUser({ email: 'a@b.com', password: 'correct' })).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'USER_INACTIVE',
+    })
+    expect(sessionCreate).not.toHaveBeenCalled()
+  })
+
   it('succeeds with correct credentials and an active tenant, without leaking the password hash', async () => {
     userFindUnique.mockResolvedValue({
       id: 'u1',
@@ -169,6 +192,7 @@ describe('loginUser', () => {
       passwordHash: 'hashed:correct',
       name: 'A',
       role: 'owner',
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     })

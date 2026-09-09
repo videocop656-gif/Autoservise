@@ -80,6 +80,14 @@ export async function loginUser(input: LoginInput) {
     throw invalidCredentials()
   }
 
+  // Checked only after password verification — same principle as the
+  // TENANT_INACTIVE check right below: you need the real password before
+  // learning anything about the account's state (Team Management, Prompt 15
+  // — a deactivated team member cannot start a new session).
+  if (!user.isActive) {
+    throw new ApiError(403, 'USER_INACTIVE', 'This account has been deactivated')
+  }
+
   const tenant = await prisma.tenant.findUnique({ where: { id: user.tenantId } })
   if (!tenant || tenant.status === 'suspended' || tenant.status === 'cancelled') {
     throw new ApiError(403, 'TENANT_INACTIVE', 'This account is not currently active')

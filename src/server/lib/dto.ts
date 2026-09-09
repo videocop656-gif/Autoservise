@@ -15,6 +15,7 @@ import type {
   Message,
   AiEscalation,
   AiLog,
+  User,
 } from '@prisma/client'
 
 /**
@@ -536,5 +537,35 @@ export function toAiLogDto(log: AiLogWithOptionalActor, opts: { detail?: boolean
     toolSuccess: log.toolSuccess,
     createdAt: log.createdAt,
     ...(opts.detail ? { actor: log.actorUser ?? null, metadata: (log.metadata as Record<string, unknown> | null) ?? null } : {}),
+  }
+}
+
+/**
+ * Team Management (Prompt 15). Deliberately never `tenantId` (a team
+ * member's business is implicit — every tenant has exactly one Business,
+ * so `User` itself has no `businessId` column at all), never
+ * `passwordHash`, and never anything session-related (no token, no session
+ * id/list) — a team member's own active sessions are never enumerable
+ * through this or any API.
+ */
+export interface TeamUserDto {
+  id: string
+  name: string
+  email: string
+  role: User['role']
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toTeamUserDto(user: User): TeamUserDto {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    isActive: user.isActive,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
   }
 }

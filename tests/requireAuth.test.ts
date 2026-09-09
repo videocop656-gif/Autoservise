@@ -74,6 +74,30 @@ describe('requireAuth', () => {
     await expect(requireAuth(makeRequest({ session_token: 'abc' }))).rejects.toMatchObject({ statusCode: 401 })
   })
 
+  // Team Management (Prompt 15): a deactivated user's stale session cookie is rejected here too, not just at login — the second, independent invalidation guarantee alongside deactivateTeamMember()'s own session deletion.
+  it('throws 401 when the session is valid but the user has since been deactivated', async () => {
+    vi.mocked(sessionRepository.findByTokenHash).mockResolvedValue({
+      id: 's1',
+      userId: 'u1',
+      tokenHash: 'h',
+      expiresAt: new Date(Date.now() + 100000),
+      createdAt: new Date(),
+      lastUsedAt: new Date(),
+    } as never)
+    vi.mocked(userRepository.findById).mockResolvedValue({
+      id: 'u1',
+      tenantId: 't1',
+      email: 'a@b.com',
+      passwordHash: 'x',
+      name: 'A',
+      role: 'owner',
+      isActive: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as never)
+    await expect(requireAuth(makeRequest({ session_token: 'abc' }))).rejects.toMatchObject({ statusCode: 401 })
+  })
+
   it('returns a safe auth context for a valid session', async () => {
     vi.mocked(sessionRepository.findByTokenHash).mockResolvedValue({
       id: 's1',
@@ -90,6 +114,7 @@ describe('requireAuth', () => {
       passwordHash: 'x',
       name: 'A',
       role: 'owner',
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     } as never)
@@ -138,6 +163,7 @@ describe('requireAuth', () => {
       passwordHash: 'x',
       name: 'A',
       role: 'owner',
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     } as never)

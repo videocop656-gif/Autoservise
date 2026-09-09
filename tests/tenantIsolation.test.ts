@@ -56,6 +56,12 @@ const {
   customerCountMock,
   vehicleCountMock,
   queryRawMock,
+  userFindManyMock,
+  userFindFirstMock,
+  userUpdateManyMock,
+  userCountMock,
+  userCreateMock,
+  sessionDeleteManyMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -116,6 +122,12 @@ const {
     customerCountMock: vi.fn(),
     vehicleCountMock: vi.fn(),
     queryRawMock: vi.fn(),
+    userFindManyMock: vi.fn(),
+    userFindFirstMock: vi.fn(),
+    userUpdateManyMock: vi.fn(),
+    userCountMock: vi.fn(),
+    userCreateMock: vi.fn(),
+    sessionDeleteManyMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -191,6 +203,14 @@ vi.mock('../src/server/db/prisma', () => {
       groupBy: aiLogGroupByMock,
       aggregate: aiLogAggregateMock,
     },
+    user: {
+      findMany: userFindManyMock,
+      findFirst: userFindFirstMock,
+      updateMany: userUpdateManyMock,
+      count: userCountMock,
+      create: userCreateMock,
+    },
+    session: { deleteMany: sessionDeleteManyMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
     $queryRaw: queryRawMock,
@@ -217,6 +237,14 @@ import { getEscalation, claimEscalation, resolveEscalation, cancelEscalation } f
 import { aiLogRepository } from '../src/server/repositories/aiLogRepository'
 import { getAiLog, listAiLogs } from '../src/server/services/aiLogService'
 import { analyticsRepository } from '../src/server/repositories/analyticsRepository'
+import { teamRepository } from '../src/server/repositories/teamRepository'
+import {
+  getTeamMember,
+  updateTeamMemberProfile,
+  changeTeamMemberRole,
+  activateTeamMember,
+  deactivateTeamMember,
+} from '../src/server/services/teamService'
 import { analyzeMessage } from '../src/server/services/aiService'
 import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
 import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
@@ -283,6 +311,11 @@ beforeEach(() => {
   customerCountMock.mockResolvedValue(0)
   vehicleCountMock.mockResolvedValue(0)
   queryRawMock.mockResolvedValue([])
+  userFindManyMock.mockResolvedValue([])
+  userFindFirstMock.mockResolvedValue(null)
+  userUpdateManyMock.mockResolvedValue({ count: 0 })
+  userCountMock.mockResolvedValue(0)
+  sessionDeleteManyMock.mockResolvedValue({ count: 0 })
 })
 
 describe('tenant isolation — Business', () => {
@@ -1241,5 +1274,100 @@ describe('tenant isolation — Analytics / Dashboard (Prompt 14)', () => {
       expect(values).not.toContain('tenant-b')
       expect(values).not.toContain('business-b')
     })
+  })
+})
+
+describe('tenant isolation — Team Management (Prompt 15)', () => {
+  // Same convention as every other section in this file: call the real
+  // repository/service functions against the same mocked prisma client,
+  // proving every query is scoped by tenantId regardless of what id string
+  // is supplied. `User` has no `businessId` column at all (see
+  // schema.prisma) — every tenant has exactly one Business, so tenant
+  // scoping alone is the correct and complete isolation boundary here.
+  const USER_OWNED_BY_B = '777e4567-e89b-12d3-a456-426614174000'
+
+  function makeUserRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'u1',
+      tenantId: 'tenant-a',
+      email: 'a@example.test',
+      passwordHash: 'hashed:x',
+      name: 'A',
+      role: 'manager',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides,
+    }
+  }
+
+  function ctxA(role: 'owner' | 'admin' | 'manager' = 'owner', id = 'requester-a') {
+    return makeAuthContext(role, {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+      user: { ...makeAuthContext(role).user, id },
+    })
+  }
+
+  it('repository: list is scoped to tenantId only (User has no businessId column)', async () => {
+    await teamRepository.list('tenant-a')
+    expect(userFindManyMock).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant-a' } }))
+  })
+
+  it('repository: findById never matches a foreign-tenant row', async () => {
+    await teamRepository.findById('tenant-a', USER_OWNED_BY_B)
+    expect(userFindFirstMock).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', id: USER_OWNED_BY_B } })
+  })
+
+  it('repository: updateProfile/activate updateMany calls are scoped by tenantId + id', async () => {
+    userUpdateManyMock.mockResolvedValue({ count: 0 })
+    await teamRepository.updateProfile('tenant-a', USER_OWNED_BY_B, { name: 'X' })
+    expect(userUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant-a', id: USER_OWNED_BY_B } }))
+    userUpdateManyMock.mockClear()
+
+    await teamRepository.activate('tenant-a', USER_OWNED_BY_B)
+    expect(userUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant-a', id: USER_OWNED_BY_B } }))
+  })
+
+  it('repository: countActiveOwners is scoped by tenantId', async () => {
+    await teamRepository.countActiveOwners('tenant-a')
+    expect(userCountMock).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', role: 'owner', isActive: true } })
+  })
+
+  it('service: tenant A cannot view tenant B\'s user — 404, scoped lookup never matches', async () => {
+    userFindFirstMock.mockResolvedValue(null)
+    await expect(getTeamMember(ctxA(), USER_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('service: tenant A cannot PATCH tenant B\'s user profile — 404, updateMany never reached', async () => {
+    userFindFirstMock.mockResolvedValue(null)
+    await expect(updateTeamMemberProfile(ctxA(), USER_OWNED_BY_B, { name: 'X' })).rejects.toMatchObject({ statusCode: 404 })
+    expect(userUpdateManyMock).not.toHaveBeenCalled()
+  })
+
+  it('service: tenant A cannot change tenant B\'s user role — 404', async () => {
+    userFindFirstMock.mockResolvedValue(null)
+    await expect(changeTeamMemberRole(ctxA(), USER_OWNED_BY_B, { role: 'admin' })).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('service: tenant A cannot activate/deactivate tenant B\'s user — 404 in both cases', async () => {
+    userFindFirstMock.mockResolvedValue(null)
+    await expect(activateTeamMember(ctxA(), USER_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+    await expect(deactivateTeamMember(ctxA(), USER_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  it('a foreign target never reveals its existence — the same plain 404 as a genuinely unknown id', async () => {
+    userFindFirstMock.mockResolvedValue(null)
+    const foreignErr = await getTeamMember(ctxA(), USER_OWNED_BY_B).catch((e) => e)
+    const unknownErr = await getTeamMember(ctxA(), 'totally-made-up-id').catch((e) => e)
+    expect(foreignErr.statusCode).toBe(unknownErr.statusCode)
+    expect(foreignErr.code).toBe(unknownErr.code)
+    expect(foreignErr.message).toBe(unknownErr.message)
+  })
+
+  it('multi-tenant: tenant A\'s own users are still independently manageable once correctly scoped (sanity check that scoping, not a blanket rejection, is what blocks tenant B)', async () => {
+    userFindFirstMock.mockResolvedValue(makeUserRow({ id: 'u-a2', role: 'manager', tenantId: 'tenant-a' }))
+    userUpdateManyMock.mockResolvedValue({ count: 1 })
+    await expect(updateTeamMemberProfile(ctxA('owner'), 'u-a2', { name: 'Updated' })).resolves.toBeDefined()
   })
 })
