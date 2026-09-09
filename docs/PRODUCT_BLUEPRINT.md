@@ -85,7 +85,7 @@ What each layer is for:
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 15 complete).
+`api/`/`src/` trees at the time of writing (Prompt 16 complete).
 
 - **AI provider**: OpenAI (official `openai` npm SDK), accessed exclusively server-side through a provider-abstraction interface (`AiProvider`) — `src/server/ai/`. Falls back automatically to a deterministic, no-network mock provider when `OPENAI_API_KEY` isn't configured (true in this environment), so the AI Core stays fully exercisable without a real key.
 - **AI Tool Layer** (`src/server/ai/tools/`): the only path from the AI provider to booking data. Four whitelisted tools, each Zod-validated, each re-authorized against `AuthContext` (never model-supplied ids) and an `AiToolAllowedEntities` allow-list (the conversation's own known customer/vehicle/appointments), each calling the existing `appointmentService.ts` — never Prisma directly. A tool result is always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?, attempted}` — `attempted` (Prompt 13) distinguishes a genuine execution failure from a gate rejection (confirmation missing, invalid input, forbidden entity) that never reached `appointmentService.ts` at all.
@@ -94,6 +94,7 @@ Verified directly against `package.json`, `prisma/schema.prisma`, and the
 - **AI Logs / Audit** (Prompt 13): `src/server/services/aiLogService.ts` + `aiLogRepository.ts` — a safe, minimal technical audit trail (`AiLog`) written from three call sites (`aiService.ts`'s analyze loop and tool-calling loop, `escalationService.ts`'s create/reuse/claim/resolve/cancel), never from a client request and never with direct AI/Prisma access. `aiLogService.ts` sanitizes every field before it's persisted — a fixed metadata key whitelist, truncated `reason`, no raw provider response, no chain-of-thought, no full prompt or transcript — and writes are fire-and-forget: a logging failure is caught and reported, never allowed to roll back or mask the real business action it describes.
 - **Dashboard / Analytics** (Prompt 14): `src/server/services/analyticsService.ts` + `analyticsRepository.ts` — every number is a real-time Postgres aggregation (`count`/`groupBy`/`aggregate`, plus a small number of parameterized raw SQL queries for timezone-aware day-bucketing that Prisma's query builder cannot express) over the existing domain tables, never a pre-computed/denormalized table and never a client-side calculation. Period (`today`/`7d`/`30d`/`90d`) is interpreted in `Business.timezone` via the same `toBusinessLocalDateTime()`/`businessLocalToUtc()` pair Prompt 10 introduced. **Zero new Prisma models, zero migrations.**
 - **Team Management** (Prompt 15): `src/server/services/teamService.ts` + `teamRepository.ts` — owner/admin/manager team administration scoped to `User.tenantId` alone (`User` has no `businessId` column; every tenant has exactly one `Business`, so tenant scoping is already complete isolation). Multiple active owners are explicitly supported; the only hard constraint is that an operation may never bring the tenant's active-owner count to zero, enforced with a real Postgres `SERIALIZABLE` transaction (write-skew detection, not a naive count-then-update) in `teamRepository.ts`'s `changeRole()`/`deactivate()`. Deactivation atomically flips `User.isActive` and deletes every `Session` row for that user in the same transaction; `requireAuth()` and `loginUser()` each independently re-check `isActive` as a second guarantee. `PATCH /api/team/:id` is structurally incapable of changing `role`/`isActive`/`tenantId`/`businessId`/`passwordHash` — the service function only ever reads `name`/`email` off its input, regardless of what a request body contains.
+- **Channel Integration Foundation** (Prompt 16): `src/server/services/channelConnectionService.ts`/`channelMessageService.ts`/`channelCustomerService.ts` + `src/server/channels/` (the `ChannelAdapter` interface, a mock-only adapter factory, and a registry keyed by `ChannelType`). A real external account connection (`ChannelConnection`) is a distinct concept from the existing `Conversation.channel` label — the latter remains the one internal source of truth for channel type, never duplicated. Inbound messages are idempotent at the DB level (`ChannelMessage`'s `@@unique([channelConnectionId, externalMessageId])`), and Conversation resolution for a brand-new external thread is race-safe via the same "create, catch a real `P2002`, re-fetch the winner" pattern `escalationService.ts` already established (Prompt 12) — a genuine concurrency bug in the original `findFirst`-then-`create` version was caught live against Supabase and fixed this way. No real Telegram/WhatsApp/Website API is connected; AI is never invoked from this pipeline.
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -143,6 +144,9 @@ Business Data
 - `Message`
 - `AiEscalation`
 - `AiLog`
+- `ChannelConnection`
+- `ChannelMessage`
+- `CustomerChannelIdentity`
 
 `CustomerRequest`/`CustomerRequestStatusHistory` were completed in Prompt 07,
 and `Conversation`/`Message` in Prompt 08 (see `DEVELOPMENT_ROADMAP.md`) —
@@ -215,6 +219,36 @@ only schema change was one additive column: `User.isActive Boolean
 Tenant, exactly as before this stage; a tenant's single `Business` makes
 tenant-scoping already-complete isolation.
 
+**Prompt 16 (Channel Integration Foundation) added three new Prisma
+models** (migration `20260910000000_channel_integration_foundation`),
+plus two nullable columns on the existing `Conversation`:
+
+- `ChannelConnection` — a real external account connection, scoped to
+  `Tenant`+`Business` (`Cascade`). `type` (`ChannelType`:
+  `TELEGRAM`/`WHATSAPP`/`WEBSITE`), `status` (`ChannelConnectionStatus`:
+  `ACTIVE`/`INACTIVE`, default `INACTIVE`), `displayName`,
+  `externalAccountId` (required — deliberately never nullable, so
+  `@@unique([tenantId, businessId, type, externalAccountId])` is complete
+  and unambiguous), and a small non-secret `config` JSON column.
+- `Conversation.channelConnectionId`/`externalConversationId` (both
+  nullable) + `@@unique([channelConnectionId, externalConversationId])` —
+  the same nullable-column unique-constraint technique already used for
+  `AiEscalation.activeConversationId` (Prompt 12): every manually-created
+  Conversation has both fields `null` and never collides with another;
+  only a real (connection, external thread) pair is uniquely constrained.
+  `Conversation.channel` itself is unchanged and remains the sole internal
+  record of channel type.
+- `ChannelMessage` — maps one `Message` (`Cascade`, an owned child) to the
+  external message that produced it. `@@unique([channelConnectionId,
+  externalMessageId])` is the DB-level inbound-idempotency guarantee.
+  Stores no `content`/`direction`/`senderType` — that data lives exactly
+  once, in `Message`.
+- `CustomerChannelIdentity` — maps one external channel identity to a real
+  `Customer` (`Restrict`, matching every other FK to `Customer` in this
+  schema). `@@unique([channelConnectionId, externalCustomerId])` — a race-
+  safe DB guarantee that one external identity can never point at two
+  different Customers.
+
 **Planned, not yet in the schema** (no such Prisma model exists today): none identified for any currently-scheduled future stage.
 
 ## 6. CRM Structure
@@ -280,6 +314,7 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | **Operations** | Appointments, Appointment detail, Service History, Service Record detail | Implemented (`/settings/appointments`, `/settings/service-history`) |
 | **Configuration** | Services, Knowledge Base, Business Rules, Business Settings, Working Hours | Implemented (`/settings/services`, `/settings/knowledge`, `/settings/rules`, `/settings/business`, `/settings/hours`) |
 | **Users / Team** | Team list (name/email/role/status/created/actions), create form (role options limited by the current user's own role), profile edit, role-change, activate/deactivate | Implemented (`/settings/team`, Prompt 15) — invitations (an email-based flow rather than an admin setting a password directly) remain **Future** |
+| **Channels** | Channel list (type/display name/external account/status/created/actions), create form (no credential field of any kind), edit, activate/deactivate | Implemented (`/settings/channels`, Prompt 16) — foundation only: no real Telegram/WhatsApp/Website API is connected, manager sees "View only" |
 | **AI Operations** | AI Core + Booking Tools test tool (`/settings/ai`: select a Conversation, type a test message, Analyze, see intent/confidence/entities/draft/needsHuman, and — since Prompt 10 — any real tool executions: availability slots, or the resulting appointment's id/status/start/end) | Implemented (`/settings/ai`) — a testing tool, not an operations dashboard; tool execution is real (a clearly-labeled warning banner says so), but sending a message to the customer stays disabled |
 | **AI Escalations** | Escalations list (status/priority/unassigned filters), detail (customer/conversation/assigned-staff summary, AI's reason/summary, Claim/Resolve/Cancel) | Implemented (`/settings/escalations`, Prompt 12) — an internal staff workflow tool, not a customer-facing feature; no external notification of any kind |
 | **AI Logs** | AI Logs list (operation/outcome/date-range filters), detail (intent/confidence/needsHuman/tool/reason, conversation/escalation links, actor, safe whitelisted metadata) | Implemented (`/settings/ai-logs`, Prompt 13) — a technical audit trail, distinct from the Dashboard's aggregate view (Prompt 14) even though the Dashboard reads this same table; raw prompts/provider responses/chain-of-thought are never shown because they are never persisted |
@@ -444,7 +479,10 @@ happened*, never a replacement for the `AiEscalation` row itself or for
 the Conversation transcript. **Still future**: assignment to a *specific*
 manager beyond self-claiming (explicit reassignment — Roadmap 12 scoped
 this out deliberately as unnecessary for a first working version), and any
-external notification of a human (email/Telegram/push — Roadmap 16).
+external notification of a *staff member* about an escalation (email/
+Telegram/push to the human side — distinct from Prompt 16's customer-
+facing Channel Integration Foundation, and not yet assigned a roadmap
+number).
 
 ## 14. Anti-Hallucination Principle
 
@@ -517,14 +555,19 @@ analyze calls, `Tools`' actual executions, and `EscalationService`'s
 create/reuse/claim/resolve/cancel each write a safe `AiLog` row —
 observability, not a new capability. Everything else `Tools` would
 eventually connect to (CustomerRequest creation, customer/vehicle search)
-remains future, and so does the **Channels** end of the chain (Website,
-Telegram, WhatsApp, Phone — `Manual`, entered by staff exactly as done
-today, is the only "channel" actually wired to anything). No channel
-integration or external notification of any kind exists in this
-repository. **Prompt 14 adds a read-only observer on top of the entire
-diagram, not a new node in the chain**: the Dashboard (`/dashboard`)
-aggregates `Customer Requests`/`Conversations`/`AI Core`'s own `AiLog`
-audit trail/`EscalationService`'s `AiEscalation` rows/`CRM / Operations`'
+remains future, and — as of Prompt 16 — the **Channels** end of the chain
+has a real internal foundation, though still no live external wiring:
+`ChannelConnection` (Website/Telegram/WhatsApp) feeds the *existing*
+`Messages`/`Conversations` layer through `channelMessageService.ts`'s
+inbound pipeline exactly as this diagram already implies, using mock
+adapters only — no real Telegram Bot API/WhatsApp Cloud API/Website
+widget is connected, and AI is never invoked from this pipeline (no
+auto-reply, no escalation). `Manual`, entered by staff, remains the only
+channel with a live human on the other end; `Phone` is still a label only.
+**Prompt 14 adds a read-only observer on top of the entire diagram, not a
+new node in the chain**: the Dashboard (`/dashboard`) aggregates
+`Customer Requests`/`Conversations`/`AI Core`'s own `AiLog` audit trail/
+`EscalationService`'s `AiEscalation` rows/`CRM / Operations`'s
 `Appointment`/`ServiceRecord` tables into real-time counts and rates — it
 never writes to any of them, and every number is computed fresh from
 Postgres on each request, never a separately-maintained running total.

@@ -45,6 +45,13 @@ export const conversationRepository = {
     return prisma.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
+  /** Channel Integration Foundation (Prompt 16) — the lookup channelConversationService.ts uses to find "the existing Conversation for this external thread" before deciding whether to create a new one. Relies on Conversation's own `@@unique([channelConnectionId, externalConversationId])`. */
+  findByChannelConnectionAndExternalId(tenantId: string, businessId: string, channelConnectionId: string, externalConversationId: string) {
+    return prisma.conversation.findFirst({
+      where: withTenant(tenantId, { businessId, channelConnectionId, externalConversationId }),
+    })
+  },
+
   /** Used by GET single — includes Customer/CustomerRequest summaries and the full message list, oldest first (spec §24). */
   findByIdWithDetail(tenantId: string, businessId: string, id: string) {
     return prisma.conversation.findFirst({

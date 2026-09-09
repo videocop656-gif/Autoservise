@@ -18,6 +18,7 @@ import AiSettingsPage from './pages/settings/AiSettingsPage'
 import EscalationsSettingsPage from './pages/settings/EscalationsSettingsPage'
 import AiLogsSettingsPage from './pages/settings/AiLogsSettingsPage'
 import TeamSettingsPage from './pages/settings/TeamSettingsPage'
+import ChannelsSettingsPage from './pages/settings/ChannelsSettingsPage'
 import ProtectedRoute from './components/ProtectedRoute'
 
 export default function App() {
@@ -158,6 +159,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <TeamSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/channels"
+        element={
+          <ProtectedRoute>
+            <ChannelsSettingsPage />
           </ProtectedRoute>
         }
       />

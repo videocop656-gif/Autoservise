@@ -16,6 +16,7 @@ import type {
   AiEscalation,
   AiLog,
   User,
+  ChannelConnection,
 } from '@prisma/client'
 
 /**
@@ -567,5 +568,38 @@ export function toTeamUserDto(user: User): TeamUserDto {
     isActive: user.isActive,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
+  }
+}
+
+/**
+ * Channel Integration Foundation (Prompt 16). Never `tenantId`/`businessId`
+ * (spec §"API DTO SECURITY"). `config` is returned as-is here because it
+ * can only ever contain what `channelConnectionService.ts`'s
+ * `sanitizeChannelConfig()` already let through at write time — there is
+ * no raw/unsanitized config anywhere in this model to accidentally leak;
+ * this DTO is a second, cheap confirmation of that guarantee, not the
+ * only one.
+ */
+export interface ChannelConnectionDto {
+  id: string
+  type: ChannelConnection['type']
+  status: ChannelConnection['status']
+  displayName: string
+  externalAccountId: string
+  config: Record<string, unknown> | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toChannelConnectionDto(connection: ChannelConnection): ChannelConnectionDto {
+  return {
+    id: connection.id,
+    type: connection.type,
+    status: connection.status,
+    displayName: connection.displayName,
+    externalAccountId: connection.externalAccountId,
+    config: (connection.config as Record<string, unknown> | null) ?? null,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
   }
 }

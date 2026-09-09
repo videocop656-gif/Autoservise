@@ -92,8 +92,17 @@ enum CustomerRequestStatus {
   CANCELLED
 }
 
-// A channel is only a label for where a Conversation came from — no
-// external integration exists for any of these yet (see Prompt 08 scope).
+// A channel is only a label for where a Conversation came from. As of
+// Prompt 16, TELEGRAM/WHATSAPP/WEBSITE conversations CAN be produced by a
+// real ChannelConnection + the inbound pipeline (channelMessageService.ts)
+// — but still with no real external network call anywhere in this
+// codebase (Prompt 16 is a foundation: mock adapters only, no Telegram
+// Bot API/WhatsApp Cloud API/Twilio/Meta API connected). This enum's own
+// values are deliberately NOT merged with ChannelType below — this one
+// also carries MANUAL/PHONE/OTHER (labels with no channel-connection
+// concept at all), so a small, explicit 1:1 name mapping
+// (channelTypeToConversationChannel() in channels/types.ts) bridges the two
+// rather than unifying them into one enum.
 enum ConversationChannel {
   MANUAL
   WEBSITE
@@ -164,6 +173,25 @@ enum AiLogOutcome {
   NO_ACTION
 }
 
+// Channel Integration Foundation (Prompt 16). Deliberately just these
+// three today — the ones this stage actually builds a mock adapter for
+// (channels/adapters/mockAdapter.ts) — never a channel with no adapter
+// behind it. Names are shared 1:1 with ConversationChannel's own
+// TELEGRAM/WHATSAPP/WEBSITE members (see that enum's comment).
+enum ChannelType {
+  TELEGRAM
+  WHATSAPP
+  WEBSITE
+}
+
+// INACTIVE is the default for every newly-created connection (spec
+// §"CHANNEL CREATE") — a connection never starts able to process inbound
+// or send outbound; an explicit activate is always required.
+enum ChannelConnectionStatus {
+  ACTIVE
+  INACTIVE
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -187,6 +215,9 @@ model Tenant {
   messages                       Message[]
   aiEscalations                  AiEscalation[]
   aiLogs                         AiLog[]
+  channelConnections             ChannelConnection[]
+  channelMessages                ChannelMessage[]
+  customerChannelIdentities      CustomerChannelIdentity[]
 
   @@map("tenants")
 }
@@ -251,6 +282,9 @@ model Business {
   messages                       Message[]
   aiEscalations                  AiEscalation[]
   aiLogs                         AiLog[]
+  channelConnections             ChannelConnection[]
+  channelMessages                ChannelMessage[]
+  customerChannelIdentities      CustomerChannelIdentity[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -374,6 +408,7 @@ model Customer {
   customerRequests CustomerRequest[]
   conversations    Conversation[]
   escalations      AiEscalation[]
+  channelIdentities CustomerChannelIdentity[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -640,10 +675,22 @@ model Conversation {
   customerId        String?
   customerRequestId String?
 
-  // A label for where the conversation came from — not a live
-  // integration. No channel has an external connection in this codebase.
+  // A label for where the conversation came from. As of Prompt 16, a
+  // TELEGRAM/WHATSAPP/WEBSITE conversation MAY be produced by a real
+  // ChannelConnection (see below) — but still with no live external
+  // integration behind it (mock adapters only).
   channel ConversationChannel
   status  ConversationStatus  @default(OPEN)
+
+  // Channel Integration Foundation (Prompt 16). Both null for every
+  // manually-created conversation (channel = MANUAL/PHONE/OTHER, or a
+  // channel conversation created before this stage existed) — set
+  // together, only by channelConversationService.ts, to let the inbound
+  // pipeline find "the existing Conversation for this external thread"
+  // without scanning ChannelMessage rows. Never set independently of one
+  // another; never touched by the ordinary Conversation CRUD API.
+  channelConnectionId    String?
+  externalConversationId String?
 
   subject String?
 
@@ -674,6 +721,13 @@ model Conversation {
   // hard-delete path today).
   customer        Customer?        @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerRequest CustomerRequest? @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
+  // Restrict, not Cascade — same principle as every other relation on this
+  // model: a Conversation is history and must survive its ChannelConnection
+  // being deactivated (deactivation never deletes anything — see
+  // ChannelConnection's own comment) or, hypothetically, removed outside
+  // the app's normal workflow (there is no delete path for ChannelConnection
+  // today, only deactivate).
+  channelConnection ChannelConnection? @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
 
   messages    Message[]
   escalations AiEscalation[]
@@ -685,6 +739,14 @@ model Conversation {
   @@index([tenantId, businessId, lastMessageAt])
   @@index([customerId])
   @@index([customerRequestId])
+  // Nullable-column unique constraint — the same technique already
+  // established for AiEscalation.activeConversationId (Prompt 12): Postgres
+  // treats every NULL as distinct, so the many Conversations with no
+  // channel connection at all never collide with each other, while a real
+  // (channelConnectionId, externalConversationId) pair is genuinely unique
+  // — channelConversationService.ts relies on this to find-or-create
+  // without a race.
+  @@unique([channelConnectionId, externalConversationId])
   @@map("conversations")
 }
 
@@ -710,6 +772,11 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   aiLogs AiLog[]
+  // At most one — enforced by ChannelMessage's own @@unique([messageId]) —
+  // present only for a Message that actually came from a real inbound
+  // channel webhook (channelMessageService.ts), never for a manually
+  // created or outbound-only Message.
+  channelMessage ChannelMessage?
 
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
@@ -877,6 +944,142 @@ model AiLog {
   @@index([operation, createdAt])
   @@index([outcome, createdAt])
   @@map("ai_logs")
+}
+
+// Channel Integration Foundation (Prompt 16) — describes an external
+// communication channel connected to one Business. This is a foundation
+// record only: no real Telegram Bot API/WhatsApp Cloud API/Twilio/Meta API
+// call is ever made anywhere in this codebase, and `config` may only ever
+// hold small, non-secret settings (see channelConnectionService.ts's
+// sanitizeChannelConfig()) — bot tokens, API keys, OAuth tokens, webhook
+// secrets, and passwords have no field to live in here or anywhere else in
+// this schema. Real credential storage is explicitly out of scope for this
+// stage (that belongs to a future production-hardening stage).
+model ChannelConnection {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  type   ChannelType
+  status ChannelConnectionStatus @default(INACTIVE)
+
+  displayName String
+  // The channel's own identifier for this account (a Telegram bot
+  // username/id, a WhatsApp Business phone-number id, a Website widget
+  // id) — required, never null, specifically so the unique constraint
+  // below is a real, DB-enforced guarantee with no NULL-collapsing edge
+  // case to reason about (Postgres treats every NULL as distinct, which
+  // would silently defeat this constraint for an optional field).
+  externalAccountId String
+
+  // Small, non-secret settings only — see this model's own doc comment
+  // above and channelConnectionService.ts's sanitizeChannelConfig(),
+  // which is the only code path allowed to write this column.
+  config Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  conversations             Conversation[]
+  channelMessages           ChannelMessage[]
+  customerChannelIdentities CustomerChannelIdentity[]
+
+  // Prevents accidentally creating two connections for the same external
+  // account under the same business (spec §"UNIQUE CONSTRAINT") — a real,
+  // race-safe DB constraint, not just an application-level check.
+  @@unique([tenantId, businessId, type, externalAccountId])
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@map("channel_connections")
+}
+
+// Maps one internal Message (always the actual transcript/content owner —
+// see spec §"НЕ ДУБЛИРОВАТЬ MESSAGE CONTENT", this model never has its own
+// content field) to the external channel message it came from. This is
+// the DB-level idempotency guarantee for inbound webhook delivery: a
+// webhook redelivering the same (channelConnectionId, externalMessageId)
+// pair can never create a second Message — channelMessageService.ts's
+// receiveIncoming() checks this table first, and the unique constraint
+// below is the last line of defense against a genuine concurrent race.
+model ChannelMessage {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  channelConnectionId String
+  messageId           String
+
+  externalMessageId      String
+  externalConversationId String
+
+  createdAt DateTime @default(now())
+
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business          Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict: this mapping is integration metadata about a ChannelConnection,
+  // not something that should vanish just because the connection was
+  // deactivated (deactivation never deletes anything at all — see
+  // ChannelConnection's own comment).
+  channelConnection ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
+  // Cascade: unlike channelConnection above, this mapping has no meaning
+  // independent of the Message it describes — same "owned child" principle
+  // Message itself already has toward Conversation.
+  message           Message           @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([channelConnectionId, externalMessageId])
+  @@unique([messageId])
+  @@index([tenantId, businessId])
+  @@index([externalConversationId])
+  @@map("channel_messages")
+}
+
+// Links one real Customer to their identity on one external channel
+// connection (e.g. a specific Telegram user id talking to a specific
+// bot) — created only once a Customer has actually been resolved (see
+// spec §"CUSTOMER RESOLUTION": no automatic Customer creation, no
+// automatic merging). Never looked up by externalCustomerId alone — always
+// scoped to (tenantId, businessId, channelConnectionId) first, so the same
+// raw external id from two different channels/businesses can never
+// collide (spec §"CUSTOMER IDENTITY SECURITY").
+model CustomerChannelIdentity {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  customerId          String
+  channelConnectionId String
+  externalCustomerId  String
+
+  // Small, safe, denormalized-for-display fields only — never used as the
+  // lookup key by themselves, and never a substitute for the real
+  // Customer record's own firstName/lastName/phone.
+  displayName String?
+  phone       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict: an identity mapping is a historical fact about who talked to
+  // this business on this channel — it must survive a Customer being
+  // deactivated (there is no Customer hard-delete path today).
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // Restrict: same principle as ChannelMessage.channelConnection above.
+  channelConnection ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
+
+  // The DB-enforced half of spec §"CUSTOMER IDENTITY SECURITY": one
+  // external identity can never point at two different Customers, even
+  // under a genuine concurrent race — customerChannelIdentityRepository.ts
+  // relies on this constraint, never just an application-level check, to
+  // reject (not silently reassign) a conflicting create attempt (P2002).
+  @@unique([channelConnectionId, externalCustomerId])
+  @@index([tenantId, businessId])
+  @@index([customerId])
+  @@map("customer_channel_identities")
 }
 
 model Session {

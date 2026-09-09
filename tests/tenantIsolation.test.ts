@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { Prisma } from '@prisma/client'
 
 const {
   businessFindManyMock,
@@ -62,6 +63,16 @@ const {
   userCountMock,
   userCreateMock,
   sessionDeleteManyMock,
+  channelConnectionFindManyMock,
+  channelConnectionFindFirstMock,
+  channelConnectionCreateMock,
+  channelConnectionUpdateManyMock,
+  channelMessageFindFirstMock,
+  channelMessageCreateMock,
+  customerChannelIdentityFindFirstMock,
+  customerChannelIdentityCreateMock,
+  conversationCreateMock,
+  conversationUpdateMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -128,6 +139,16 @@ const {
     userCountMock: vi.fn(),
     userCreateMock: vi.fn(),
     sessionDeleteManyMock: vi.fn(),
+    channelConnectionFindManyMock: vi.fn(),
+    channelConnectionFindFirstMock: vi.fn(),
+    channelConnectionCreateMock: vi.fn(),
+    channelConnectionUpdateManyMock: vi.fn(),
+    channelMessageFindFirstMock: vi.fn(),
+    channelMessageCreateMock: vi.fn(),
+    customerChannelIdentityFindFirstMock: vi.fn(),
+    customerChannelIdentityCreateMock: vi.fn(),
+    conversationCreateMock: vi.fn(),
+    conversationUpdateMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -185,6 +206,8 @@ vi.mock('../src/server/db/prisma', () => {
       count: conversationCountMock,
       updateMany: conversationUpdateManyMock,
       groupBy: conversationGroupByMock,
+      create: conversationCreateMock,
+      update: conversationUpdateMock,
     },
     message: { findMany: messageFindManyMock, create: messageCreateMock, groupBy: messageGroupByMock },
     aiEscalation: {
@@ -211,6 +234,14 @@ vi.mock('../src/server/db/prisma', () => {
       create: userCreateMock,
     },
     session: { deleteMany: sessionDeleteManyMock },
+    channelConnection: {
+      findMany: channelConnectionFindManyMock,
+      findFirst: channelConnectionFindFirstMock,
+      create: channelConnectionCreateMock,
+      updateMany: channelConnectionUpdateManyMock,
+    },
+    channelMessage: { findFirst: channelMessageFindFirstMock, create: channelMessageCreateMock },
+    customerChannelIdentity: { findFirst: customerChannelIdentityFindFirstMock, create: customerChannelIdentityCreateMock },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
     $queryRaw: queryRawMock,
@@ -245,6 +276,16 @@ import {
   activateTeamMember,
   deactivateTeamMember,
 } from '../src/server/services/teamService'
+import { channelConnectionRepository } from '../src/server/repositories/channelConnectionRepository'
+import { channelMessageRepository } from '../src/server/repositories/channelMessageRepository'
+import { customerChannelIdentityRepository } from '../src/server/repositories/customerChannelIdentityRepository'
+import {
+  getChannelConnection,
+  updateChannelConnection,
+  activateChannelConnection,
+  deactivateChannelConnection,
+} from '../src/server/services/channelConnectionService'
+import { recordInboundMessage } from '../src/server/repositories/channelInboundRepository'
 import { analyzeMessage } from '../src/server/services/aiService'
 import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
 import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
@@ -316,6 +357,13 @@ beforeEach(() => {
   userUpdateManyMock.mockResolvedValue({ count: 0 })
   userCountMock.mockResolvedValue(0)
   sessionDeleteManyMock.mockResolvedValue({ count: 0 })
+  channelConnectionFindManyMock.mockResolvedValue([])
+  channelConnectionFindFirstMock.mockResolvedValue(null)
+  channelConnectionUpdateManyMock.mockResolvedValue({ count: 0 })
+  channelMessageFindFirstMock.mockResolvedValue(null)
+  customerChannelIdentityFindFirstMock.mockResolvedValue(null)
+  conversationCreateMock.mockResolvedValue({ id: 'conv-new', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
+  conversationUpdateMock.mockResolvedValue({ id: 'conv-new', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
 })
 
 describe('tenant isolation — Business', () => {
@@ -1369,5 +1417,205 @@ describe('tenant isolation — Team Management (Prompt 15)', () => {
     userFindFirstMock.mockResolvedValue(makeUserRow({ id: 'u-a2', role: 'manager', tenantId: 'tenant-a' }))
     userUpdateManyMock.mockResolvedValue({ count: 1 })
     await expect(updateTeamMemberProfile(ctxA('owner'), 'u-a2', { name: 'Updated' })).resolves.toBeDefined()
+  })
+})
+
+describe('tenant isolation — Channel Integration (Prompt 16)', () => {
+  // Same convention as every other section: call the real repository/
+  // service functions against the same mocked prisma client, proving
+  // every query is scoped by tenantId + businessId, and that a foreign
+  // channelId injected into a request never resolves to another tenant's
+  // row (spec §"TENANT TESTS").
+  const CHANNEL_OWNED_BY_B = '888e4567-e89b-12d3-a456-426614174000'
+
+  function ctxA() {
+    return makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+    })
+  }
+
+  it('repository: list is scoped to tenantId + businessId', async () => {
+    await channelConnectionRepository.list('tenant-a', 'business-a')
+    expect(channelConnectionFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: 'tenant-a', businessId: 'business-a' } })
+    )
+  })
+
+  it('repository: findById never matches a foreign-tenant row', async () => {
+    await channelConnectionRepository.findById('tenant-a', 'business-a', CHANNEL_OWNED_BY_B)
+    expect(channelConnectionFindFirstMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', id: CHANNEL_OWNED_BY_B },
+    })
+  })
+
+  it('repository: updateById/setStatus updateMany calls are scoped by tenantId + businessId + id', async () => {
+    await channelConnectionRepository.updateById('tenant-a', 'business-a', CHANNEL_OWNED_BY_B, { displayName: 'X' })
+    expect(channelConnectionUpdateManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: 'tenant-a', businessId: 'business-a', id: CHANNEL_OWNED_BY_B } })
+    )
+    channelConnectionUpdateManyMock.mockClear()
+
+    await channelConnectionRepository.setStatus('tenant-a', 'business-a', CHANNEL_OWNED_BY_B, 'ACTIVE')
+    expect(channelConnectionUpdateManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: 'tenant-a', businessId: 'business-a', id: CHANNEL_OWNED_BY_B } })
+    )
+  })
+
+  it('service: tenant A cannot GET tenant B\'s channel — 404 CHANNEL_NOT_FOUND, scoped lookup never matches', async () => {
+    channelConnectionFindFirstMock.mockResolvedValue(null)
+    await expect(getChannelConnection(ctxA(), CHANNEL_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404, code: 'CHANNEL_NOT_FOUND' })
+  })
+
+  it('service: tenant A cannot PATCH tenant B\'s channel — 404, updateMany never reached', async () => {
+    channelConnectionFindFirstMock.mockResolvedValue(null)
+    await expect(updateChannelConnection(ctxA(), CHANNEL_OWNED_BY_B, { displayName: 'hacked' })).rejects.toMatchObject({ statusCode: 404 })
+    expect(channelConnectionUpdateManyMock).not.toHaveBeenCalled()
+  })
+
+  it('service: tenant A cannot activate/deactivate tenant B\'s channel — 404 in both cases, a foreign channelId injected into the URL never resolves', async () => {
+    channelConnectionFindFirstMock.mockResolvedValue(null)
+    await expect(activateChannelConnection(ctxA(), CHANNEL_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+    await expect(deactivateChannelConnection(ctxA(), CHANNEL_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404 })
+    expect(channelConnectionUpdateManyMock).not.toHaveBeenCalled()
+  })
+
+  it('a foreign channel never reveals its existence — the same plain 404 as a genuinely unknown id', async () => {
+    channelConnectionFindFirstMock.mockResolvedValue(null)
+    const foreignErr = await getChannelConnection(ctxA(), CHANNEL_OWNED_BY_B).catch((e) => e)
+    const unknownErr = await getChannelConnection(ctxA(), 'totally-made-up-id').catch((e) => e)
+    expect(foreignErr.statusCode).toBe(unknownErr.statusCode)
+    expect(foreignErr.code).toBe(unknownErr.code)
+  })
+
+  it('repository: ChannelMessage idempotency lookup is scoped by tenantId + businessId + channelConnectionId, never externalMessageId alone', async () => {
+    await channelMessageRepository.findByConnectionAndExternalMessageId('tenant-a', 'business-a', 'conn-a', 'ext-msg-1')
+    expect(channelMessageFindFirstMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: 'conn-a', externalMessageId: 'ext-msg-1' },
+    })
+  })
+
+  it('repository: CustomerChannelIdentity lookup is scoped by tenantId + businessId + channelConnectionId, never externalCustomerId alone (spec §"CUSTOMER IDENTITY SECURITY")', async () => {
+    await customerChannelIdentityRepository.findByConnectionAndExternalCustomerId('tenant-a', 'business-a', 'conn-a', 'ext-cust-1')
+    expect(customerChannelIdentityFindFirstMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: 'conn-a', externalCustomerId: 'ext-cust-1' },
+    })
+  })
+
+  it('repository: Conversation channel-resolution lookup is scoped by tenantId + businessId', async () => {
+    await conversationRepository.findByChannelConnectionAndExternalId('tenant-a', 'business-a', 'conn-a', 'ext-conv-1')
+    expect(conversationFindFirstMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: 'conn-a', externalConversationId: 'ext-conv-1' },
+    })
+  })
+
+  it('repository: normalized-phone customer matching is scoped by tenantId + businessId (bound parameters, never string-interpolated)', async () => {
+    await customerRepository.findActiveByLocalPhoneNumber('tenant-a', 'business-a', '9001112233')
+    const [, ...values] = queryRawMock.mock.calls[queryRawMock.mock.calls.length - 1]! as [TemplateStringsArray, ...unknown[]]
+    expect(values).toEqual(expect.arrayContaining(['tenant-a', 'business-a', '9001112233']))
+  })
+
+  describe('recordInboundMessage — the atomic inbound transaction (spec §"TRANSACTION TESTS"/§"INBOUND MESSAGE SERVICE")', () => {
+    const baseInput = {
+      tenantId: 'tenant-a',
+      businessId: 'business-a',
+      channelConnectionId: 'conn-a',
+      channelType: 'TELEGRAM' as const,
+      externalConversationId: 'ext-conv-1',
+      externalMessageId: 'ext-msg-1',
+      text: 'Hello',
+      sentAt: new Date('2026-01-01T00:00:00Z'),
+      customerId: null,
+    }
+
+    it('creates a new Conversation, a Message(INBOUND, CUSTOMER), and the ChannelMessage mapping, then touches lastMessageAt — in that order', async () => {
+      conversationFindFirstMock.mockResolvedValue(null) // no existing conversation for this external thread
+      conversationCreateMock.mockResolvedValue({ id: 'conv-new', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
+      messageCreateMock.mockResolvedValue({ id: 'msg-new', createdAt: baseInput.sentAt })
+
+      const result = await recordInboundMessage(baseInput)
+
+      expect(conversationCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: 'conn-a', status: 'OPEN' }) })
+      )
+      expect(messageCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv-new', direction: 'INBOUND', senderType: 'CUSTOMER', content: 'Hello' }) })
+      )
+      expect(channelMessageCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ channelConnectionId: 'conn-a', messageId: 'msg-new', externalMessageId: 'ext-msg-1' }) })
+      )
+      expect(conversationUpdateMock).toHaveBeenCalledWith(expect.objectContaining({ data: { lastMessageAt: baseInput.sentAt } }))
+      expect(result.wasConversationCreated).toBe(true)
+      expect(result.wasConversationReopened).toBe(false)
+    })
+
+    it('reuses an existing OPEN conversation instead of creating a second one', async () => {
+      conversationFindFirstMock.mockResolvedValue({ id: 'conv-existing', tenantId: 'tenant-a', businessId: 'business-a', customerId: 'cust-1', status: 'OPEN' })
+      messageCreateMock.mockResolvedValue({ id: 'msg-new', createdAt: baseInput.sentAt })
+
+      const result = await recordInboundMessage(baseInput)
+
+      expect(conversationCreateMock).not.toHaveBeenCalled()
+      expect(result.wasConversationCreated).toBe(false)
+      expect(result.wasConversationReopened).toBe(false)
+      expect(messageCreateMock).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv-existing' }) }))
+    })
+
+    it('reopens a CLOSED conversation transactionally — status back to OPEN, closedAt cleared — before recording the message (spec §"CLOSED CONVERSATION")', async () => {
+      conversationFindFirstMock.mockResolvedValue({ id: 'conv-closed', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'CLOSED' })
+      conversationUpdateMock.mockResolvedValue({ id: 'conv-closed', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
+      messageCreateMock.mockResolvedValue({ id: 'msg-new', createdAt: baseInput.sentAt })
+
+      const result = await recordInboundMessage(baseInput)
+
+      expect(conversationUpdateMock).toHaveBeenCalledWith({ where: { id: 'conv-closed' }, data: { status: 'OPEN', closedAt: null } })
+      expect(result.wasConversationReopened).toBe(true)
+      expect(result.conversation.status).toBe('OPEN')
+    })
+
+    it('never overwrites an existing conversation\'s customerId — only a NEWLY created conversation gets the resolved customerId', async () => {
+      conversationFindFirstMock.mockResolvedValue({ id: 'conv-existing', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
+      messageCreateMock.mockResolvedValue({ id: 'msg-new', createdAt: baseInput.sentAt })
+
+      await recordInboundMessage({ ...baseInput, customerId: 'cust-resolved' })
+
+      // The only conversation.update call is the lastMessageAt touch — it must never also carry customerId.
+      const updateCalls = conversationUpdateMock.mock.calls as { data: Record<string, unknown> }[][]
+      expect(updateCalls.every((c) => !('customerId' in c[0]!.data))).toBe(true)
+    })
+
+    it('a failure creating the Message never leaves an orphaned ChannelMessage or lastMessageAt update — the mocked $transaction propagates the error, and the REAL rollback guarantee is verified live in the Supabase smoke test (a mock cannot prove genuine DB rollback)', async () => {
+      conversationFindFirstMock.mockResolvedValue(null)
+      conversationCreateMock.mockResolvedValue({ id: 'conv-new', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' })
+      messageCreateMock.mockRejectedValue(new Error('DB write failed'))
+
+      await expect(recordInboundMessage(baseInput)).rejects.toThrow('DB write failed')
+      expect(channelMessageCreateMock).not.toHaveBeenCalled()
+    })
+
+    it('a genuine concurrent-creation race on Conversation itself (P2002 on the @@unique([channelConnectionId, externalConversationId]) constraint) re-fetches the winner instead of ever throwing a raw DB error or creating a second Conversation — this exact race was found live against a real Supabase database before being fixed', async () => {
+      const winnerConversation = { id: 'conv-winner', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' }
+      conversationFindFirstMock
+        .mockResolvedValueOnce(null) // this transaction's own initial lookup: nothing yet
+        .mockResolvedValueOnce(winnerConversation) // race-recovery re-fetch after losing to the other transaction
+      conversationCreateMock.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' })
+      )
+      messageCreateMock.mockResolvedValue({ id: 'msg-on-winner', createdAt: baseInput.sentAt })
+
+      const result = await recordInboundMessage(baseInput)
+
+      expect(result.conversation.id).toBe('conv-winner')
+      expect(result.wasConversationCreated).toBe(false)
+      expect(messageCreateMock).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv-winner' }) }))
+    })
+
+    it('a non-P2002 error creating the Conversation propagates unchanged, never silently swallowed as a race', async () => {
+      conversationFindFirstMock.mockResolvedValue(null)
+      conversationCreateMock.mockRejectedValue(new Error('connection reset'))
+
+      await expect(recordInboundMessage(baseInput)).rejects.toThrow('connection reset')
+      expect(messageCreateMock).not.toHaveBeenCalled()
+    })
   })
 })
