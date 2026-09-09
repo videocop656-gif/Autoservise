@@ -1,8 +1,11 @@
 import { Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
+import { env } from '../lib/env'
 import { requireRole } from '../middleware/requireRole'
 import { channelConnectionRepository } from '../repositories/channelConnectionRepository'
+import { sanitizeChannelConfig } from '../channels/sanitizeChannelConfig'
+import { bestEffortDeleteTelegramWebhook } from './telegramSetupService'
 import type { CreateChannelConnectionInput, UpdateChannelConnectionInput } from '../validation/channel.schemas'
 
 // Spec §"PERMISSIONS": owner and admin both get full operational access
@@ -12,35 +15,6 @@ import type { CreateChannelConnectionInput, UpdateChannelConnectionInput } from 
 // (never just hidden in the UI).
 const ANY_STAFF_ROLE = ['owner', 'admin', 'manager'] as const
 const MANAGING_ROLES = ['owner', 'admin'] as const
-
-// Blacklist, not whitelist — unlike aiLogService.ts's metadata (a fixed,
-// known-safe set of keys this codebase itself writes), `config` here is
-// meant to hold whatever small, non-secret per-channel settings a real
-// adapter eventually needs, which this foundation stage can't fully
-// enumerate in advance. So instead: strip anything key-shaped like a
-// credential, and only ever keep primitive values (never nested objects —
-// see channel.schemas.ts's channelConfigSchema, which already enforces
-// this structurally; this is the second, independent layer) — spec
-// §"CONFIG": bot token/API key/OAuth token/refresh token/webhook secret/
-// password must never be stored here, in any form.
-const SECRET_LOOKING_KEY = /token|secret|key|password|credential|auth/i
-const MAX_CONFIG_VALUE_LENGTH = 500
-
-function sanitizeChannelConfig(config: Record<string, unknown> | undefined | null): Prisma.InputJsonObject | undefined {
-  if (!config) return undefined
-  const safe: Record<string, string | number | boolean> = {}
-  for (const [key, value] of Object.entries(config)) {
-    if (SECRET_LOOKING_KEY.test(key)) continue
-    if (value === null || value === undefined) continue
-    if (typeof value === 'string') {
-      safe[key] = value.slice(0, MAX_CONFIG_VALUE_LENGTH)
-    } else if (typeof value === 'number' || typeof value === 'boolean') {
-      safe[key] = value
-    }
-    // objects/arrays are silently dropped — never nested, never a place to hide a structured secret.
-  }
-  return Object.keys(safe).length > 0 ? (safe as Prisma.InputJsonObject) : undefined
-}
 
 async function resolveConnection(ctx: AuthContext, id: string) {
   const connection = await channelConnectionRepository.findById(ctx.tenant.id, ctx.business.id, id)
@@ -105,9 +79,29 @@ export async function updateChannelConnection(ctx: AuthContext, id: string, inpu
   }
 }
 
+/**
+ * Real Telegram Channel Integration (Prompt 18 spec §33): "нельзя считать
+ * реально подключённым только потому, что пользователь нажал Activate."
+ * When a real Telegram bot token is actually configured on this server
+ * (`env.telegramBotToken`), a TELEGRAM connection can ONLY become ACTIVE by
+ * going through the full `/telegram/setup` verification flow
+ * (telegramSetupService.ts) — getMe + setWebhook must both genuinely
+ * succeed first. This endpoint's permission model is otherwise untouched
+ * (spec: "должен сохранить существующую permission model").
+ *
+ * When NO real token is configured, this restriction does not apply at
+ * all — the exact same "optional credential → mock-foundation behavior"
+ * convention as channelAdapterRegistry.ts, which is why every pre-existing
+ * test/foundation flow that activates a TELEGRAM connection directly (this
+ * whole codebase's own test suite runs with no token configured) continues
+ * to work completely unchanged.
+ */
 export async function activateChannelConnection(ctx: AuthContext, id: string) {
   requireRole(ctx, ...MANAGING_ROLES)
-  await resolveConnection(ctx, id)
+  const connection = await resolveConnection(ctx, id)
+  if (connection.type === 'TELEGRAM' && env.telegramBotToken) {
+    throw new ApiError(409, 'TELEGRAM_SETUP_REQUIRED', 'Use the Telegram setup flow to activate this connection')
+  }
   const updated = await channelConnectionRepository.setStatus(ctx.tenant.id, ctx.business.id, id, 'ACTIVE')
   if (!updated) {
     throw new ApiError(404, 'CHANNEL_NOT_FOUND', 'Channel connection not found')
@@ -121,10 +115,28 @@ export async function activateChannelConnection(ctx: AuthContext, id: string) {
  * this connection are all left exactly as they are; only future inbound/
  * outbound processing through this connection is blocked
  * (channelMessageService.ts checks `status === 'ACTIVE'` itself).
+ *
+ * Prompt 18 spec §34: for a live Telegram connection, deactivation also
+ * best-effort unregisters the webhook (`deleteWebhook`) — but this can
+ * never be atomic with the database update (they're two different
+ * systems), so a failure to reach Telegram never blocks or reverts the
+ * deactivation itself. This is safe specifically because our own
+ * webhook route independently re-checks `status === 'ACTIVE'` on every
+ * request (via the existing `receiveIncoming()` → `resolveActiveConnection()`
+ * check) — even if Telegram's remote registration somehow survives a
+ * failed `deleteWebhook` call, this server will still reject/ignore
+ * anything it delivers the instant the DB row is INACTIVE. The DB flag is
+ * the authoritative, sole source of truth for whether this app processes
+ * anything; `deleteWebhook` is pure best-effort remote cleanup.
  */
 export async function deactivateChannelConnection(ctx: AuthContext, id: string) {
   requireRole(ctx, ...MANAGING_ROLES)
-  await resolveConnection(ctx, id)
+  const connection = await resolveConnection(ctx, id)
+
+  if (connection.type === 'TELEGRAM' && connection.status === 'ACTIVE' && env.telegramBotToken) {
+    await bestEffortDeleteTelegramWebhook(env.telegramBotToken)
+  }
+
   const updated = await channelConnectionRepository.setStatus(ctx.tenant.id, ctx.business.id, id, 'INACTIVE')
   if (!updated) {
     throw new ApiError(404, 'CHANNEL_NOT_FOUND', 'Channel connection not found')

@@ -121,9 +121,14 @@ export async function sendMessageViaChannel(ctx: AuthContext, channelConnectionI
       return toChannelDeliveryDto(sent)
     }
 
+    // Prompt 18: an adapter may classify its own failure (e.g. Telegram's
+    // TELEGRAM_AUTH_ERROR/TELEGRAM_RATE_LIMITED/etc. — see
+    // telegramApiClient.ts); a purely additive fallback to the original
+    // Prompt 17 behavior when it doesn't (the mock adapter never sets this).
+    const errorCode = result.errorCode ?? 'CHANNEL_PROVIDER_ERROR'
     const errorMessage = safeErrorMessage(result.errorMessage, 'The channel provider failed to send this message')
-    await channelDeliveryRepository.markFailed(delivery.id, 'CHANNEL_PROVIDER_ERROR', errorMessage)
-    throw new ApiError(502, 'CHANNEL_PROVIDER_ERROR', errorMessage)
+    await channelDeliveryRepository.markFailed(delivery.id, errorCode, errorMessage)
+    throw new ApiError(502, errorCode, errorMessage)
   } catch (err) {
     if (err instanceof ApiError) throw err
     // The adapter threw instead of returning a failure result — never let a

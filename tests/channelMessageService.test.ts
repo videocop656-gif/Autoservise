@@ -197,6 +197,26 @@ describe('receiveIncoming — idempotency', () => {
     expect(result).toMatchObject({ duplicate: true, conversationId: 'conv-winner', messageId: 'msg-winner' })
   })
 
+  it('Prompt 18: a P2002 on Conversation creation (two DIFFERENT first messages racing for the same new thread) finds no duplicate for THIS message\'s own externalMessageId, then safely retries recordInboundMessage() once in a fresh transaction — never a raw DB error', async () => {
+    mocks.connectionFindById.mockResolvedValue(makeConnection())
+    // Neither the fast pre-check nor the post-P2002 lookup finds a
+    // ChannelMessage for THIS message's own externalMessageId — the
+    // winner's ChannelMessage belongs to a DIFFERENT message.
+    mocks.channelMessageFindByConnectionAndExternalMessageId.mockResolvedValue(null)
+    mocks.recordInboundMessage
+      .mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' }))
+      .mockResolvedValueOnce({
+        conversation: { id: 'conv-existing', customerId: null, status: 'OPEN' },
+        message: { id: 'msg-mine', createdAt: new Date() },
+        wasConversationCreated: false,
+        wasConversationReopened: false,
+      })
+
+    const result = await receiveIncoming(makeAuthContext('owner'), 'conn-1', makePayload())
+    expect(result).toMatchObject({ duplicate: false, conversationId: 'conv-existing', messageId: 'msg-mine' })
+    expect(mocks.recordInboundMessage).toHaveBeenCalledTimes(2)
+  })
+
   it('a non-P2002 error from recordInboundMessage propagates unchanged (no false idempotent success)', async () => {
     mocks.connectionFindById.mockResolvedValue(makeConnection())
     mocks.channelMessageFindByConnectionAndExternalMessageId.mockResolvedValue(null)

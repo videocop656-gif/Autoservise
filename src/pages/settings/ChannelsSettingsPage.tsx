@@ -22,6 +22,12 @@ interface ChannelConnectionDto {
   updatedAt: string
 }
 
+/** Safe, non-secret display value only — see channelConnectionService.ts's sanitizeChannelConfig() (never the bot token/webhook secret, which never leave the server at all). */
+function telegramUsername(connection: ChannelConnectionDto): string | null {
+  const value = connection.config?.telegramUsername
+  return typeof value === 'string' ? value : null
+}
+
 const TYPE_LABEL: Record<ChannelType, string> = { TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', WEBSITE: 'Website Chat' }
 const CHANNEL_TYPES: ChannelType[] = ['TELEGRAM', 'WHATSAPP', 'WEBSITE']
 
@@ -53,6 +59,12 @@ export default function ChannelsSettingsPage() {
   const [editError, setEditError] = useState<string | null>(null)
   const [editFieldErrors, setEditFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
+
+  // Real Telegram Channel Integration (Prompt 18) — a separate action from
+  // the generic Activate button: a TELEGRAM connection can only become
+  // ACTIVE via this setup call (getMe + setWebhook), never by flipping a
+  // status flag alone. See telegramSetupService.ts.
+  const [settingUpId, setSettingUpId] = useState<string | null>(null)
 
   async function loadConnections() {
     setLoading(true)
@@ -148,6 +160,19 @@ export default function ChannelsSettingsPage() {
     }
   }
 
+  async function handleTelegramSetup(connection: ChannelConnectionDto) {
+    setActionError(null)
+    setSettingUpId(connection.id)
+    try {
+      await apiFetch(`/api/channels/${connection.id}/telegram/setup`, { method: 'POST' })
+      await loadConnections()
+    } catch (err) {
+      setActionError(err instanceof ApiClientError ? err.message : 'Не удалось подключить Telegram-бота.')
+    } finally {
+      setSettingUpId(null)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-muted/30">
       <Nav />
@@ -157,9 +182,9 @@ export default function ChannelsSettingsPage() {
             <div>
               <CardTitle>Channels</CardTitle>
               <CardDescription>
-                Внешние каналы связи (Telegram, WhatsApp, Website Chat). Это foundation-уровень: реальные API ещё не
-                подключены, сообщения обрабатываются только через внутренний тестовый pipeline. AI не отвечает
-                автоматически.
+                Внешние каналы связи (Telegram, WhatsApp, Website Chat). Telegram может быть подключён к реальному
+                Telegram Bot API — остальные каналы пока foundation-уровня (внутренний тестовый pipeline). AI не
+                отвечает автоматически ни в одном канале.
               </CardDescription>
             </div>
             {canManage && (
@@ -189,43 +214,59 @@ export default function ChannelsSettingsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {connections.map((connection) => (
-                      <tr key={connection.id} className="border-b last:border-0">
-                        <td className="py-2 pr-3 font-medium">{TYPE_LABEL[connection.type]}</td>
-                        <td className="py-2 pr-3">{connection.displayName}</td>
-                        <td className="py-2 pr-3 text-muted-foreground">{connection.externalAccountId}</td>
-                        <td className="py-2 pr-3">
-                          <span
-                            className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-                              connection.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-muted text-muted-foreground'
-                            }`}
-                          >
-                            {connection.status === 'ACTIVE' ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-3 text-muted-foreground">{new Date(connection.createdAt).toLocaleDateString()}</td>
-                        <td className="py-2 pr-3">
-                          {canManage ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              <Button variant="ghost" size="sm" onClick={() => openEditForm(connection)}>
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              {connection.status === 'ACTIVE' ? (
-                                <Button variant="outline" size="sm" onClick={() => handleDeactivate(connection)}>
-                                  Deactivate
+                    {connections.map((connection) => {
+                      const isTelegram = connection.type === 'TELEGRAM'
+                      const username = telegramUsername(connection)
+                      return (
+                        <tr key={connection.id} className="border-b last:border-0">
+                          <td className="py-2 pr-3 font-medium">{TYPE_LABEL[connection.type]}</td>
+                          <td className="py-2 pr-3">
+                            {connection.displayName}
+                            {isTelegram && username && <div className="text-xs text-muted-foreground">Bot: @{username}</div>}
+                          </td>
+                          <td className="py-2 pr-3 text-muted-foreground">{connection.externalAccountId}</td>
+                          <td className="py-2 pr-3">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                                connection.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              {connection.status === 'ACTIVE' ? 'Active' : 'Inactive'}
+                            </span>
+                            {isTelegram && (
+                              <div className="mt-0.5 text-xs text-muted-foreground">
+                                Webhook: {connection.status === 'ACTIVE' ? 'configured' : 'not configured'}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2 pr-3 text-muted-foreground">{new Date(connection.createdAt).toLocaleDateString()}</td>
+                          <td className="py-2 pr-3">
+                            {canManage ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                <Button variant="ghost" size="sm" onClick={() => openEditForm(connection)}>
+                                  <Pencil className="h-4 w-4" />
                                 </Button>
-                              ) : (
-                                <Button variant="outline" size="sm" onClick={() => handleActivate(connection)}>
-                                  Activate
-                                </Button>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">View only</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                                {connection.status === 'ACTIVE' ? (
+                                  <Button variant="outline" size="sm" onClick={() => handleDeactivate(connection)}>
+                                    Deactivate
+                                  </Button>
+                                ) : isTelegram ? (
+                                  <Button variant="outline" size="sm" disabled={settingUpId === connection.id} onClick={() => handleTelegramSetup(connection)}>
+                                    {settingUpId === connection.id ? 'Connecting...' : 'Connect'}
+                                  </Button>
+                                ) : (
+                                  <Button variant="outline" size="sm" onClick={() => handleActivate(connection)}>
+                                    Activate
+                                  </Button>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">View only</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

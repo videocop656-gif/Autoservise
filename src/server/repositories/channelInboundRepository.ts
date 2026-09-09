@@ -1,4 +1,4 @@
-import { Prisma, type ConversationChannel } from '@prisma/client'
+import type { ConversationChannel } from '@prisma/client'
 import { prisma } from '../db/prisma'
 
 export interface RecordInboundInput {
@@ -45,14 +45,33 @@ export interface RecordInboundResult {
  *
  * The Conversation resolution below has the identical race for a NEW
  * external thread: two concurrent "first messages" can both miss the
- * initial `findFirst`, both attempt `create()`, and the loser hits
+ * initial `findFirst` and both attempt `create()` — the loser hits
  * Conversation's own `@@unique([channelConnectionId,
- * externalConversationId])` constraint — this is caught the same way
- * (P2002 → re-fetch the winner) rather than ever creating two
- * Conversations for one external thread. This bug was found live against
- * a real Supabase database by a genuinely concurrent smoke-test run
- * before being fixed here — see the smoke test's own dedicated race
- * check.
+ * externalConversationId])` constraint. That P2002 is deliberately left to
+ * propagate straight out of this `$transaction` (never caught in here) —
+ * Postgres marks the WHOLE transaction as aborted the instant any statement
+ * inside it errors, and Prisma's interactive transactions do not implicitly
+ * wrap each statement in its own SAVEPOINT, so a caught-and-retried query
+ * against the SAME `tx` after a P2002 reliably fails again with a second,
+ * unrelated error (`25P02`, "current transaction is aborted"). This was the
+ * exact failure mode this function's own first fix attempt had (Prompt
+ * 16's original "catch P2002 → re-fetch within the same tx" version) —
+ * confirmed broken live against a real Supabase database by a genuinely
+ * concurrent Prompt 18 smoke-test run, where the loser's own re-fetch
+ * itself threw `25P02` instead of ever returning the winner's row.
+ *
+ * The correct recovery — letting this whole transaction roll back cleanly,
+ * then retrying `recordInboundMessage()` from scratch in a brand-new
+ * transaction — lives one layer up, in channelMessageService.ts's
+ * `receiveIncoming()`, which already has to handle the ChannelMessage-level
+ * P2002 race the exact same way. A clean rollback is required here
+ * regardless of which unique constraint fires — Postgres only reports a
+ * unique-violation on a genuinely colliding key once the OTHER transaction
+ * holding it has fully committed (concurrent inserts of a colliding key
+ * make one wait for the other), so by the time this function's caller sees
+ * this error, the winner's entire transaction — Conversation, Message, and
+ * ChannelMessage together — is already durably committed and visible to a
+ * fresh read.
  */
 export async function recordInboundMessage(input: RecordInboundInput): Promise<RecordInboundResult> {
   return prisma.$transaction(async (tx) => {
@@ -69,26 +88,16 @@ export async function recordInboundMessage(input: RecordInboundInput): Promise<R
     let wasConversationReopened = false
 
     if (!conversation) {
-      try {
-        conversation = await tx.conversation.create({
-          data: {
-            ...conversationLookup,
-            channel: input.channelType,
-            status: 'OPEN',
-            startedAt: input.sentAt,
-            customerId: input.customerId,
-          },
-        })
-        wasConversationCreated = true
-      } catch (err) {
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          // Lost a genuine concurrent-creation race for this exact
-          // external thread — the winner's row is now findable; this is a
-          // real, correctly-handled reuse, never a fabricated duplicate.
-          conversation = await tx.conversation.findFirst({ where: conversationLookup })
-        }
-        if (!conversation) throw err
-      }
+      conversation = await tx.conversation.create({
+        data: {
+          ...conversationLookup,
+          channel: input.channelType,
+          status: 'OPEN',
+          startedAt: input.sentAt,
+          customerId: input.customerId,
+        },
+      })
+      wasConversationCreated = true
     }
 
     if (conversation.status === 'CLOSED') {

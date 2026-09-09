@@ -247,6 +247,18 @@ describe('sendMessageViaChannel — success / failure lifecycle (spec §5, §24)
     expect(err.message).not.toContain('ECONNRESET')
     expect(mocks.markFailed).toHaveBeenCalledWith('del-1', 'CHANNEL_PROVIDER_ERROR', expect.any(String))
   })
+
+  it('Prompt 18: an adapter-classified errorCode (e.g. a real Telegram failure) is used instead of the generic fallback, both when persisting and when thrown', async () => {
+    mocks.claimForSending.mockResolvedValue({ outcome: 'CLAIMED', delivery: makeDelivery() })
+    mocks.adapterSendMessage.mockResolvedValue({ success: false, errorMessage: 'Telegram API request failed (sendMessage)', errorCode: 'TELEGRAM_RATE_LIMITED', retryable: true })
+    mocks.markFailed.mockResolvedValue(makeDelivery({ status: 'FAILED', errorCode: 'TELEGRAM_RATE_LIMITED' }))
+
+    await expect(sendMessageViaChannel(makeAuthContext('owner'), 'conn-1', 'msg-1')).rejects.toMatchObject({
+      statusCode: 502,
+      code: 'TELEGRAM_RATE_LIMITED',
+    })
+    expect(mocks.markFailed).toHaveBeenCalledWith('del-1', 'TELEGRAM_RATE_LIMITED', 'Telegram API request failed (sendMessage)')
+  })
 })
 
 describe('sendMessageViaChannel — idempotency and concurrency (spec §9, §10, §11, §24)', () => {

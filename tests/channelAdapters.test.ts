@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { getChannelAdapter } from '../src/server/channels/channelAdapterRegistry'
 import { createMockAdapter } from '../src/server/channels/adapters/mockAdapter'
 import { channelTypeToConversationChannel } from '../src/server/channels/types'
@@ -46,5 +46,41 @@ describe('channelTypeToConversationChannel', () => {
     expect(channelTypeToConversationChannel('TELEGRAM')).toBe('TELEGRAM')
     expect(channelTypeToConversationChannel('WHATSAPP')).toBe('WHATSAPP')
     expect(channelTypeToConversationChannel('WEBSITE')).toBe('WEBSITE')
+  })
+})
+
+describe('channelAdapterRegistry — real Telegram Channel Integration (Prompt 18)', () => {
+  const ORIGINAL_TOKEN = process.env.TELEGRAM_BOT_TOKEN
+
+  afterEach(() => {
+    if (ORIGINAL_TOKEN === undefined) delete process.env.TELEGRAM_BOT_TOKEN
+    else process.env.TELEGRAM_BOT_TOKEN = ORIGINAL_TOKEN
+  })
+
+  it('with no TELEGRAM_BOT_TOKEN configured, TELEGRAM still returns the mock adapter — every pre-existing test/foundation flow keeps working unchanged', async () => {
+    delete process.env.TELEGRAM_BOT_TOKEN
+    const adapter = getChannelAdapter('TELEGRAM')
+    // The mock's own deterministic id format proves this is the mock, not the real adapter (which returns Telegram's numeric message_id).
+    const result = await adapter.sendMessage({ channelType: 'TELEGRAM', externalConversationId: 'c1', content: 'hi' })
+    expect(result.externalMessageId).toMatch(/^mock-out-/)
+  })
+
+  it('with TELEGRAM_BOT_TOKEN configured, TELEGRAM returns a real TelegramChannelAdapter instead of the mock', () => {
+    process.env.TELEGRAM_BOT_TOKEN = 'fake-test-token'
+    const adapter = getChannelAdapter('TELEGRAM')
+    // parseIncoming on a genuine Telegram Update shape only works on the real adapter — the mock would instead read (and fail to find) mock-shaped fields.
+    const normalized = adapter.parseIncoming({
+      update_id: 1,
+      message: { message_id: 5, date: 1735689600, chat: { id: 42, type: 'private' }, from: { id: 7 }, text: 'hi' },
+    })
+    expect(normalized).toMatchObject({ externalMessageId: 'telegram:42:5', externalConversationId: '42', externalCustomerId: '7', text: 'hi' })
+  })
+
+  it('WEBSITE/WHATSAPP remain mock-only regardless of TELEGRAM_BOT_TOKEN — Prompt 18 is explicitly Telegram-only, never WhatsApp', async () => {
+    process.env.TELEGRAM_BOT_TOKEN = 'fake-test-token'
+    for (const type of ['WEBSITE', 'WHATSAPP'] as const) {
+      const result = await getChannelAdapter(type).sendMessage({ channelType: type, externalConversationId: 'c1', content: 'hi' })
+      expect(result.externalMessageId).toMatch(/^mock-out-/)
+    }
   })
 })

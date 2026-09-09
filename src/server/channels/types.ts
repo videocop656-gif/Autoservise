@@ -67,6 +67,16 @@ export interface ChannelSendResult {
    * automatic retry worker exists (spec §13/§28).
    */
   retryable?: boolean
+  /**
+   * Present only on failure — a short, safe, adapter-classified code from a
+   * small fixed taxonomy (e.g. Telegram's TELEGRAM_AUTH_ERROR/
+   * TELEGRAM_RATE_LIMITED/etc. — see telegramApiClient.ts). Prompt 17's
+   * mock adapter never sets this, and channelDeliveryService.ts falls back
+   * to the generic `CHANNEL_PROVIDER_ERROR` when absent (Prompt 18 spec
+   * §28) — a purely additive field, so no existing adapter's behavior or
+   * existing test changes.
+   */
+  errorCode?: string
 }
 
 /**

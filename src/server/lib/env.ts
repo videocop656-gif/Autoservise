@@ -34,6 +34,24 @@ export const env = {
   get openAiModel(): string {
     return process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
   },
+  // Real Telegram Channel Integration (Prompt 18). Both deliberately
+  // NOT requireEnv(): the same "optional, mock-fallback" convention as
+  // openAiApiKey above — an unconfigured server must never crash, and
+  // every Telegram-specific code path (channelAdapterRegistry.ts,
+  // telegramSetupService.ts, the webhook route) treats an absent token
+  // exactly like aiProviderFactory.ts treats an absent OPENAI_API_KEY:
+  // fall back to already-existing mock/foundation behavior rather than
+  // fail. The token/secret themselves are never read anywhere else in
+  // this codebase (never Prisma, never a DTO, never a log field) — see
+  // telegramApiClient.ts and the webhook route's own doc comments.
+  get telegramBotToken(): string | undefined {
+    const value = process.env.TELEGRAM_BOT_TOKEN
+    return value && value.trim() !== '' ? value : undefined
+  },
+  get telegramWebhookSecret(): string | undefined {
+    const value = process.env.TELEGRAM_WEBHOOK_SECRET
+    return value && value.trim() !== '' ? value : undefined
+  },
 }
 
 export const SESSION_COOKIE_NAME = 'session_token'

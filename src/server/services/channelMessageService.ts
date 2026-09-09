@@ -9,7 +9,6 @@ import { recordInboundMessage } from '../repositories/channelInboundRepository'
 import { getChannelAdapter } from '../channels/channelAdapterRegistry'
 import { channelTypeToConversationChannel } from '../channels/types'
 import { resolveCustomerForInbound, linkCustomerIdentityBestEffort } from './channelCustomerService'
-import type { InboundChannelPayload } from '../validation/channel.schemas'
 
 const ANY_STAFF_ROLE = ['owner', 'admin', 'manager'] as const
 
@@ -73,8 +72,20 @@ async function loadDuplicateResult(ctx: AuthContext, channelConnectionId: string
  * (recordInboundMessage) — see channelInboundRepository.ts's own doc
  * comment for why. AI is never invoked here — no automatic response, no
  * escalation, exactly as scoped (spec §"NO AI CHANGES").
+ *
+ * `rawPayload` is deliberately typed `unknown`, not the foundation
+ * endpoint's own `InboundChannelPayload` shape (Prompt 18) — this function
+ * never reads a field off `rawPayload` directly, only ever passes it
+ * straight into `adapter.parseIncoming()` (whose own signature already
+ * takes `unknown`), so the previous, narrower type was never actually
+ * required. Widening it is a pure type-level change with zero behavior
+ * difference for the existing foundation caller (a Zod-validated
+ * `InboundChannelPayload` is still perfectly assignable to `unknown`) and
+ * is what lets the real Telegram webhook route (api/webhooks/telegram/)
+ * pass a raw, differently-shaped Telegram Update straight through to this
+ * same, otherwise-unmodified function.
  */
-export async function receiveIncoming(ctx: AuthContext, channelConnectionId: string, rawPayload: InboundChannelPayload): Promise<ReceiveIncomingResult> {
+export async function receiveIncoming(ctx: AuthContext, channelConnectionId: string, rawPayload: unknown): Promise<ReceiveIncomingResult> {
   requireRole(ctx, ...ANY_STAFF_ROLE)
 
   const connection = await resolveActiveConnection(ctx, channelConnectionId)
@@ -98,29 +109,60 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
     customerName: normalized.customerName,
   })
 
+  const recordArgs = {
+    tenantId: ctx.tenant.id,
+    businessId: ctx.business.id,
+    channelConnectionId,
+    channelType: channelTypeToConversationChannel(connection.type),
+    externalConversationId: normalized.externalConversationId,
+    externalMessageId: normalized.externalMessageId,
+    text: normalized.text,
+    sentAt: normalized.sentAt,
+    customerId: resolution.customerId,
+  }
+
   let recorded
   try {
-    recorded = await recordInboundMessage({
-      tenantId: ctx.tenant.id,
-      businessId: ctx.business.id,
-      channelConnectionId,
-      channelType: channelTypeToConversationChannel(connection.type),
-      externalConversationId: normalized.externalConversationId,
-      externalMessageId: normalized.externalMessageId,
-      text: normalized.text,
-      sentAt: normalized.sentAt,
-      customerId: resolution.customerId,
-    })
+    recorded = await recordInboundMessage(recordArgs)
   } catch (err) {
-    // Spec §"IDEMPOTENCY RACE TEST": a genuine concurrent duplicate loses
-    // the DB's own unique constraint (P2002) here, never creating a
-    // second Message — re-fetch and return the winner's row instead of
-    // ever surfacing the raw Prisma error.
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      const winner = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
-      if (winner) return winner
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) {
+      throw err
     }
-    throw err
+    // Spec §"IDEMPOTENCY RACE TEST": a genuine concurrent race lost a real
+    // DB unique constraint — recordInboundMessage()'s own transaction has
+    // already rolled back cleanly (see its own doc comment for why the
+    // recovery can't safely happen inside that same transaction). Two
+    // distinct races land here, both resolved without ever surfacing a raw
+    // Prisma error or creating a duplicate row:
+    //
+    // 1. A true duplicate delivery of the SAME externalMessageId (the
+    //    P2002 may be on ChannelMessage's or Conversation's constraint,
+    //    depending on exact timing) — the winner's ChannelMessage row for
+    //    THIS externalMessageId is already committed and visible (Postgres
+    //    only reports the conflict once the colliding transaction has
+    //    fully committed), so loadDuplicateResult() finds it directly.
+    const winner = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
+    if (winner) return winner
+
+    // 2. Two DIFFERENT first messages for the same brand-new external
+    //    thread, racing to create the Conversation row — no ChannelMessage
+    //    exists yet for THIS message's own externalMessageId (it belongs
+    //    to the other message), so (1) above correctly finds nothing.
+    //    Retrying the whole write once, in a fresh transaction, is now
+    //    safe and sufficient: the winner's Conversation is durably
+    //    committed, so this retry's own initial lookup finds it and
+    //    proceeds to create THIS message's own Message + ChannelMessage
+    //    normally — no further conflict, since its externalMessageId is
+    //    genuinely unique.
+    try {
+      recorded = await recordInboundMessage(recordArgs)
+    } catch (retryErr) {
+      if (retryErr instanceof Prisma.PrismaClientKnownRequestError && retryErr.code === 'P2002') {
+        const winnerAfterRetry = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
+        if (winnerAfterRetry) return winnerAfterRetry
+      }
+      throw retryErr
+    }
   }
 
   if (resolution.newIdentityToLink) {

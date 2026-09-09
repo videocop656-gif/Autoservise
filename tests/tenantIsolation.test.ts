@@ -65,6 +65,7 @@ const {
   sessionDeleteManyMock,
   channelConnectionFindManyMock,
   channelConnectionFindFirstMock,
+  channelConnectionFindUniqueMock,
   channelConnectionCreateMock,
   channelConnectionUpdateManyMock,
   channelMessageFindFirstMock,
@@ -147,6 +148,7 @@ const {
     sessionDeleteManyMock: vi.fn(),
     channelConnectionFindManyMock: vi.fn(),
     channelConnectionFindFirstMock: vi.fn(),
+    channelConnectionFindUniqueMock: vi.fn(),
     channelConnectionCreateMock: vi.fn(),
     channelConnectionUpdateManyMock: vi.fn(),
     channelMessageFindFirstMock: vi.fn(),
@@ -249,6 +251,7 @@ vi.mock('../src/server/db/prisma', () => {
     channelConnection: {
       findMany: channelConnectionFindManyMock,
       findFirst: channelConnectionFindFirstMock,
+      findUnique: channelConnectionFindUniqueMock,
       create: channelConnectionCreateMock,
       updateMany: channelConnectionUpdateManyMock,
     },
@@ -1483,6 +1486,19 @@ describe('tenant isolation — Channel Integration (Prompt 16)', () => {
     )
   })
 
+  it('Prompt 18: repository: findByIdUnscoped is deliberately NOT tenant-scoped — the ONE lookup the Telegram webhook route uses to resolve a connection before it has any tenant context of its own, by id alone', async () => {
+    await channelConnectionRepository.findByIdUnscoped(CHANNEL_OWNED_BY_B)
+    expect(channelConnectionFindUniqueMock).toHaveBeenCalledWith({ where: { id: CHANNEL_OWNED_BY_B } })
+  })
+
+  it('Prompt 18: repository: findOtherActiveByTypeAndExternalAccountId excludes the given connection id and is scoped to ACTIVE + the given type — the cross-tenant "same bot" guard', async () => {
+    await channelConnectionRepository.findOtherActiveByTypeAndExternalAccountId('TELEGRAM', 'bot-id-1', 'conn-a')
+    expect(channelConnectionFindFirstMock).toHaveBeenCalledWith({
+      where: { type: 'TELEGRAM', externalAccountId: 'bot-id-1', status: 'ACTIVE', id: { not: 'conn-a' } },
+      select: { id: true },
+    })
+  })
+
   it('service: tenant A cannot GET tenant B\'s channel — 404 CHANNEL_NOT_FOUND, scoped lookup never matches', async () => {
     channelConnectionFindFirstMock.mockResolvedValue(null)
     await expect(getChannelConnection(ctxA(), CHANNEL_OWNED_BY_B)).rejects.toMatchObject({ statusCode: 404, code: 'CHANNEL_NOT_FOUND' })
@@ -1614,21 +1630,18 @@ describe('tenant isolation — Channel Integration (Prompt 16)', () => {
       expect(channelMessageCreateMock).not.toHaveBeenCalled()
     })
 
-    it('a genuine concurrent-creation race on Conversation itself (P2002 on the @@unique([channelConnectionId, externalConversationId]) constraint) re-fetches the winner instead of ever throwing a raw DB error or creating a second Conversation — this exact race was found live against a real Supabase database before being fixed', async () => {
-      const winnerConversation = { id: 'conv-winner', tenantId: 'tenant-a', businessId: 'business-a', customerId: null, status: 'OPEN' }
-      conversationFindFirstMock
-        .mockResolvedValueOnce(null) // this transaction's own initial lookup: nothing yet
-        .mockResolvedValueOnce(winnerConversation) // race-recovery re-fetch after losing to the other transaction
+    it('Prompt 18: a P2002 on Conversation creation propagates UNCHANGED out of this function — it is deliberately never caught in here (see this function\'s own doc comment for why a same-transaction catch-and-refetch reliably 25P02s against real Postgres; recovery is channelMessageService.ts\'s job, one layer up, in a fresh transaction)', async () => {
+      conversationFindFirstMock.mockResolvedValueOnce(null) // this transaction's own initial lookup: nothing yet
       conversationCreateMock.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' })
       )
-      messageCreateMock.mockResolvedValue({ id: 'msg-on-winner', createdAt: baseInput.sentAt })
 
-      const result = await recordInboundMessage(baseInput)
-
-      expect(result.conversation.id).toBe('conv-winner')
-      expect(result.wasConversationCreated).toBe(false)
-      expect(messageCreateMock).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv-winner' }) }))
+      await expect(recordInboundMessage(baseInput)).rejects.toMatchObject({ code: 'P2002' })
+      expect(messageCreateMock).not.toHaveBeenCalled()
+      // The transaction never attempts a second query against the same tx
+      // after the P2002 — confirmed by conversationFindFirstMock only ever
+      // being called once (the initial lookup), never a same-tx re-fetch.
+      expect(conversationFindFirstMock).toHaveBeenCalledTimes(1)
     })
 
     it('a non-P2002 error creating the Conversation propagates unchanged, never silently swallowed as a race', async () => {
