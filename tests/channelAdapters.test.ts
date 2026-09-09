@@ -27,16 +27,17 @@ describe('createMockAdapter — never a real network call', () => {
 
   it('sendMessage always resolves (never throws, never touches the network) and returns a deterministic mock id on success', async () => {
     const adapter = createMockAdapter('WHATSAPP')
-    const result = await adapter.sendMessage({ conversationExternalId: 'c1', text: 'Hello' })
+    const result = await adapter.sendMessage({ channelType: 'WHATSAPP', externalConversationId: 'c1', content: 'Hello' })
     expect(result.success).toBe(true)
     expect(result.externalMessageId).toMatch(/^mock-out-/)
   })
 
-  it('sendMessage returns a controlled failure for the magic test string, never a thrown error', async () => {
+  it('sendMessage returns a controlled, retryable failure for the magic test string, never a thrown error', async () => {
     const adapter = createMockAdapter('WEBSITE')
-    const result = await adapter.sendMessage({ conversationExternalId: 'c1', text: '__mock_send_failure__' })
+    const result = await adapter.sendMessage({ channelType: 'WEBSITE', externalConversationId: 'c1', content: '__mock_send_failure__' })
     expect(result.success).toBe(false)
     expect(result.errorMessage).toBeTruthy()
+    expect(result.retryable).toBe(true)
   })
 })
 

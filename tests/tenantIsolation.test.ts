@@ -73,6 +73,12 @@ const {
   customerChannelIdentityCreateMock,
   conversationCreateMock,
   conversationUpdateMock,
+  messageFindFirstMock,
+  channelDeliveryFindFirstMock,
+  channelDeliveryFindUniqueMock,
+  channelDeliveryCreateMock,
+  channelDeliveryUpdateManyMock,
+  channelDeliveryUpdateMock,
   transactionMock,
   txTargetRef,
 } = vi.hoisted(() => {
@@ -149,6 +155,12 @@ const {
     customerChannelIdentityCreateMock: vi.fn(),
     conversationCreateMock: vi.fn(),
     conversationUpdateMock: vi.fn(),
+    messageFindFirstMock: vi.fn(),
+    channelDeliveryFindFirstMock: vi.fn(),
+    channelDeliveryFindUniqueMock: vi.fn(),
+    channelDeliveryCreateMock: vi.fn(),
+    channelDeliveryUpdateManyMock: vi.fn(),
+    channelDeliveryUpdateMock: vi.fn(),
     // $transaction supports two call shapes in this codebase: the array
     // form (workingHoursRepository.replaceAll, pre-existing) just returns
     // the array of operations unchanged; the interactive-callback form
@@ -209,7 +221,7 @@ vi.mock('../src/server/db/prisma', () => {
       create: conversationCreateMock,
       update: conversationUpdateMock,
     },
-    message: { findMany: messageFindManyMock, create: messageCreateMock, groupBy: messageGroupByMock },
+    message: { findFirst: messageFindFirstMock, findMany: messageFindManyMock, create: messageCreateMock, groupBy: messageGroupByMock },
     aiEscalation: {
       findFirst: aiEscalationFindFirstMock,
       findMany: aiEscalationFindManyMock,
@@ -242,6 +254,13 @@ vi.mock('../src/server/db/prisma', () => {
     },
     channelMessage: { findFirst: channelMessageFindFirstMock, create: channelMessageCreateMock },
     customerChannelIdentity: { findFirst: customerChannelIdentityFindFirstMock, create: customerChannelIdentityCreateMock },
+    channelDelivery: {
+      findFirst: channelDeliveryFindFirstMock,
+      findUnique: channelDeliveryFindUniqueMock,
+      create: channelDeliveryCreateMock,
+      updateMany: channelDeliveryUpdateManyMock,
+      update: channelDeliveryUpdateMock,
+    },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
     $queryRaw: queryRawMock,
@@ -286,6 +305,8 @@ import {
   deactivateChannelConnection,
 } from '../src/server/services/channelConnectionService'
 import { recordInboundMessage } from '../src/server/repositories/channelInboundRepository'
+import { channelDeliveryRepository } from '../src/server/repositories/channelDeliveryRepository'
+import { sendMessageViaChannel } from '../src/server/services/channelDeliveryService'
 import { analyzeMessage } from '../src/server/services/aiService'
 import { executeCheckAvailability } from '../src/server/ai/tools/checkAvailabilityTool'
 import { executeCreateAppointment } from '../src/server/ai/tools/createAppointmentTool'
@@ -1616,6 +1637,130 @@ describe('tenant isolation — Channel Integration (Prompt 16)', () => {
 
       await expect(recordInboundMessage(baseInput)).rejects.toThrow('connection reset')
       expect(messageCreateMock).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('tenant isolation — Channel Operations & Delivery (Prompt 17)', () => {
+  function ctxA() {
+    return makeAuthContext('owner', {
+      tenant: makeTenant({ id: 'tenant-a' }),
+      business: makeBusiness({ id: 'business-a', tenantId: 'tenant-a' }),
+    })
+  }
+
+  const CONNECTION_A = 'conn-a'
+  const MESSAGE_OWNED_BY_B = '999e4567-e89b-12d3-a456-426614174000'
+
+  it('repository: findByConnectionAndMessage is scoped by tenantId + businessId + channelConnectionId, never messageId alone', async () => {
+    await channelDeliveryRepository.findByConnectionAndMessage('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+    expect(channelDeliveryFindFirstMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: CONNECTION_A, messageId: 'msg-1' },
+    })
+  })
+
+  it('repository: messageRepository.findById is scoped by tenantId + businessId — a foreign-tenant message id never resolves', async () => {
+    messageFindFirstMock.mockResolvedValue(null)
+    const result = await messageRepository.findById('tenant-a', 'business-a', MESSAGE_OWNED_BY_B)
+    expect(messageFindFirstMock).toHaveBeenCalledWith({ where: { tenantId: 'tenant-a', businessId: 'business-a', id: MESSAGE_OWNED_BY_B } })
+    expect(result).toBeNull()
+  })
+
+  it('service: cross-tenant send is a plain 404 MESSAGE_NOT_FOUND — a foreign message id injected into the URL never resolves', async () => {
+    messageFindFirstMock.mockResolvedValue(null)
+    channelConnectionFindFirstMock.mockResolvedValue({ id: CONNECTION_A, tenantId: 'tenant-a', businessId: 'business-a', type: 'TELEGRAM', status: 'ACTIVE' })
+    await expect(sendMessageViaChannel(ctxA(), CONNECTION_A, MESSAGE_OWNED_BY_B)).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'MESSAGE_NOT_FOUND',
+    })
+    expect(channelDeliveryFindFirstMock).not.toHaveBeenCalled()
+    expect(channelDeliveryCreateMock).not.toHaveBeenCalled()
+  })
+
+  describe('channelDeliveryRepository.claimForSending — the concurrent-send guard (spec §10)', () => {
+    beforeEach(() => {
+      channelDeliveryFindFirstMock.mockReset()
+      channelDeliveryFindUniqueMock.mockReset()
+      channelDeliveryCreateMock.mockReset()
+      channelDeliveryUpdateManyMock.mockReset()
+    })
+
+    it('no existing row: creates one as PENDING, then claims it — attemptCount incremented exactly once', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce(null) // ensureDeliveryRow's own lookup
+      channelDeliveryCreateMock.mockResolvedValue({ id: 'del-1', status: 'PENDING', attemptCount: 0 })
+      channelDeliveryUpdateManyMock.mockResolvedValue({ count: 1 })
+      channelDeliveryFindUniqueMock.mockResolvedValue({ id: 'del-1', status: 'SENDING', attemptCount: 1 })
+
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+
+      expect(channelDeliveryCreateMock).toHaveBeenCalledWith({
+        data: { tenantId: 'tenant-a', businessId: 'business-a', channelConnectionId: CONNECTION_A, messageId: 'msg-1', status: 'PENDING', attemptCount: 0 },
+      })
+      expect(channelDeliveryUpdateManyMock).toHaveBeenCalledWith({
+        where: { id: 'del-1', status: { in: ['PENDING', 'FAILED'] } },
+        data: { status: 'SENDING', attemptCount: { increment: 1 }, lastAttemptAt: expect.any(Date) },
+      })
+      expect(claim).toMatchObject({ outcome: 'CLAIMED' })
+    })
+
+    it('a genuine concurrent-creation race (P2002 on @@unique([channelConnectionId, messageId])) re-fetches the winner\'s row instead of throwing a raw DB error or creating a second row', async () => {
+      channelDeliveryFindFirstMock
+        .mockResolvedValueOnce(null) // this call's own initial lookup: nothing yet
+        .mockResolvedValueOnce({ id: 'del-winner', status: 'PENDING', attemptCount: 0 }) // race-recovery re-fetch
+      channelDeliveryCreateMock.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: '5.22.0' })
+      )
+      channelDeliveryUpdateManyMock.mockResolvedValue({ count: 1 })
+      channelDeliveryFindUniqueMock.mockResolvedValue({ id: 'del-winner', status: 'SENDING', attemptCount: 1 })
+
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+
+      expect(claim.delivery.id).toBe('del-winner')
+      expect(claim.outcome).toBe('CLAIMED')
+    })
+
+    it('a non-P2002 error creating the row propagates unchanged, never silently swallowed as a race', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce(null)
+      channelDeliveryCreateMock.mockRejectedValue(new Error('connection reset'))
+      await expect(channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')).rejects.toThrow('connection reset')
+    })
+
+    it('an existing SENT row short-circuits to ALREADY_SENT without ever attempting the compare-and-set update', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce({ id: 'del-1', status: 'SENT', attemptCount: 1, externalMessageId: 'mock-out-1' })
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+      expect(claim.outcome).toBe('ALREADY_SENT')
+      expect(channelDeliveryUpdateManyMock).not.toHaveBeenCalled()
+    })
+
+    it('an existing SENDING row short-circuits to IN_PROGRESS without ever attempting the compare-and-set update', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce({ id: 'del-1', status: 'SENDING', attemptCount: 1 })
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+      expect(claim.outcome).toBe('IN_PROGRESS')
+      expect(channelDeliveryUpdateManyMock).not.toHaveBeenCalled()
+    })
+
+    it('losing the compare-and-set race (updateMany matches zero rows) re-fetches the real current state rather than reporting a stale CLAIMED', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce({ id: 'del-1', status: 'PENDING', attemptCount: 0 })
+      channelDeliveryUpdateManyMock.mockResolvedValue({ count: 0 }) // another concurrent request's UPDATE won first
+      channelDeliveryFindUniqueMock.mockResolvedValue({ id: 'del-1', status: 'SENDING', attemptCount: 1 })
+
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+      expect(claim.outcome).toBe('IN_PROGRESS')
+    })
+
+    it('a retry on a FAILED row is claimable again — same row, attemptCount incremented, never a second row created', async () => {
+      channelDeliveryFindFirstMock.mockResolvedValueOnce({ id: 'del-1', status: 'FAILED', attemptCount: 1 })
+      channelDeliveryUpdateManyMock.mockResolvedValue({ count: 1 })
+      channelDeliveryFindUniqueMock.mockResolvedValue({ id: 'del-1', status: 'SENDING', attemptCount: 2 })
+
+      const claim = await channelDeliveryRepository.claimForSending('tenant-a', 'business-a', CONNECTION_A, 'msg-1')
+
+      expect(channelDeliveryCreateMock).not.toHaveBeenCalled()
+      expect(channelDeliveryUpdateManyMock).toHaveBeenCalledWith({
+        where: { id: 'del-1', status: { in: ['PENDING', 'FAILED'] } },
+        data: { status: 'SENDING', attemptCount: { increment: 1 }, lastAttemptAt: expect.any(Date) },
+      })
+      expect(claim).toMatchObject({ outcome: 'CLAIMED', delivery: { id: 'del-1', attemptCount: 2 } })
     })
   })
 })

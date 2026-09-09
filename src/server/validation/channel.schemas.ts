@@ -3,6 +3,12 @@ import { ChannelType, ChannelConnectionStatus } from '@prisma/client'
 
 export const channelIdParamSchema = z.string().uuid()
 
+// Prompt 17 — the :messageId segment of POST
+// /api/channels/:id/messages/:messageId/send. A separate, identically-typed
+// export (rather than reusing channelIdParamSchema under an unrelated name)
+// so each route param stays self-documenting at its call site.
+export const channelDeliveryMessageIdParamSchema = z.string().uuid()
+
 export const channelTypeFilterSchema = z.nativeEnum(ChannelType)
 export const channelStatusFilterSchema = z.nativeEnum(ChannelConnectionStatus)
 
@@ -56,12 +62,6 @@ export const inboundChannelPayloadSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 })
 
-export const outboundChannelPayloadSchema = z.object({
-  conversationId: z.string().uuid(),
-  text: z.string().trim().min(1, 'text must not be empty').max(10000),
-})
-
 export type CreateChannelConnectionInput = z.infer<typeof createChannelConnectionSchema>
 export type UpdateChannelConnectionInput = z.infer<typeof updateChannelConnectionSchema>
 export type InboundChannelPayload = z.infer<typeof inboundChannelPayloadSchema>
-export type OutboundChannelPayload = z.infer<typeof outboundChannelPayloadSchema>

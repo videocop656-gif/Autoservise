@@ -3,8 +3,8 @@ import {
   createChannelConnectionSchema,
   updateChannelConnectionSchema,
   inboundChannelPayloadSchema,
-  outboundChannelPayloadSchema,
   channelIdParamSchema,
+  channelDeliveryMessageIdParamSchema,
 } from '../src/server/validation/channel.schemas'
 
 describe('createChannelConnectionSchema', () => {
@@ -116,13 +116,12 @@ describe('inboundChannelPayloadSchema', () => {
   })
 })
 
-describe('outboundChannelPayloadSchema', () => {
-  it('accepts a valid payload', () => {
-    expect(() => outboundChannelPayloadSchema.parse({ conversationId: '11111111-1111-1111-1111-111111111111', text: 'Hi' })).not.toThrow()
+describe('channelDeliveryMessageIdParamSchema', () => {
+  it('accepts a valid uuid', () => {
+    expect(() => channelDeliveryMessageIdParamSchema.parse('11111111-1111-1111-1111-111111111111')).not.toThrow()
   })
-
-  it('rejects a non-uuid conversationId', () => {
-    expect(() => outboundChannelPayloadSchema.parse({ conversationId: 'not-a-uuid', text: 'Hi' })).toThrow()
+  it('rejects a non-uuid', () => {
+    expect(() => channelDeliveryMessageIdParamSchema.parse('not-a-uuid')).toThrow()
   })
 })
 

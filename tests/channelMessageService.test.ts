@@ -5,9 +5,7 @@ import { makeAuthContext } from './helpers/fixtures'
 const mocks = vi.hoisted(() => ({
   connectionFindById: vi.fn(),
   channelMessageFindByConnectionAndExternalMessageId: vi.fn(),
-  conversationFindById: vi.fn(),
   conversationFindByChannelConnectionAndExternalId: vi.fn(),
-  messageCreateAndTouchConversation: vi.fn(),
   recordInboundMessage: vi.fn(),
   resolveCustomerForInbound: vi.fn(),
   linkCustomerIdentityBestEffort: vi.fn(),
@@ -21,12 +19,8 @@ vi.mock('../src/server/repositories/channelMessageRepository', () => ({
 }))
 vi.mock('../src/server/repositories/conversationRepository', () => ({
   conversationRepository: {
-    findById: mocks.conversationFindById,
     findByChannelConnectionAndExternalId: mocks.conversationFindByChannelConnectionAndExternalId,
   },
-}))
-vi.mock('../src/server/repositories/messageRepository', () => ({
-  messageRepository: { createAndTouchConversation: mocks.messageCreateAndTouchConversation },
 }))
 vi.mock('../src/server/repositories/channelInboundRepository', () => ({
   recordInboundMessage: mocks.recordInboundMessage,
@@ -36,7 +30,11 @@ vi.mock('../src/server/services/channelCustomerService', () => ({
   linkCustomerIdentityBestEffort: mocks.linkCustomerIdentityBestEffort,
 }))
 
-import { receiveIncoming, sendOutbound } from '../src/server/services/channelMessageService'
+// The old sendOutbound() function that used to live in this service has
+// been removed (Prompt 17) — see channelDeliveryService.test.ts for its
+// full ChannelDelivery-tracked replacement. receiveIncoming() (below) is
+// untouched by that change; this file now covers only the inbound pipeline.
+import { receiveIncoming } from '../src/server/services/channelMessageService'
 
 function makeConnection(overrides: Record<string, unknown> = {}) {
   return {
@@ -204,63 +202,5 @@ describe('receiveIncoming — idempotency', () => {
     mocks.channelMessageFindByConnectionAndExternalMessageId.mockResolvedValue(null)
     mocks.recordInboundMessage.mockRejectedValue(new Error('boom'))
     await expect(receiveIncoming(makeAuthContext('owner'), 'conn-1', makePayload())).rejects.toThrow('boom')
-  })
-})
-
-describe('sendOutbound', () => {
-  it('an active connection + a conversation genuinely linked to it → mock send succeeds and records an OUTBOUND/STAFF message', async () => {
-    mocks.connectionFindById.mockResolvedValue(makeConnection())
-    mocks.conversationFindById.mockResolvedValue({ id: 'conv-1', channelConnectionId: 'conn-1', externalConversationId: 'ext-conv-1' })
-    mocks.messageCreateAndTouchConversation.mockResolvedValue({ id: 'msg-out-1', direction: 'OUTBOUND', senderType: 'STAFF' })
-
-    const result = await sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'conv-1', text: 'Hi there' })
-    expect(result).toMatchObject({ direction: 'OUTBOUND', senderType: 'STAFF' })
-    expect(mocks.messageCreateAndTouchConversation).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      expect.objectContaining({ conversationId: 'conv-1', direction: 'OUTBOUND', senderType: 'STAFF', content: 'Hi there' })
-    )
-  })
-
-  it('an inactive connection fails outbound with a controlled error, no message recorded', async () => {
-    mocks.connectionFindById.mockResolvedValue(makeConnection({ status: 'INACTIVE' }))
-    await expect(sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'conv-1', text: 'Hi' })).rejects.toMatchObject({
-      statusCode: 409,
-      code: 'CHANNEL_INACTIVE',
-    })
-    expect(mocks.messageCreateAndTouchConversation).not.toHaveBeenCalled()
-  })
-
-  it('a foreign/missing conversation, or one linked to a different connection, is rejected as CHANNEL_CONVERSATION_NOT_FOUND (404)', async () => {
-    mocks.connectionFindById.mockResolvedValue(makeConnection())
-    mocks.conversationFindById.mockResolvedValue(null)
-    await expect(sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'foreign', text: 'Hi' })).rejects.toMatchObject({
-      statusCode: 404,
-      code: 'CHANNEL_CONVERSATION_NOT_FOUND',
-    })
-
-    mocks.conversationFindById.mockResolvedValue({ id: 'conv-2', channelConnectionId: 'a-different-connection', externalConversationId: 'x' })
-    await expect(sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'conv-2', text: 'Hi' })).rejects.toMatchObject({
-      statusCode: 404,
-      code: 'CHANNEL_CONVERSATION_NOT_FOUND',
-    })
-    expect(mocks.messageCreateAndTouchConversation).not.toHaveBeenCalled()
-  })
-
-  it('an adapter failure maps to a controlled 502 CHANNEL_SEND_FAILED, never a raw provider error, and never records a message', async () => {
-    mocks.connectionFindById.mockResolvedValue(makeConnection())
-    mocks.conversationFindById.mockResolvedValue({ id: 'conv-1', channelConnectionId: 'conn-1', externalConversationId: 'ext-conv-1' })
-    await expect(
-      sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'conv-1', text: '__mock_send_failure__' })
-    ).rejects.toMatchObject({ statusCode: 502, code: 'CHANNEL_SEND_FAILED' })
-    expect(mocks.messageCreateAndTouchConversation).not.toHaveBeenCalled()
-  })
-
-  it('no real external network request is ever made — the mock adapter is the only thing sendMessage can reach', async () => {
-    // Structural guarantee: channelAdapterRegistry only ever returns createMockAdapter() instances (see channelAdapterRegistry.ts) — there is no fetch/http client anywhere in the outbound path to intercept, which is itself the proof.
-    mocks.connectionFindById.mockResolvedValue(makeConnection())
-    mocks.conversationFindById.mockResolvedValue({ id: 'conv-1', channelConnectionId: 'conn-1', externalConversationId: 'ext-conv-1' })
-    mocks.messageCreateAndTouchConversation.mockResolvedValue({ id: 'msg-out-1' })
-    await expect(sendOutbound(makeAuthContext('owner'), 'conn-1', { conversationId: 'conv-1', text: 'Hi' })).resolves.toBeDefined()
   })
 })

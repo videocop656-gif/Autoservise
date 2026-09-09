@@ -17,6 +17,7 @@ import type {
   AiLog,
   User,
   ChannelConnection,
+  ChannelDelivery,
 } from '@prisma/client'
 
 /**
@@ -380,9 +381,16 @@ export interface MessageDto {
   senderType: Message['senderType']
   content: string
   createdAt: Date
+  // Channel Operations & Delivery Foundation (Prompt 17). Present only when
+  // a ChannelDelivery row exists for this Message AND the caller included it
+  // (see conversationRepository.ts's findByIdWithDetail) — never present for
+  // an INBOUND Message or one that was never sent through a channel.
+  delivery?: ChannelDeliveryDto
 }
 
-export function toMessageDto(message: Message): MessageDto {
+type MessageWithOptionalDelivery = Message & { channelDelivery?: ChannelDelivery | null }
+
+export function toMessageDto(message: MessageWithOptionalDelivery): MessageDto {
   return {
     id: message.id,
     conversationId: message.conversationId,
@@ -390,6 +398,7 @@ export function toMessageDto(message: Message): MessageDto {
     senderType: message.senderType,
     content: message.content,
     createdAt: message.createdAt,
+    ...(message.channelDelivery ? { delivery: toChannelDeliveryDto(message.channelDelivery) } : {}),
   }
 }
 
@@ -405,6 +414,12 @@ export interface ConversationDto {
   closedAt: Date | null
   createdAt: Date
   updatedAt: Date
+  // Channel Operations & Delivery Foundation (Prompt 17) — always present
+  // (null for a manually-created MANUAL/PHONE/OTHER conversation), so the
+  // client can tell which ChannelConnection an eligible outbound Message
+  // could be sent through, without exposing externalConversationId (an
+  // internal provider-facing id, never needed by the UI).
+  channelConnectionId: string | null
   // Only present on the single-GET response (spec §24); list items omit
   // both the summaries and the messages array.
   customer?: { id: string; firstName: string; lastName: string | null } | null
@@ -415,7 +430,7 @@ export interface ConversationDto {
 type ConversationWithOptionalDetail = Conversation & {
   customer?: { id: string; firstName: string; lastName: string | null } | null
   customerRequest?: { id: string; subject: string; status: CustomerRequest['status'] } | null
-  messages?: Message[]
+  messages?: MessageWithOptionalDelivery[]
 }
 
 export function toConversationDto(conversation: ConversationWithOptionalDetail): ConversationDto {
@@ -431,6 +446,7 @@ export function toConversationDto(conversation: ConversationWithOptionalDetail):
     closedAt: conversation.closedAt,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
+    channelConnectionId: conversation.channelConnectionId,
     ...('customer' in conversation ? { customer: conversation.customer ?? null } : {}),
     ...('customerRequest' in conversation ? { customerRequest: conversation.customerRequest ?? null } : {}),
     ...(conversation.messages ? { messages: conversation.messages.map(toMessageDto) } : {}),
@@ -601,5 +617,50 @@ export function toChannelConnectionDto(connection: ChannelConnection): ChannelCo
     config: (connection.config as Record<string, unknown> | null) ?? null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
+  }
+}
+
+/**
+ * Channel Operations & Delivery Foundation (Prompt 17). Never `tenantId`/
+ * `businessId` (spec §18) — same boundary as every other DTO in this file.
+ * `sentAt` is the client-facing name for the internal `deliveredAt` column
+ * (spec's own example response names it `sentAt`; "delivered" and "sent"
+ * are the same event for a mock adapter with no separate delivery receipt).
+ * `errorCode`/`errorMessage` are included beyond the spec's own
+ * ("примерно") example shape because they're what actually powers the
+ * minimal failure indicator the frontend needs (spec §27) — both are
+ * already a short, safe, whitelisted-shape string by construction
+ * (channelDeliveryService.ts never stores a raw provider/Prisma error
+ * here), so returning them is safe.
+ */
+export interface ChannelDeliveryDto {
+  id: string
+  messageId: string
+  channelConnectionId: string
+  status: ChannelDelivery['status']
+  attemptCount: number
+  externalMessageId: string | null
+  lastAttemptAt: Date | null
+  sentAt: Date | null
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toChannelDeliveryDto(delivery: ChannelDelivery): ChannelDeliveryDto {
+  return {
+    id: delivery.id,
+    messageId: delivery.messageId,
+    channelConnectionId: delivery.channelConnectionId,
+    status: delivery.status,
+    attemptCount: delivery.attemptCount,
+    externalMessageId: delivery.externalMessageId,
+    lastAttemptAt: delivery.lastAttemptAt,
+    sentAt: delivery.deliveredAt,
+    errorCode: delivery.errorCode,
+    errorMessage: delivery.errorMessage,
+    createdAt: delivery.createdAt,
+    updatedAt: delivery.updatedAt,
   }
 }

@@ -192,6 +192,22 @@ enum ChannelConnectionStatus {
   INACTIVE
 }
 
+// Channel Operations & Delivery Foundation (Prompt 17) — the outbound
+// delivery lifecycle for one Message on one ChannelConnection. Deliberately
+// just these four values (spec §1 explicitly forbids inventing
+// DELIVERED/READ/QUEUED/RETRYING for this foundation stage):
+// PENDING — created, never yet attempted. SENDING — a claimed, in-flight
+// attempt (see ChannelDelivery's own comment for how the claim is made
+// race-safe). SENT — the adapter confirmed success. FAILED — the last
+// attempt failed; safe to retry (retry reuses this same row, see
+// channelDeliveryRepository.ts).
+enum ChannelDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -218,6 +234,7 @@ model Tenant {
   channelConnections             ChannelConnection[]
   channelMessages                ChannelMessage[]
   customerChannelIdentities      CustomerChannelIdentity[]
+  channelDeliveries              ChannelDelivery[]
 
   @@map("tenants")
 }
@@ -285,6 +302,7 @@ model Business {
   channelConnections             ChannelConnection[]
   channelMessages                ChannelMessage[]
   customerChannelIdentities      CustomerChannelIdentity[]
+  channelDeliveries              ChannelDelivery[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -777,6 +795,13 @@ model Message {
   // channel webhook (channelMessageService.ts), never for a manually
   // created or outbound-only Message.
   channelMessage ChannelMessage?
+  // At most one — enforced by ChannelDelivery's own
+  // @@unique([channelConnectionId, messageId]) (which is also, in practice,
+  // at most one per messageId alone, since a Message belongs to exactly one
+  // Conversation, which is linked to at most one ChannelConnection — see
+  // ChannelDelivery's own comment). Present only for an OUTBOUND/STAFF
+  // Message that a real channel send was attempted for (Prompt 17).
+  channelDelivery ChannelDelivery?
 
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
@@ -986,6 +1011,7 @@ model ChannelConnection {
   conversations             Conversation[]
   channelMessages           ChannelMessage[]
   customerChannelIdentities CustomerChannelIdentity[]
+  channelDeliveries         ChannelDelivery[]
 
   // Prevents accidentally creating two connections for the same external
   // account under the same business (spec §"UNIQUE CONSTRAINT") — a real,
@@ -1080,6 +1106,97 @@ model CustomerChannelIdentity {
   @@index([tenantId, businessId])
   @@index([customerId])
   @@map("customer_channel_identities")
+}
+
+// Channel Operations & Delivery Foundation (Prompt 17) — tracks the outbound
+// delivery attempt(s) of exactly one internal Message through exactly one
+// ChannelConnection. Never a substitute for Message (the actual content
+// lives there, once, same principle as ChannelMessage) and never a queue —
+// there is no background worker anywhere in this codebase; every state
+// transition happens synchronously inside channelDeliveryService.ts's own
+// request handling.
+//
+// Retry never creates a second row: `attemptCount` increments on the SAME
+// row every time channelDeliveryService.ts re-attempts a FAILED delivery
+// (spec §3/§9) — the @@unique constraint below is what makes a second row
+// for the same (connection, message) pair impossible even under a race, not
+// just an application-level convention.
+//
+// Concurrent-send protection (spec §10) is a plain conditional `updateMany`
+// compare-and-set, not an in-memory mutex and not SERIALIZABLE isolation:
+// channelDeliveryRepository.ts's claimForSending() only transitions
+// PENDING/FAILED -> SENDING when its `updateMany` WHERE clause (id +
+// current status) still matches at the moment Postgres applies the row
+// lock — two concurrent claims can never both succeed, because the loser's
+// WHERE clause stops matching the instant the winner's UPDATE commits. This
+// works correctly across multiple serverless instances since the guarantee
+// lives entirely in the database row, never in process memory.
+model ChannelDelivery {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  channelConnectionId String
+  // The specific OUTBOUND/STAFF Message this delivery is for — see
+  // channelDeliveryService.ts for the full eligibility check (direction,
+  // senderType, Conversation ownership, channel-type match) performed
+  // before a ChannelDelivery row is ever created for it.
+  messageId String
+
+  status       ChannelDeliveryStatus @default(PENDING)
+  attemptCount Int                   @default(0)
+
+  // Set at the start of every claimed attempt (PENDING/FAILED -> SENDING),
+  // whether it ends in SENT or FAILED.
+  lastAttemptAt DateTime?
+  // Set only on a successful transition to SENT.
+  deliveredAt DateTime?
+  // Set only on a transition to FAILED.
+  failedAt DateTime?
+
+  // A short, safe, whitelisted code from channelDeliveryService.ts's own
+  // fixed error taxonomy (e.g. CHANNEL_PROVIDER_ERROR) — never a raw
+  // provider error code. Cleared back to null on a later successful SENT.
+  errorCode String?
+  // A short, safe, human-readable message — never a raw provider error,
+  // stack trace, or SQL message. Cleared back to null on a later successful
+  // SENT.
+  errorMessage String?
+
+  // The channel's own id for the sent message, present only once SENT —
+  // same convention as ChannelMessage.externalMessageId, but for the
+  // outbound direction.
+  externalMessageId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict: same principle as ChannelMessage.channelConnection /
+  // CustomerChannelIdentity.channelConnection — delivery history is
+  // integration metadata about a ChannelConnection and must survive it
+  // being deactivated (deactivation never deletes anything).
+  channelConnection ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
+  // Cascade: unlike channelConnection above, a ChannelDelivery has no
+  // meaning independent of the Message it describes — same "owned child"
+  // principle ChannelMessage already has toward Message.
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  // Spec §3's preferred constraint: at most one ChannelDelivery per
+  // (connection, message) pair — retry reuses this row, it never creates a
+  // second one. The second, single-column constraint below is required by
+  // Prisma for Message's one-to-one `channelDelivery` reverse relation (same
+  // reason ChannelMessage carries both @@unique([channelConnectionId,
+  // externalMessageId]) and @@unique([messageId])) — it's also always true
+  // in practice anyway, since a Message's Conversation is linked to at most
+  // one ChannelConnection.
+  @@unique([channelConnectionId, messageId])
+  @@unique([messageId])
+  @@index([tenantId, businessId])
+  @@index([tenantId, businessId, status])
+  @@index([messageId])
+  @@map("channel_deliveries")
 }
 
 model Session {

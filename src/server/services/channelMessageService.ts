@@ -5,7 +5,6 @@ import { requireRole } from '../middleware/requireRole'
 import { channelConnectionRepository } from '../repositories/channelConnectionRepository'
 import { channelMessageRepository } from '../repositories/channelMessageRepository'
 import { conversationRepository } from '../repositories/conversationRepository'
-import { messageRepository } from '../repositories/messageRepository'
 import { recordInboundMessage } from '../repositories/channelInboundRepository'
 import { getChannelAdapter } from '../channels/channelAdapterRegistry'
 import { channelTypeToConversationChannel } from '../channels/types'
@@ -24,7 +23,15 @@ export interface ReceiveIncomingResult {
   conversationReopened: boolean
 }
 
-async function resolveActiveConnection(ctx: AuthContext, channelConnectionId: string) {
+/**
+ * Shared by the inbound pipeline below and by channelDeliveryService.ts's
+ * outbound pipeline (Prompt 17) — exported rather than duplicated, since
+ * both need the exact same "does this connection exist for this
+ * tenant/business, and is it ACTIVE" check with the exact same error codes.
+ * This is a non-behavior-changing refactor of an already-internal helper:
+ * receiveIncoming() below calls it exactly as before.
+ */
+export async function resolveActiveConnection(ctx: AuthContext, channelConnectionId: string) {
   const connection = await channelConnectionRepository.findById(ctx.tenant.id, ctx.business.id, channelConnectionId)
   if (!connection) {
     throw new ApiError(404, 'CHANNEL_NOT_FOUND', 'Channel connection not found')
@@ -131,39 +138,14 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
   }
 }
 
-/**
- * Outbound foundation (spec §"OUTBOUND FOUNDATION"/"OUTBOUND SECURITY") —
- * `conversationId` must belong to the requesting tenant/business AND be
- * linked to precisely this channel connection; an inactive connection
- * never sends. On a real (mock, here) send success, the message is
- * recorded through the EXISTING messageRepository.createAndTouchConversation()
- * — reusing the same infra every manually-sent staff message already uses
- * (spec §"ANALYTICS COMPATIBILITY": no second message-counting system) —
- * never on a failed send, so a failed adapter call never fabricates a
- * message that was never actually delivered.
- */
-export async function sendOutbound(ctx: AuthContext, channelConnectionId: string, input: { conversationId: string; text: string }) {
-  requireRole(ctx, ...ANY_STAFF_ROLE)
-
-  const connection = await resolveActiveConnection(ctx, channelConnectionId)
-
-  const conversation = await conversationRepository.findById(ctx.tenant.id, ctx.business.id, input.conversationId)
-  if (!conversation || conversation.channelConnectionId !== channelConnectionId) {
-    throw new ApiError(404, 'CHANNEL_CONVERSATION_NOT_FOUND', 'Conversation not found for this channel connection')
-  }
-
-  const adapter = getChannelAdapter(connection.type)
-  const result = await adapter.sendMessage({ conversationExternalId: conversation.externalConversationId ?? '', text: input.text })
-  if (!result.success) {
-    throw new ApiError(502, 'CHANNEL_SEND_FAILED', 'Failed to send the message through this channel')
-  }
-
-  return messageRepository.createAndTouchConversation(ctx.tenant.id, ctx.business.id, {
-    tenantId: ctx.tenant.id,
-    businessId: ctx.business.id,
-    conversationId: conversation.id,
-    direction: 'OUTBOUND',
-    senderType: 'STAFF',
-    content: input.text,
-  })
-}
+// The pre-Prompt-17 "sendOutbound()" foundation function that lived here has
+// been removed. It was never wired to an API route (see
+// docs/DEVELOPMENT_ROADMAP.md's Prompt 16 entry: "outbound foundation" only)
+// and had no delivery-state tracking, retry semantics, or concurrent-send
+// protection at all — exactly the gap Prompt 17 exists to fill. Its
+// replacement, channelDeliveryService.ts's sendMessageViaChannel(), covers
+// the same "connection must be ACTIVE, Conversation must genuinely belong to
+// this connection" checks (reusing resolveActiveConnection() above) plus the
+// full ChannelDelivery lifecycle this stage requires. No client or frontend
+// code ever called the old function, so this is not an observable behavior
+// change for anything reachable through the API.

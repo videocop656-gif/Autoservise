@@ -15,6 +15,23 @@ type ConversationStatus = 'OPEN' | 'CLOSED'
 type MessageDirection = 'INBOUND' | 'OUTBOUND'
 type MessageSenderType = 'CUSTOMER' | 'STAFF' | 'SYSTEM'
 
+type ChannelDeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED'
+
+interface ChannelDeliveryDto {
+  id: string
+  messageId: string
+  channelConnectionId: string
+  status: ChannelDeliveryStatus
+  attemptCount: number
+  externalMessageId: string | null
+  lastAttemptAt: string | null
+  sentAt: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 interface MessageDto {
   id: string
   conversationId: string
@@ -22,6 +39,8 @@ interface MessageDto {
   senderType: MessageSenderType
   content: string
   createdAt: string
+  // Channel Operations & Delivery Foundation (Prompt 17) — present only once a send through a channel has been attempted for this message.
+  delivery?: ChannelDeliveryDto
 }
 
 interface ConversationDto {
@@ -36,6 +55,8 @@ interface ConversationDto {
   closedAt: string | null
   createdAt: string
   updatedAt: string
+  // Prompt 17 — null for a manually-created conversation; set for one linked to a real ChannelConnection (Prompt 16).
+  channelConnectionId: string | null
   customer?: { id: string; firstName: string; lastName: string | null } | null
   customerRequest?: { id: string; subject: string; status: string } | null
   messages?: MessageDto[]
@@ -110,6 +131,8 @@ export default function ConversationsSettingsPage() {
   const [messageSenderType, setMessageSenderType] = useState<MessageSenderType>('STAFF')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [channelSendError, setChannelSendError] = useState<string | null>(null)
+  const [channelSendingId, setChannelSendingId] = useState<string | null>(null)
 
   function customerLabel(id: string | null): string {
     if (!id) return '—'
@@ -228,6 +251,25 @@ export default function ConversationsSettingsPage() {
       await loadConversations()
     } catch (err) {
       setDetailError(err instanceof ApiClientError ? err.message : 'Не удалось изменить статус.')
+    }
+  }
+
+  // Channel Operations & Delivery Foundation (Prompt 17) — minimal
+  // operational action only: send one already-existing OUTBOUND/STAFF
+  // message through the conversation's own ChannelConnection. No AI send
+  // button, no auto-reply, no new messaging surface — this reuses the
+  // existing conversation detail panel exactly as spec §27 asks.
+  async function handleSendViaChannel(messageId: string) {
+    if (!detail?.channelConnectionId) return
+    setChannelSendError(null)
+    setChannelSendingId(messageId)
+    try {
+      await apiFetch(`/api/channels/${detail.channelConnectionId}/messages/${messageId}/send`, { method: 'POST' })
+      await loadDetail(detail.id)
+    } catch (err) {
+      setChannelSendError(err instanceof ApiClientError ? err.message : 'Не удалось отправить сообщение через канал.')
+    } finally {
+      setChannelSendingId(null)
     }
   }
 
@@ -453,18 +495,55 @@ export default function ConversationsSettingsPage() {
                 <>
                   <div className="space-y-2 rounded-md border p-3">
                     {detail.messages?.length === 0 && <p className="text-sm text-muted-foreground">Сообщений пока нет.</p>}
-                    {detail.messages?.map((m) => (
-                      <div key={m.id} className={`rounded-md p-2 text-sm ${m.direction === 'INBOUND' ? 'bg-muted' : 'bg-accent'}`}>
-                        <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>{m.direction}</span>
-                          <span>·</span>
-                          <span>{m.senderType}</span>
-                          <span>·</span>
-                          <span>{new Date(m.createdAt).toLocaleString()}</span>
+                    {detail.messages?.map((m) => {
+                      const canSendViaChannel = !!detail.channelConnectionId && m.direction === 'OUTBOUND' && m.senderType === 'STAFF'
+                      return (
+                        <div key={m.id} className={`rounded-md p-2 text-sm ${m.direction === 'INBOUND' ? 'bg-muted' : 'bg-accent'}`}>
+                          <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                            <span>{m.direction}</span>
+                            <span>·</span>
+                            <span>{m.senderType}</span>
+                            <span>·</span>
+                            <span>{new Date(m.createdAt).toLocaleString()}</span>
+                          </div>
+                          <div>{m.content}</div>
+                          {canSendViaChannel && (
+                            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+                              {m.delivery && (
+                                <span
+                                  className={`rounded px-1.5 py-0.5 font-medium ${
+                                    m.delivery.status === 'SENT'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : m.delivery.status === 'FAILED'
+                                        ? 'bg-red-100 text-red-800'
+                                        : 'bg-muted text-muted-foreground'
+                                  }`}
+                                  title={m.delivery.errorMessage ?? undefined}
+                                >
+                                  {m.delivery.status} · попыток: {m.delivery.attemptCount}
+                                </span>
+                              )}
+                              {canManage && m.delivery?.status !== 'SENT' && m.delivery?.status !== 'SENDING' && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={channelSendingId === m.id}
+                                  onClick={() => handleSendViaChannel(m.id)}
+                                >
+                                  {channelSendingId === m.id
+                                    ? 'Отправка...'
+                                    : m.delivery?.status === 'FAILED'
+                                      ? 'Повторить отправку'
+                                      : 'Отправить через канал'}
+                                </Button>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div>{m.content}</div>
-                      </div>
-                    ))}
+                      )
+                    })}
+                    {channelSendError && <p className="text-sm text-destructive">{channelSendError}</p>}
                   </div>
 
                   {canManage && (

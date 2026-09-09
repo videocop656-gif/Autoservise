@@ -52,14 +52,19 @@ export const conversationRepository = {
     })
   },
 
-  /** Used by GET single — includes Customer/CustomerRequest summaries and the full message list, oldest first (spec §24). */
+  /**
+   * Used by GET single — includes Customer/CustomerRequest summaries and the
+   * full message list, oldest first (spec §24). Each message's `channelDelivery`
+   * (Prompt 17) is included too, at most one per message by construction —
+   * dto.ts's toMessageDto() only surfaces it when actually present.
+   */
   findByIdWithDetail(tenantId: string, businessId: string, id: string) {
     return prisma.conversation.findFirst({
       where: withTenant(tenantId, { businessId, id }),
       include: {
         customer: { select: { id: true, firstName: true, lastName: true } },
         customerRequest: { select: { id: true, subject: true, status: true } },
-        messages: { orderBy: { createdAt: 'asc' } },
+        messages: { orderBy: { createdAt: 'asc' }, include: { channelDelivery: true } },
       },
     })
   },

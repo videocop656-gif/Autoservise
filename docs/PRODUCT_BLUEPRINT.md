@@ -85,7 +85,7 @@ What each layer is for:
 ## 3. Current Architecture
 
 Verified directly against `package.json`, `prisma/schema.prisma`, and the
-`api/`/`src/` trees at the time of writing (Prompt 16 complete).
+`api/`/`src/` trees at the time of writing (Prompt 17 complete).
 
 - **AI provider**: OpenAI (official `openai` npm SDK), accessed exclusively server-side through a provider-abstraction interface (`AiProvider`) — `src/server/ai/`. Falls back automatically to a deterministic, no-network mock provider when `OPENAI_API_KEY` isn't configured (true in this environment), so the AI Core stays fully exercisable without a real key.
 - **AI Tool Layer** (`src/server/ai/tools/`): the only path from the AI provider to booking data. Four whitelisted tools, each Zod-validated, each re-authorized against `AuthContext` (never model-supplied ids) and an `AiToolAllowedEntities` allow-list (the conversation's own known customer/vehicle/appointments), each calling the existing `appointmentService.ts` — never Prisma directly. A tool result is always `{success:true, tool, data}` or `{success:false, tool, errorCode, message, retryable?, attempted}` — `attempted` (Prompt 13) distinguishes a genuine execution failure from a gate rejection (confirmation missing, invalid input, forbidden entity) that never reached `appointmentService.ts` at all.
@@ -95,6 +95,7 @@ Verified directly against `package.json`, `prisma/schema.prisma`, and the
 - **Dashboard / Analytics** (Prompt 14): `src/server/services/analyticsService.ts` + `analyticsRepository.ts` — every number is a real-time Postgres aggregation (`count`/`groupBy`/`aggregate`, plus a small number of parameterized raw SQL queries for timezone-aware day-bucketing that Prisma's query builder cannot express) over the existing domain tables, never a pre-computed/denormalized table and never a client-side calculation. Period (`today`/`7d`/`30d`/`90d`) is interpreted in `Business.timezone` via the same `toBusinessLocalDateTime()`/`businessLocalToUtc()` pair Prompt 10 introduced. **Zero new Prisma models, zero migrations.**
 - **Team Management** (Prompt 15): `src/server/services/teamService.ts` + `teamRepository.ts` — owner/admin/manager team administration scoped to `User.tenantId` alone (`User` has no `businessId` column; every tenant has exactly one `Business`, so tenant scoping is already complete isolation). Multiple active owners are explicitly supported; the only hard constraint is that an operation may never bring the tenant's active-owner count to zero, enforced with a real Postgres `SERIALIZABLE` transaction (write-skew detection, not a naive count-then-update) in `teamRepository.ts`'s `changeRole()`/`deactivate()`. Deactivation atomically flips `User.isActive` and deletes every `Session` row for that user in the same transaction; `requireAuth()` and `loginUser()` each independently re-check `isActive` as a second guarantee. `PATCH /api/team/:id` is structurally incapable of changing `role`/`isActive`/`tenantId`/`businessId`/`passwordHash` — the service function only ever reads `name`/`email` off its input, regardless of what a request body contains.
 - **Channel Integration Foundation** (Prompt 16): `src/server/services/channelConnectionService.ts`/`channelMessageService.ts`/`channelCustomerService.ts` + `src/server/channels/` (the `ChannelAdapter` interface, a mock-only adapter factory, and a registry keyed by `ChannelType`). A real external account connection (`ChannelConnection`) is a distinct concept from the existing `Conversation.channel` label — the latter remains the one internal source of truth for channel type, never duplicated. Inbound messages are idempotent at the DB level (`ChannelMessage`'s `@@unique([channelConnectionId, externalMessageId])`), and Conversation resolution for a brand-new external thread is race-safe via the same "create, catch a real `P2002`, re-fetch the winner" pattern `escalationService.ts` already established (Prompt 12) — a genuine concurrency bug in the original `findFirst`-then-`create` version was caught live against Supabase and fixed this way. No real Telegram/WhatsApp/Website API is connected; AI is never invoked from this pipeline.
+- **Channel Operations & Delivery Foundation** (Prompt 17): `src/server/services/channelDeliveryService.ts` + `channelDeliveryRepository.ts` — the outbound delivery lifecycle (`PENDING`/`SENDING`/`SENT`/`FAILED`) for an already-existing `OUTBOUND`/`STAFF` `Message`, tracked in the new `ChannelDelivery` table. Concurrent-send protection is a plain conditional `updateMany` compare-and-set (never an in-memory mutex, never `SERIALIZABLE` isolation) that works correctly across multiple serverless instances; retry reuses the same row (`attemptCount` increments, no second row is ever created); a `SENT` delivery is idempotent (the adapter is never called twice). `ChannelAdapter.sendMessage()` now takes a `NormalizedOutboundMessage` (never `tenantId`/`businessId`/client-supplied ids) and still never touches Prisma. Adapter errors are normalized to a safe `{errorCode, errorMessage, retryable}` shape — never a raw provider error or stack trace. Still no real Telegram/WhatsApp/Website API, no background retry worker, no queue; AI is never invoked from this pipeline either.
 
 - **Frontend**: React **18.3.1** (not 19), TypeScript, Vite, Tailwind CSS **v3.4.13** (not v4). No `shadcn/ui` CLI/package is installed — the UI components under `src/components/ui/` are hand-rolled in the shadcn visual style, built on `@radix-ui/react-label`, `@radix-ui/react-slot`, `class-variance-authority`, and `tailwind-merge`. `lucide-react` for icons, `react-router-dom` v6 for routing.
 - **Backend**: Node.js + TypeScript, plain REST endpoints under `/api/**` written as Vercel-compatible serverless functions (`(req, res) => ...`). In local dev, a Vite plugin (`vite.config.ts`) serves the same handler files on the same port — no separate backend process.
@@ -147,6 +148,7 @@ Business Data
 - `ChannelConnection`
 - `ChannelMessage`
 - `CustomerChannelIdentity`
+- `ChannelDelivery`
 
 `CustomerRequest`/`CustomerRequestStatusHistory` were completed in Prompt 07,
 and `Conversation`/`Message` in Prompt 08 (see `DEVELOPMENT_ROADMAP.md`) —
@@ -249,6 +251,25 @@ plus two nullable columns on the existing `Conversation`:
   safe DB guarantee that one external identity can never point at two
   different Customers.
 
+**Prompt 17 (Channel Operations & Delivery Foundation) added one new Prisma
+model** (migration `20260909112328_channel_operations_delivery_foundation`),
+purely additive — no existing table changed:
+
+- `ChannelDelivery` — the outbound delivery lifecycle of one `Message` on
+  one `ChannelConnection`. `status` (`ChannelDeliveryStatus`:
+  `PENDING`/`SENDING`/`SENT`/`FAILED`, default `PENDING`), `attemptCount`,
+  `lastAttemptAt`/`deliveredAt`/`failedAt`, a safe `errorCode`/`errorMessage`
+  pair (never a raw provider error), and `externalMessageId` (the outbound
+  mirror of `ChannelMessage.externalMessageId`). `Tenant`/`Business` are
+  `Cascade`; `ChannelConnection` is `Restrict` (same principle as
+  `ChannelMessage`/`CustomerChannelIdentity`); `Message` is `Cascade` — a
+  `ChannelDelivery` has no meaning independent of the `Message` it
+  describes, same "owned child" principle `ChannelMessage` already has.
+  `@@unique([channelConnectionId, messageId])` is the at-most-one-active-
+  delivery guarantee retry relies on (no second row is ever created); a
+  second `@@unique([messageId])` is additionally required by Prisma for
+  `Message`'s one-to-one `channelDelivery` reverse relation.
+
 **Planned, not yet in the schema** (no such Prisma model exists today): none identified for any currently-scheduled future stage.
 
 ## 6. CRM Structure
@@ -309,7 +330,7 @@ must extend unchanged into the future AI layer's own scheduling logic.
 | **Authentication** | Login, Register | Implemented |
 | **Dashboard** | Dashboard: business summary (Prompt 02) + real, server-aggregated operational analytics (period selector, KPI cards, AI/tool/escalation/appointment/service breakdowns, daily time series — Prompt 14) | Implemented (`/dashboard`) |
 | **Customer Requests** | Customer Requests list, Customer Request detail (embedded in the edit form, incl. status history) | Implemented (`/settings/customer-requests`) |
-| **Conversations** | Conversations list, Conversation detail (messages, send-message form, Close/Reopen) | Implemented (`/settings/conversations`) — no channel is actually connected to anything real yet |
+| **Conversations** | Conversations list, Conversation detail (messages, send-message form, Close/Reopen, and — since Prompt 17 — a "Send via channel"/retry button + delivery status/attempt-count badge on eligible outbound messages of a channel-linked conversation) | Implemented (`/settings/conversations`) — no channel is actually connected to anything real yet |
 | **CRM** | Customers, Customer profile (detail is the edit form; no separate profile page), Vehicles, Vehicle profile (same) | Implemented (`/settings/customers`, `/settings/vehicles`) |
 | **Operations** | Appointments, Appointment detail, Service History, Service Record detail | Implemented (`/settings/appointments`, `/settings/service-history`) |
 | **Configuration** | Services, Knowledge Base, Business Rules, Business Settings, Working Hours | Implemented (`/settings/services`, `/settings/knowledge`, `/settings/rules`, `/settings/business`, `/settings/hours`) |
@@ -564,6 +585,13 @@ adapters only — no real Telegram Bot API/WhatsApp Cloud API/Website
 widget is connected, and AI is never invoked from this pipeline (no
 auto-reply, no escalation). `Manual`, entered by staff, remains the only
 channel with a live human on the other end; `Phone` is still a label only.
+**Prompt 17 completes the other direction of that same `Channels` foundation,
+still with no live external wiring**: an already-existing outbound
+`Message` can be handed to `channelDeliveryService.ts`, which tracks a real
+`ChannelDelivery` row (`PENDING`/`SENDING`/`SENT`/`FAILED`) through the same
+mock adapters — no real provider send, no AI-generated content, no
+background retry worker; this is delivery-tracking plumbing for the
+existing outbound path, not a new capability of `AI Core`/`Tools`.
 **Prompt 14 adds a read-only observer on top of the entire diagram, not a
 new node in the chain**: the Dashboard (`/dashboard`) aggregates
 `Customer Requests`/`Conversations`/`AI Core`'s own `AiLog` audit trail/

@@ -30,6 +30,26 @@ export interface NormalizedIncomingMessage {
   metadata?: Record<string, unknown>
 }
 
+/**
+ * The internal, channel-agnostic shape every outbound send attempt is built
+ * from BEFORE the adapter ever sees it (Prompt 17 spec §7 "NORMALIZED
+ * OUTBOUND PAYLOAD") — the outbound mirror of NormalizedIncomingMessage
+ * above. `externalConversationId` always comes from the server-resolved
+ * Conversation (never from client input — spec §8), and `content` is the
+ * already-persisted Message's own content, never re-typed by the client.
+ *
+ * Deliberately excludes tenantId/businessId/userId/role/password/session/
+ * any raw database object — same security boundary as
+ * NormalizedIncomingMessage, mirrored for the opposite direction.
+ */
+export interface NormalizedOutboundMessage {
+  channelType: ChannelType
+  externalConversationId: string
+  content: string
+  /** Only present when the target Conversation has a known customer identity on this channel — most adapters (e.g. Website) will never need this, since externalConversationId alone is enough to address the reply. */
+  externalCustomerId?: string
+}
+
 /** The result of a (mock, for this stage) outbound send attempt — never a raw provider/SDK response. */
 export interface ChannelSendResult {
   success: boolean
@@ -37,11 +57,16 @@ export interface ChannelSendResult {
   externalMessageId?: string
   /** Present only on failure — a short, safe reason, never a raw provider error. */
   errorMessage?: string
-}
-
-export interface ChannelSendInput {
-  conversationExternalId: string
-  text: string
+  /**
+   * Present only on failure (Prompt 17 spec §13) — whether a later retry of
+   * the same message is expected to have a chance of succeeding. Defaults
+   * to `true` when omitted (channelDeliveryService.ts's own conservative
+   * default): an adapter that hasn't been taught to classify its own
+   * failures yet should never silently block a legitimate retry. This
+   * foundation stage never acts on this value beyond storing it — no
+   * automatic retry worker exists (spec §13/§28).
+   */
+  retryable?: boolean
 }
 
 /**
@@ -52,12 +77,14 @@ export interface ChannelSendInput {
  * intentionally synchronous and pure (real signature/webhook-secret
  * verification for a specific provider is production-hardening work, out
  * of scope here — spec §"WEBHOOK FOUNDATION"); `sendMessage` never makes a
- * real network call in this codebase today (spec §"OUTBOUND FOUNDATION").
+ * real network call in this codebase today (spec §"OUTBOUND FOUNDATION"),
+ * and never touches Prisma directly (Prompt 17 spec §6) — it only ever
+ * receives/returns the plain, normalized shapes in this file.
  */
 export interface ChannelAdapter {
   readonly channelType: ChannelType
   parseIncoming(rawPayload: unknown): NormalizedIncomingMessage
-  sendMessage(input: ChannelSendInput): Promise<ChannelSendResult>
+  sendMessage(input: NormalizedOutboundMessage): Promise<ChannelSendResult>
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { ChannelType } from '@prisma/client'
-import type { ChannelAdapter, ChannelSendInput, ChannelSendResult, NormalizedIncomingMessage } from '../types'
+import type { ChannelAdapter, ChannelSendResult, NormalizedIncomingMessage, NormalizedOutboundMessage } from '../types'
 
 /**
  * Foundation-only mock adapter (spec §"MOCK ADAPTERS" / §"CHANNEL
@@ -42,13 +42,19 @@ export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
         metadata: payload.metadata,
       }
     },
-    async sendMessage(input: ChannelSendInput): Promise<ChannelSendResult> {
-      // A single, deterministic failure trigger for tests (spec §44 "adapter
-      // failure → controlled CHANNEL_SEND_FAILED") — never a real provider
-      // error, just a magic string so channelMessageService.ts's error
-      // mapping is exercisable without touching the network stack at all.
-      if (input.text === '__mock_send_failure__') {
-        return { success: false, errorMessage: 'Mock adapter simulated a send failure' }
+    async sendMessage(input: NormalizedOutboundMessage): Promise<ChannelSendResult> {
+      // A single, deterministic failure trigger for tests (Prompt 16 spec
+      // "adapter failure → controlled CHANNEL_SEND_FAILED", Prompt 17 spec
+      // §14 "a safe way to test provider failure... not a production secret
+      // or debug endpoint") — never a real provider error, just a magic
+      // string so channelDeliveryService.ts's FAILED/retry handling is
+      // exercisable without touching the network stack at all. Always
+      // reported as retryable — a real provider outage is exactly the kind
+      // of transient failure a later retry is expected to recover from,
+      // which is what lets the same magic string also exercise the
+      // FAILED -> retry -> SENT path (Prompt 17 spec §24).
+      if (input.content === '__mock_send_failure__') {
+        return { success: false, errorMessage: 'Mock adapter simulated a send failure', retryable: true }
       }
       return { success: true, externalMessageId: `mock-out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
     },

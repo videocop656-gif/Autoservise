@@ -3,6 +3,11 @@ import { prisma } from '../db/prisma'
 import { withTenant } from '../lib/tenantScope'
 
 export const messageRepository = {
+  /** Tenant-scoped single lookup — used by channelDeliveryService.ts (Prompt 17) to validate an existing Message's ownership/direction/senderType before any send is attempted. */
+  findById(tenantId: string, businessId: string, id: string) {
+    return prisma.message.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
   /**
    * All messages of one conversation, oldest first (spec §11). Not
    * paginated at this stage — see spec §25, a deliberate, documented
