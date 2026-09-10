@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { LayoutDashboard, ListChecks, MessageSquare, Users, CalendarDays, ClipboardList, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
+import { LayoutDashboard, ListChecks, MessageSquare, Users, CalendarDays, ClipboardList, Car, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
 
 /**
  * The single source of truth for the primary product navigation (Prompt 19
@@ -19,6 +19,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/conversations', label: 'Диалоги', icon: MessageSquare },
   { to: '/clients', label: 'Клиенты', icon: Users },
   { to: '/requests', label: 'Заявки', icon: ClipboardList },
+  { to: '/vehicles', label: 'Автомобили', icon: Car },
   { to: '/appointments', label: 'Записи', icon: CalendarDays },
   { to: '/ai-admin', label: 'AI-администратор', icon: Bot },
   { to: '/escalations', label: 'Передача сотруднику', icon: UserRoundCheck },
@@ -40,6 +41,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/conversations': 'Диалоги',
   '/clients': 'Клиенты',
   '/requests': 'Заявки',
+  '/vehicles': 'Автомобили',
   '/appointments': 'Записи',
   '/ai-admin': 'AI-администратор',
   '/escalations': 'Передача сотруднику',
@@ -50,7 +52,6 @@ const PAGE_TITLES: Record<string, string> = {
   '/settings/services': 'Услуги',
   '/settings/knowledge': 'База знаний',
   '/settings/rules': 'Бизнес-правила',
-  '/settings/vehicles': 'Автомобили',
   '/settings/leads': 'Лиды',
   '/settings/service-history': 'История обслуживания',
   '/settings/ai-logs': 'AI Logs',

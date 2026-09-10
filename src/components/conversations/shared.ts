@@ -91,6 +91,7 @@ export interface CustomerRequestRefDto {
   subject: string
   description: string | null
   requestedDate: string | null
+  createdAt: string
 }
 
 export interface VehicleRefDto {

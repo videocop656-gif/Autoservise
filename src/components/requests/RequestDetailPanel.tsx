@@ -513,12 +513,16 @@ export function RequestDetailPanel({
               Автомобиль
             </h3>
             {vehicle ? (
-              <div className="rounded-md border border-border p-2 text-sm">
+              <button
+                type="button"
+                onClick={() => navigate(`/vehicles?open=${vehicle.id}`)}
+                className="block w-full rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
+              >
                 <div className="font-medium">{vehicleLabel(vehicles, vehicle.id)}</div>
                 {(vehicle.licensePlate || vehicle.vin) && (
                   <div className="text-muted-foreground">{[vehicle.licensePlate, vehicle.vin].filter(Boolean).join(' · ')}</div>
                 )}
-              </div>
+              </button>
             ) : (
               <p className="text-sm text-muted-foreground">Автомобиль не указан</p>
             )}

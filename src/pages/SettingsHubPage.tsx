@@ -6,7 +6,6 @@ import {
   Wrench,
   BookOpen,
   ScrollText,
-  Car,
   UserPlus,
   History,
   FileText,
@@ -46,7 +45,6 @@ const GROUPS: SettingsGroup[] = [
   {
     title: 'CRM',
     items: [
-      { to: '/settings/vehicles', label: 'Автомобили', description: 'Автомобили клиентов', icon: Car },
       { to: '/settings/leads', label: 'Лиды', description: 'Потенциальные клиенты', icon: UserPlus },
       { to: '/settings/service-history', label: 'История обслуживания', description: 'Выполненные работы', icon: History },
     ],

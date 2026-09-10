@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
@@ -86,6 +87,7 @@ export function ConversationDetailPanel({
   onBack,
   onChanged,
 }: ConversationDetailPanelProps) {
+  const navigate = useNavigate()
   const [detail, setDetail] = useState<ConversationDto | null>(null)
   const [escalation, setEscalation] = useState<EscalationDto | null>(null)
   const [aiLog, setAiLog] = useState<AiLogDto | null>(null)
@@ -370,12 +372,16 @@ export function ConversationDetailPanel({
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Автомобиль</h3>
               {vehicle ? (
-                <div className="mt-1 text-sm">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/vehicles?open=${vehicle.id}`)}
+                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
+                >
                   <div className="font-medium">{vehicleLabel(vehicles, vehicle.id)}</div>
                   {(vehicle.licensePlate || vehicle.vin) && (
                     <div className="text-muted-foreground">{[vehicle.licensePlate, vehicle.vin].filter(Boolean).join(' · ')}</div>
                   )}
-                </div>
+                </button>
               ) : (
                 <p className="mt-1 text-sm text-muted-foreground">Автомобиль не указан</p>
               )}

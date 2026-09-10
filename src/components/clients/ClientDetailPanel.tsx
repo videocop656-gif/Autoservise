@@ -404,12 +404,17 @@ export function ClientDetailPanel({ customerId, canManage, onBack, onChanged }: 
             )}
             {vehicles.length === 0 && <p className="text-sm text-muted-foreground">Автомобилей у клиента пока нет</p>}
             {vehicles.map((v) => (
-              <div key={v.id} className="rounded-md border border-border p-2 text-sm">
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => navigate(`/vehicles?open=${v.id}`)}
+                className="block w-full rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
+              >
                 <div className="font-medium">{vehicleLabel(v)}</div>
                 {(v.licensePlate || v.vin) && (
                   <div className="text-muted-foreground">{[v.licensePlate, v.vin].filter(Boolean).join(' · ')}</div>
                 )}
-              </div>
+              </button>
             ))}
           </section>
 
