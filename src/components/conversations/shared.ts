@@ -114,6 +114,7 @@ export interface ServiceRefDto {
 export interface EscalationDto {
   id: string
   conversationId: string
+  customerId: string | null
   status: EscalationStatus
   priority: EscalationPriority
   reason: string

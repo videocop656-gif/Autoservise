@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { LayoutDashboard, MessageSquare, Users, CalendarDays, ClipboardList, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
+import { LayoutDashboard, ListChecks, MessageSquare, Users, CalendarDays, ClipboardList, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
 
 /**
  * The single source of truth for the primary product navigation (Prompt 19
@@ -15,6 +15,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/operations', label: 'Рабочая очередь', icon: ListChecks },
   { to: '/conversations', label: 'Диалоги', icon: MessageSquare },
   { to: '/clients', label: 'Клиенты', icon: Users },
   { to: '/requests', label: 'Заявки', icon: ClipboardList },
@@ -35,6 +36,7 @@ export const BOTTOM_NAV_ITEMS: NavItem[] = [{ to: '/settings', label: 'Наст�
  */
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
+  '/operations': 'Рабочая очередь',
   '/conversations': 'Диалоги',
   '/clients': 'Клиенты',
   '/requests': 'Заявки',

@@ -15,12 +15,14 @@ export type {
   ServiceRefDto,
   ConversationDto,
   EscalationDto,
+  EscalationStatus,
   EscalationPriority,
   CustomerRequestStatus,
   Paginated,
 } from '../conversations/shared'
 export {
   REQUEST_STATUS_LABELS,
+  ESCALATION_STATUS_LABELS,
   customerName,
   vehicleLabel,
   serviceName,

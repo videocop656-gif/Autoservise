@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import DashboardPage from './pages/DashboardPage'
+import OperationsPage from './pages/OperationsPage'
 import SettingsHubPage from './pages/SettingsHubPage'
 import BusinessSettingsPage from './pages/settings/BusinessSettingsPage'
 import HoursSettingsPage from './pages/settings/HoursSettingsPage'
@@ -48,6 +49,7 @@ export default function App() {
         }
       >
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/operations" element={<OperationsPage />} />
         <Route path="/conversations" element={<ConversationsSettingsPage />} />
         <Route path="/clients" element={<CustomersSettingsPage />} />
         <Route path="/appointments" element={<AppointmentsSettingsPage />} />
