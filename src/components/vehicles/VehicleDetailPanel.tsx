@@ -1,12 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, UserX, UserCheck, RefreshCw, User, ClipboardList, History, ArrowRight } from 'lucide-react'
+import { ArrowLeft, Pencil, UserX, UserCheck, RefreshCw, User, ClipboardList, History, ArrowRight, CalendarDays } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
+import { utcToZonedParts } from '../../lib/businessTime'
 import {
   type VehicleDto,
   type CustomerRefDto,
@@ -18,6 +19,7 @@ import {
   formatActivity,
   formatDate,
 } from './shared'
+import { type AppointmentDto, APPOINTMENT_STATUS_LABELS } from '../appointments/shared'
 
 // ---------------------------------------------------------------------------
 // Prompt 26 — Vehicle Context v1: Vehicle Detail.
@@ -62,12 +64,13 @@ interface EditFormState {
 export interface VehicleDetailPanelProps {
   vehicleId: string
   canManage: boolean
+  timezone: string
   customers: CustomerRefDto[]
   onBack: () => void
   onChanged: () => void
 }
 
-export function VehicleDetailPanel({ vehicleId, canManage, customers, onBack, onChanged }: VehicleDetailPanelProps) {
+export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, onBack, onChanged }: VehicleDetailPanelProps) {
   const navigate = useNavigate()
 
   const [vehicle, setVehicle] = useState<VehicleDto | null>(null)
@@ -75,6 +78,8 @@ export function VehicleDetailPanel({ vehicleId, canManage, customers, onBack, on
   const [requestsError, setRequestsError] = useState(false)
   const [history, setHistory] = useState<ServiceRecordDto[]>([])
   const [historyError, setHistoryError] = useState(false)
+  const [appointments, setAppointments] = useState<AppointmentDto[]>([])
+  const [appointmentsError, setAppointmentsError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -89,10 +94,13 @@ export function VehicleDetailPanel({ vehicleId, canManage, customers, onBack, on
   async function loadAll() {
     setLoading(true)
     setError(null)
-    const [vehicleResult, requestsResult, historyResult] = await Promise.allSettled([
+    const [vehicleResult, requestsResult, historyResult, appointmentsResult] = await Promise.allSettled([
       apiFetch<{ vehicle: VehicleDto }>(`/api/vehicles/${vehicleId}`),
       apiFetch<Paginated<CustomerRequestRefDto>>(`/api/customer-requests?vehicleId=${vehicleId}&pageSize=20`),
       apiFetch<Paginated<ServiceRecordDto>>(`/api/service-history?vehicleId=${vehicleId}&pageSize=5`),
+      // Prompt 28 — Appointment.vehicleId is a real, direct FK; a single
+      // bulk fetch, not per-row.
+      apiFetch<Paginated<AppointmentDto>>(`/api/appointments?vehicleId=${vehicleId}&pageSize=10&includeCancelled=true`),
     ])
 
     if (vehicleResult.status === 'fulfilled') {
@@ -104,6 +112,8 @@ export function VehicleDetailPanel({ vehicleId, canManage, customers, onBack, on
     setRequestsError(requestsResult.status !== 'fulfilled')
     setHistory(historyResult.status === 'fulfilled' ? historyResult.value.items : [])
     setHistoryError(historyResult.status !== 'fulfilled')
+    setAppointments(appointmentsResult.status === 'fulfilled' ? appointmentsResult.value.items : [])
+    setAppointmentsError(appointmentsResult.status !== 'fulfilled')
     setLoading(false)
   }
 
@@ -371,6 +381,35 @@ export function VehicleDetailPanel({ vehicleId, canManage, customers, onBack, on
                 <div>{h.workDescription}</div>
               </div>
             ))}
+          </section>
+
+          {/* Appointments (Prompt 28) — read-only + link into the existing
+              Appointment Detail; creation stays centralized on
+              /appointments, same reasoning as the Service History link-out
+              above rather than a duplicated form here. */}
+          <section className="space-y-2 rounded-md border border-border p-3 lg:col-span-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <CalendarDays className="h-4 w-4 text-muted-foreground" />
+              Записи
+            </h3>
+            {appointmentsError && <p className="text-sm text-destructive">Не удалось загрузить записи</p>}
+            {!appointmentsError && appointments.length === 0 && <p className="text-sm text-muted-foreground">Записей пока нет</p>}
+            {appointments.map((a) => {
+              const local = utcToZonedParts(new Date(a.startAt), timezone)
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => navigate(`/appointments?open=${a.id}`)}
+                  className="flex w-full items-center justify-between gap-2 rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
+                >
+                  <span>
+                    {local.dateStr} {local.timeStr}
+                  </span>
+                  <Badge variant="default">{APPOINTMENT_STATUS_LABELS[a.status]}</Badge>
+                </button>
+              )
+            })}
           </section>
         </div>
       )}

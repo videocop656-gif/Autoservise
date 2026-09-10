@@ -50,7 +50,8 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 export default function VehiclesSettingsPage() {
-  const { user } = useAuth()
+  const { user, business } = useAuth()
+  const timezone = business?.timezone ?? 'UTC'
   const canManage = user?.role === 'owner' || user?.role === 'admin'
 
   const [data, setData] = useState<Paginated<VehicleDto> | null>(null)
@@ -200,7 +201,7 @@ export default function VehiclesSettingsPage() {
   if (openId) {
     return (
       <PageContainer className="max-w-5xl">
-        <VehicleDetailPanel vehicleId={openId} canManage={canManage} customers={customers} onBack={closeDetail} onChanged={handleDetailChanged} />
+        <VehicleDetailPanel vehicleId={openId} canManage={canManage} timezone={timezone} customers={customers} onBack={closeDetail} onChanged={handleDetailChanged} />
       </PageContainer>
     )
   }

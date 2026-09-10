@@ -47,6 +47,7 @@ export interface ServiceRecordDto {
   id: string
   customerId: string
   vehicleId: string
+  appointmentId: string | null
   performedAt: string
   workDescription: string
   totalPrice: string

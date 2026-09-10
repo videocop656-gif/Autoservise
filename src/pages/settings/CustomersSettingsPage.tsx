@@ -57,7 +57,8 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 export default function CustomersSettingsPage() {
-  const { user } = useAuth()
+  const { user, business } = useAuth()
+  const timezone = business?.timezone ?? 'UTC'
   const canManage = user?.role === 'owner' || user?.role === 'admin'
 
   const [data, setData] = useState<PaginatedCustomers | null>(null)
@@ -210,7 +211,7 @@ export default function CustomersSettingsPage() {
   if (openId) {
     return (
       <PageContainer className="max-w-5xl">
-        <ClientDetailPanel customerId={openId} canManage={canManage} onBack={closeDetail} onChanged={handleDetailChanged} />
+        <ClientDetailPanel customerId={openId} canManage={canManage} timezone={timezone} onBack={closeDetail} onChanged={handleDetailChanged} />
       </PageContainer>
     )
   }

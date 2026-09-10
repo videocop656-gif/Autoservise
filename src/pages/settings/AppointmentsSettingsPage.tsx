@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Pencil, Plus } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Plus, RefreshCw } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import { PageHeader } from '../../components/layout/PageHeader'
 import Pagination from '../../components/Pagination'
@@ -7,52 +8,43 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import { Badge } from '../../components/ui/badge'
+import { Card, CardContent, CardHeader } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
+import { AppointmentDetailPanel } from '../../components/appointments/AppointmentDetailPanel'
+import {
+  type AppointmentDto,
+  type AppointmentStatus,
+  type CustomerRefDto,
+  type VehicleRefDto,
+  type ServiceRefDto,
+  type Paginated,
+  APPOINTMENT_STATUS_LABELS,
+  customerName,
+  vehicleLabel,
+  serviceName,
+} from '../../components/appointments/shared'
 
-type AppointmentStatus = 'SCHEDULED' | 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW'
+// ---------------------------------------------------------------------------
+// Prompt 28 — Appointment Detail v1, built on the existing
+// GET/POST/PATCH /api/appointments endpoints (unchanged since Prompt 05).
+// No DELETE by design — an appointment's lifecycle is status-only (use
+// PATCH {status: "CANCELLED"}), confirmed by api/appointments/[id].ts's
+// own comment.
+//
+// /appointments has been the canonical route since Prompt 19 ("Записи")
+// — no route/navigation change needed this prompt, only the screen's own
+// content: rows now open a real Detail (matching Conversations/Clients/
+// Requests/Vehicles) instead of exposing inline edit/status controls.
+//
+// No search box exists here (none did before, and appointmentRepository
+// has no search implementation at all — confirmed by audit — so none was
+// added; see Final Report).
+// ---------------------------------------------------------------------------
 
-interface AppointmentDto {
-  id: string
-  customerId: string
-  vehicleId: string
-  serviceId: string
-  startAt: string
-  endAt: string
-  status: AppointmentStatus
-  notes: string | null
-}
-
-interface CustomerDto {
-  id: string
-  firstName: string
-  lastName: string | null
-}
-
-interface VehicleDto {
-  id: string
-  customerId: string
-  make: string
-  model: string
-  licensePlate: string | null
-}
-
-interface ServiceDto {
-  id: string
-  name: string
-}
-
-interface Paginated<T> {
-  items: T[]
-  page: number
-  pageSize: number
-  total: number
-  totalPages: number
-}
-
-interface FormState {
+interface CreateFormState {
   customerId: string
   vehicleId: string
   serviceId: string
@@ -60,88 +52,60 @@ interface FormState {
   startTime: string
   endTime: string
   notes: string
-  status: AppointmentStatus
 }
 
-const EMPTY_FORM: FormState = {
-  customerId: '',
-  vehicleId: '',
-  serviceId: '',
-  date: '',
-  startTime: '',
-  endTime: '',
-  notes: '',
-  status: 'SCHEDULED',
-}
+const EMPTY_FORM: CreateFormState = { customerId: '', vehicleId: '', serviceId: '', date: '', startTime: '', endTime: '', notes: '' }
 
 const STATUSES: AppointmentStatus[] = ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'NO_SHOW']
 
-const STATUS_LABELS: Record<AppointmentStatus, string> = {
-  SCHEDULED: 'Scheduled',
-  CONFIRMED: 'Confirmed',
-  IN_PROGRESS: 'In progress',
-  COMPLETED: 'Completed',
-  CANCELLED: 'Cancelled',
-  NO_SHOW: 'No show',
-}
-
-function formatDuration(startAt: string, endAt: string): string {
-  const minutes = Math.round((new Date(endAt).getTime() - new Date(startAt).getTime()) / 60000)
-  const hours = Math.floor(minutes / 60)
-  const mins = minutes % 60
-  if (hours === 0) return `${mins} min`
-  if (mins === 0) return `${hours} h`
-  return `${hours} h ${mins} min`
-}
-
 export default function AppointmentsSettingsPage() {
-  const { business } = useAuth()
+  const { user, business } = useAuth()
+  const canManage = user?.role === 'owner' || user?.role === 'admin' || user?.role === 'manager'
   const timezone = business?.timezone ?? 'UTC'
 
   const [data, setData] = useState<Paginated<AppointmentDto> | null>(null)
-  const [customers, setCustomers] = useState<CustomerDto[]>([])
-  const [vehicles, setVehicles] = useState<VehicleDto[]>([])
-  const [services, setServices] = useState<ServiceDto[]>([])
+  const [customers, setCustomers] = useState<CustomerRefDto[]>([])
+  const [vehicles, setVehicles] = useState<VehicleRefDto[]>([])
+  const [services, setServices] = useState<ServiceRefDto[]>([])
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<AppointmentStatus | ''>('')
   const [includeCancelled, setIncludeCancelled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
-  const [editingId, setEditingId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+  const [form, setForm] = useState<CreateFormState>(EMPTY_FORM)
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
 
-  function customerLabel(id: string): string {
-    const c = customers.find((x) => x.id === id)
-    return c ? `${c.firstName} ${c.lastName ?? ''}`.trim() : id
-  }
+  const [openId, setOpenId] = useState<string | null>(null)
 
-  function vehicleLabel(id: string): string {
-    const v = vehicles.find((x) => x.id === id)
-    return v ? `${v.make} ${v.model}${v.licensePlate ? ` (${v.licensePlate})` : ''}` : id
-  }
-
-  function serviceLabel(id: string): string {
-    const s = services.find((x) => x.id === id)
-    return s ? s.name : id
-  }
+  // Cross-navigation from Client/Vehicle/Request Detail (/appointments?open=<id>)
+  // — same mechanism as Prompts 23-26's own ?open= handling.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const toOpen = searchParams.get('open')
+    if (toOpen) {
+      setOpenId(toOpen)
+      setSearchParams({}, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadReferenceData() {
     try {
       const [customersResult, vehiclesResult, servicesResult] = await Promise.all([
-        apiFetch<Paginated<CustomerDto>>('/api/customers?pageSize=100'),
-        apiFetch<Paginated<VehicleDto>>('/api/vehicles?pageSize=100'),
-        apiFetch<{ services: ServiceDto[] }>('/api/services'),
+        apiFetch<Paginated<CustomerRefDto>>('/api/customers?pageSize=100&includeInactive=true'),
+        apiFetch<Paginated<VehicleRefDto>>('/api/vehicles?pageSize=100&includeInactive=true'),
+        apiFetch<{ services: ServiceRefDto[] }>('/api/services?activeOnly=false'),
       ])
       setCustomers(customersResult.items)
       setVehicles(vehiclesResult.items)
       setServices(servicesResult.services)
     } catch {
-      // Non-fatal: the appointments list still works, just shows raw ids as a fallback.
+      // Non-fatal: the appointments list/detail still work, just fall back to raw ids.
     }
   }
 
@@ -164,39 +128,36 @@ export default function AppointmentsSettingsPage() {
 
   useEffect(() => {
     void loadReferenceData()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey])
 
   useEffect(() => {
     void loadAppointments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, statusFilter, includeCancelled])
+  }, [page, statusFilter, includeCancelled, refreshKey])
 
   useEffect(() => {
     setPage(1)
   }, [statusFilter, includeCancelled])
 
-  function openCreateForm() {
-    setEditingId(null)
-    setForm(EMPTY_FORM)
-    setFormError(null)
-    setFieldErrors({})
-    setShowForm(true)
+  function retry() {
+    setRefreshKey((k) => k + 1)
   }
 
-  function openEditForm(appt: AppointmentDto) {
-    const start = utcToZonedParts(new Date(appt.startAt), timezone)
-    const end = utcToZonedParts(new Date(appt.endAt), timezone)
-    setEditingId(appt.id)
-    setForm({
-      customerId: appt.customerId,
-      vehicleId: appt.vehicleId,
-      serviceId: appt.serviceId,
-      date: start.dateStr,
-      startTime: start.timeStr,
-      endTime: end.timeStr,
-      notes: appt.notes ?? '',
-      status: appt.status,
-    })
+  function openDetail(id: string) {
+    setOpenId(id)
+  }
+
+  function closeDetail() {
+    setOpenId(null)
+  }
+
+  function handleDetailChanged() {
+    void loadAppointments()
+  }
+
+  function openCreateForm() {
+    setForm(EMPTY_FORM)
     setFormError(null)
     setFieldErrors({})
     setShowForm(true)
@@ -204,7 +165,6 @@ export default function AppointmentsSettingsPage() {
 
   function closeForm() {
     setShowForm(false)
-    setEditingId(null)
     setForm(EMPTY_FORM)
   }
 
@@ -213,37 +173,20 @@ export default function AppointmentsSettingsPage() {
     setFormError(null)
     setFieldErrors({})
     setSaving(true)
-
     try {
       const startAt = zonedTimeToUtc(form.date, form.startTime, timezone).toISOString()
       const endAt = zonedTimeToUtc(form.date, form.endTime, timezone).toISOString()
-
-      if (editingId) {
-        await apiFetch(`/api/appointments/${editingId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            customerId: form.customerId,
-            vehicleId: form.vehicleId,
-            serviceId: form.serviceId,
-            startAt,
-            endAt,
-            status: form.status,
-            notes: form.notes === '' ? null : form.notes,
-          }),
-        })
-      } else {
-        await apiFetch('/api/appointments', {
-          method: 'POST',
-          body: JSON.stringify({
-            customerId: form.customerId,
-            vehicleId: form.vehicleId,
-            serviceId: form.serviceId,
-            startAt,
-            endAt,
-            notes: form.notes === '' ? null : form.notes,
-          }),
-        })
-      }
+      await apiFetch('/api/appointments', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: form.customerId,
+          vehicleId: form.vehicleId,
+          serviceId: form.serviceId,
+          startAt,
+          endAt,
+          notes: form.notes === '' ? null : form.notes,
+        }),
+      })
       closeForm()
       await loadAppointments()
     } catch (err) {
@@ -258,235 +201,227 @@ export default function AppointmentsSettingsPage() {
     }
   }
 
-  async function handleQuickStatusChange(appt: AppointmentDto, status: AppointmentStatus) {
-    try {
-      await apiFetch(`/api/appointments/${appt.id}`, { method: 'PATCH', body: JSON.stringify({ status }) })
-      await loadAppointments()
-    } catch (err) {
-      setListError(err instanceof ApiClientError ? err.message : 'Не удалось изменить статус.')
-    }
-  }
-
   const customerVehicles = vehicles.filter((v) => v.customerId === form.customerId)
+
+  // Appointment Detail v1 (Prompt 28) — same full-screen-swap pattern as
+  // every other Detail screen in this app: no new route (/appointments
+  // was already canonical since Prompt 19).
+  if (openId) {
+    return (
+      <PageContainer className="max-w-5xl">
+        <AppointmentDetailPanel
+          appointmentId={openId}
+          canManage={canManage}
+          timezone={timezone}
+          customers={customers}
+          vehicles={vehicles}
+          services={services}
+          onBack={closeDetail}
+          onChanged={handleDetailChanged}
+        />
+      </PageContainer>
+    )
+  }
 
   return (
     <PageContainer className="max-w-4xl space-y-6">
-      <PageHeader title="Записи" subtitle="Appointments and service schedule" />
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle>Записи на обслуживание</CardTitle>
-              <CardDescription>Часовой пояс автосервиса: {timezone}.</CardDescription>
-            </div>
+      <PageHeader
+        title="Записи"
+        subtitle="Все записи на обслуживание в одном месте"
+        actions={
+          canManage ? (
             <Button size="sm" onClick={openCreateForm} disabled={customers.length === 0 || services.length === 0}>
               <Plus className="mr-1 h-4 w-4" />
-              Add
+              Новая запись
             </Button>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as AppointmentStatus | '')}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-              >
-                <option value="">Все статусы</option>
-                {STATUSES.map((s) => (
-                  <option key={s} value={s}>
-                    {STATUS_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} />
-                Показать отменённые
-              </label>
+          ) : undefined
+        }
+      />
+
+      <Card>
+        <CardHeader className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as AppointmentStatus | '')}
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              aria-label="Фильтр по статусу"
+            >
+              <option value="">Все статусы</option>
+              {STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {APPOINTMENT_STATUS_LABELS[s]}
+                </option>
+              ))}
+            </select>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} />
+              Показать отменённые
+            </label>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {loading && (
+            <div className="space-y-2" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-16 animate-pulse rounded-md border border-border bg-muted/40" />
+              ))}
             </div>
+          )}
 
-            {loading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
-            {listError && <p className="text-sm text-destructive">{listError}</p>}
-            {!loading && data?.items.length === 0 && <p className="text-sm text-muted-foreground">Записей пока нет.</p>}
+          {!loading && listError && (
+            <div className="flex flex-col items-center gap-2 rounded-md border border-border py-8 text-center">
+              <p className="text-sm text-destructive">{listError}</p>
+              <Button variant="outline" size="sm" onClick={retry}>
+                <RefreshCw className="mr-1 h-4 w-4" />
+                Повторить
+              </Button>
+            </div>
+          )}
 
-            {data?.items.map((appt) => {
+          {!loading && !listError && data?.items.length === 0 && (
+            <div className="rounded-md border border-border py-8 text-center">
+              <p className="text-sm font-medium">Записей пока нет</p>
+            </div>
+          )}
+
+          {!loading &&
+            !listError &&
+            data?.items.map((appt) => {
               const local = utcToZonedParts(new Date(appt.startAt), timezone)
+              const vehicle = vehicles.find((v) => v.id === appt.vehicleId)
               return (
-                <div key={appt.id} className="flex items-start justify-between gap-3 rounded-md border p-3">
+                <button
+                  key={appt.id}
+                  type="button"
+                  onClick={() => openDetail(appt.id)}
+                  className="flex w-full flex-col gap-2 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+                >
                   <div className="min-w-0">
-                    <div className="font-medium">
-                      {local.dateStr} {local.timeStr} · {formatDuration(appt.startAt, appt.endAt)}
+                    <div className="truncate font-medium">
+                      {local.dateStr} {local.timeStr}
                     </div>
-                    <p className="text-sm text-muted-foreground">
-                      {customerLabel(appt.customerId)} · {vehicleLabel(appt.vehicleId)} · {serviceLabel(appt.serviceId)}
+                    <p className="truncate text-sm text-muted-foreground">
+                      {customerName(customers, appt.customerId)} · {vehicle ? vehicleLabel(vehicle) : '—'} · {serviceName(services, appt.serviceId) ?? '—'}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <select
-                      value={appt.status}
-                      onChange={(e) => handleQuickStatusChange(appt, e.target.value as AppointmentStatus)}
-                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                    >
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {STATUS_LABELS[s]}
-                        </option>
-                      ))}
-                    </select>
-                    <Button variant="ghost" size="sm" onClick={() => openEditForm(appt)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+                  <Badge variant="default">{APPOINTMENT_STATUS_LABELS[appt.status]}</Badge>
+                </button>
               )
             })}
 
-            {data && <Pagination page={data.page} totalPages={data.totalPages} onPageChange={setPage} />}
-          </CardContent>
-        </Card>
+          {data && <Pagination page={data.page} totalPages={data.totalPages} onPageChange={setPage} />}
+        </CardContent>
+      </Card>
 
-        {showForm && (
-          <Card>
-            <CardHeader>
-              <CardTitle>{editingId ? 'Редактировать запись' : 'Новая запись'}</CardTitle>
-              <CardDescription>Время указывается в часовом поясе автосервиса ({timezone}).</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-customer">Customer</Label>
-                    <select
-                      id="appt-customer"
-                      required
-                      value={form.customerId}
-                      onChange={(e) => setForm({ ...form, customerId: e.target.value, vehicleId: '' })}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
-                    >
-                      <option value="" disabled>
-                        Select a customer...
-                      </option>
-                      {customers.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.firstName} {c.lastName}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-vehicle">Vehicle</Label>
-                    <select
-                      id="appt-vehicle"
-                      required
-                      value={form.vehicleId}
-                      onChange={(e) => setForm({ ...form, vehicleId: e.target.value })}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
-                    >
-                      <option value="" disabled>
-                        Select a vehicle...
-                      </option>
-                      {customerVehicles.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.make} {v.model} {v.licensePlate ? `(${v.licensePlate})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
+      {showForm && canManage && (
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold leading-none tracking-tight">Новая запись</h2>
+            <p className="text-sm text-muted-foreground">Время указывается в часовом поясе автосервиса ({timezone}).</p>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="appt-service">Service</Label>
+                  <Label htmlFor="appt-customer">Клиент</Label>
                   <select
-                    id="appt-service"
+                    id="appt-customer"
                     required
-                    value={form.serviceId}
-                    onChange={(e) => setForm({ ...form, serviceId: e.target.value })}
+                    value={form.customerId}
+                    onChange={(e) => setForm({ ...form, customerId: e.target.value, vehicleId: '' })}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
                   >
                     <option value="" disabled>
-                      Select a service...
+                      Выберите клиента...
                     </option>
-                    {services.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.firstName} {c.lastName}
                       </option>
                     ))}
                   </select>
                 </div>
-
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-date">Date</Label>
-                    <Input
-                      id="appt-date"
-                      type="date"
-                      required
-                      value={form.date}
-                      onChange={(e) => setForm({ ...form, date: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-start">Start time</Label>
-                    <Input
-                      id="appt-start"
-                      type="time"
-                      required
-                      value={form.startTime}
-                      onChange={(e) => setForm({ ...form, startTime: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-end">End time</Label>
-                    <Input
-                      id="appt-end"
-                      type="time"
-                      required
-                      value={form.endTime}
-                      onChange={(e) => setForm({ ...form, endTime: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                {editingId && (
-                  <div className="space-y-2">
-                    <Label htmlFor="appt-status">Status</Label>
-                    <select
-                      id="appt-status"
-                      value={form.status}
-                      onChange={(e) => setForm({ ...form, status: e.target.value as AppointmentStatus })}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
-                    >
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {STATUS_LABELS[s]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
                 <div className="space-y-2">
-                  <Label htmlFor="appt-notes">Notes</Label>
-                  <Textarea id="appt-notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+                  <Label htmlFor="appt-vehicle">Автомобиль</Label>
+                  <select
+                    id="appt-vehicle"
+                    required
+                    value={form.vehicleId}
+                    onChange={(e) => setForm({ ...form, vehicleId: e.target.value })}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  >
+                    <option value="" disabled>
+                      Выберите автомобиль...
+                    </option>
+                    {customerVehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {vehicleLabel(v)}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+              </div>
 
-                {formError && <p className="text-sm text-destructive">{formError}</p>}
-                {Object.entries(fieldErrors).map(([field, messages]) => (
-                  <p key={field} className="text-sm text-destructive">
-                    {field}: {messages[0]}
-                  </p>
-                ))}
+              <div className="space-y-2">
+                <Label htmlFor="appt-service">Услуга</Label>
+                <select
+                  id="appt-service"
+                  required
+                  value={form.serviceId}
+                  onChange={(e) => setForm({ ...form, serviceId: e.target.value })}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                >
+                  <option value="" disabled>
+                    Выберите услугу...
+                  </option>
+                  {services.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                <div className="flex gap-2">
-                  <Button type="submit" disabled={saving}>
-                    {saving ? 'Сохранение...' : 'Save'}
-                  </Button>
-                  <Button type="button" variant="outline" onClick={closeForm}>
-                    Cancel
-                  </Button>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="appt-date">Дата</Label>
+                  <Input id="appt-date" type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
                 </div>
-              </form>
-            </CardContent>
-          </Card>
-        )}
+                <div className="space-y-2">
+                  <Label htmlFor="appt-start">Начало</Label>
+                  <Input id="appt-start" type="time" required value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="appt-end">Окончание</Label>
+                  <Input id="appt-end" type="time" required value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="appt-notes">Заметки</Label>
+                <Textarea id="appt-notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+              </div>
+
+              {formError && <p className="text-sm text-destructive">{formError}</p>}
+              {Object.entries(fieldErrors).map(([field, messages]) => (
+                <p key={field} className="text-sm text-destructive">
+                  {field}: {messages[0]}
+                </p>
+              ))}
+
+              <div className="flex gap-2">
+                <Button type="submit" disabled={saving}>
+                  {saving ? 'Сохранение...' : 'Сохранить'}
+                </Button>
+                <Button type="button" variant="outline" onClick={closeForm}>
+                  Отмена
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      )}
     </PageContainer>
   )
 }
