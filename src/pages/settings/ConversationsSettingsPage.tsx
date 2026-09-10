@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, Search, RefreshCw, AlertTriangle } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import { PageHeader } from '../../components/layout/PageHeader'
@@ -98,6 +99,22 @@ export default function ConversationsSettingsPage() {
   const [saving, setSaving] = useState(false)
 
   const [openId, setOpenId] = useState<string | null>(null)
+
+  // Prompt 23 — Clients v1 links to a specific conversation from a
+  // customer's detail view via /conversations?open=<id>, reusing this
+  // page's existing internal open/close mechanism (no new route). The
+  // param is consumed once on mount and then stripped from the URL so
+  // navigating back/forward or reopening the page later doesn't
+  // re-trigger it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const toOpen = searchParams.get('open')
+    if (toOpen) {
+      setOpenId(toOpen)
+      setSearchParams({}, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadReferenceData() {
     try {
