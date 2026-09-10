@@ -16,6 +16,8 @@ import {
   type Paginated,
   REQUEST_STATUS_LABELS,
   ESCALATION_STATUS_LABELS,
+  NEXT_STATUSES,
+  isTerminalStatus,
   customerName,
   formatActivity,
 } from '../components/requests/shared'
@@ -105,14 +107,20 @@ function StatusActionSelect({
 
   return (
     <div className="flex flex-col items-end gap-1">
+      {/* Prompt 27 — only the request's real current status + its real
+          allowed next statuses (NEXT_STATUSES, mirroring
+          customerRequestService.ts's own ALLOWED_TRANSITIONS), never all 7
+          regardless of validity. Terminal statuses (CONVERTED/CLOSED/
+          CANCELLED) get a disabled, single-option control instead. */}
       <select
         value={status}
-        disabled={pending}
+        disabled={pending || isTerminalStatus(status)}
         onChange={(e) => handleChange(e.target.value as CustomerRequestStatus)}
         className="h-8 rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
         aria-label="Изменить статус заявки"
       >
-        {(['NEW', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'QUALIFIED', 'CONVERTED', 'CLOSED', 'CANCELLED'] as CustomerRequestStatus[]).map((s) => (
+        <option value={status}>{REQUEST_STATUS_LABELS[status]}</option>
+        {NEXT_STATUSES[status].map((s) => (
           <option key={s} value={s}>
             {REQUEST_STATUS_LABELS[s]}
           </option>

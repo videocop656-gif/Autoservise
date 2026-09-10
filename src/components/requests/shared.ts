@@ -70,3 +70,51 @@ export interface CustomerRequestDto {
   // ConversationDto/AiEscalationDto elsewhere) — list items omit it.
   statusHistory?: StatusHistoryDto[]
 }
+
+// ---------------------------------------------------------------------------
+// Prompt 27 — Request Lifecycle v2.
+//
+// A frontend mirror of customerRequestService.ts's own ALLOWED_TRANSITIONS
+// table (audited directly from that file, not guessed) — the backend is
+// still the sole enforcer (this only prevents offering a transition the
+// server would reject anyway). Keep in sync if the backend table changes.
+// CONVERTED/CLOSED/CANCELLED are real terminal states: no outgoing
+// transitions exist for them server-side.
+// ---------------------------------------------------------------------------
+export const NEXT_STATUSES: Record<CustomerRequestStatus, CustomerRequestStatus[]> = {
+  NEW: ['IN_PROGRESS', 'CLOSED', 'CANCELLED'],
+  IN_PROGRESS: ['WAITING_CUSTOMER', 'QUALIFIED', 'CLOSED', 'CANCELLED'],
+  WAITING_CUSTOMER: ['IN_PROGRESS', 'CLOSED', 'CANCELLED'],
+  QUALIFIED: ['CONVERTED', 'CLOSED', 'CANCELLED'],
+  CONVERTED: [],
+  CLOSED: [],
+  CANCELLED: [],
+}
+
+export function isTerminalStatus(status: CustomerRequestStatus): boolean {
+  return NEXT_STATUSES[status].length === 0
+}
+
+// CONVERTED's real meaning (audited from customerRequestService.ts): a
+// request may only become CONVERTED once it already references a real,
+// existing Appointment (`appointmentId`) — the backend rejects the
+// transition otherwise. This is the actual, existing downstream entity;
+// no WorkOrder/Job/ServiceOrder model exists anywhere in this codebase.
+export type AppointmentStatus = 'SCHEDULED' | 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW'
+
+export const APPOINTMENT_STATUS_LABELS: Record<AppointmentStatus, string> = {
+  SCHEDULED: 'Запланирована',
+  CONFIRMED: 'Подтверждена',
+  IN_PROGRESS: 'Выполняется',
+  COMPLETED: 'Завершена',
+  CANCELLED: 'Отменена',
+  NO_SHOW: 'Клиент не пришёл',
+}
+
+/** Just enough of AppointmentDto for the "куда ведёт CONVERTED" summary — no vehicle/service/customer fields, those are already known from the request itself. */
+export interface AppointmentSummaryDto {
+  id: string
+  startAt: string
+  endAt: string
+  status: AppointmentStatus
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle } from 'lucide-react'
+import { useNavigate, Link } from 'react-router-dom'
+import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle, ArrowRight, CalendarCheck } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -17,9 +17,13 @@ import {
   type ServiceRefDto,
   type ConversationDto,
   type EscalationDto,
+  type AppointmentSummaryDto,
   type Paginated,
   REQUEST_STATUS_LABELS,
   SOURCE_LABELS,
+  APPOINTMENT_STATUS_LABELS,
+  NEXT_STATUSES,
+  isTerminalStatus,
   customerName,
   vehicleLabel,
   serviceName,
@@ -53,6 +57,17 @@ import {
 //     recent linked conversation, if one exists. No CustomerRequest ->
 //     AiEscalation relation exists directly, so without a linked
 //     conversation this section is simply not shown (spec §20).
+//
+// Prompt 27 — Request Lifecycle v2. Audited customerRequestService.ts
+// directly: CONVERTED requires an existing appointmentId (the backend
+// rejects the transition otherwise) — Appointment is the real, already-
+// built downstream entity (Prompts 05+), not something invented here. The
+// status control below only ever offers the request's REAL allowed next
+// statuses (NEXT_STATUSES, mirroring the backend's own ALLOWED_TRANSITIONS
+// table) instead of all 7 values regardless of validity. When a request
+// has an appointmentId, its real appointment summary
+// (GET /api/appointments/:id — one extra call, only for the one opened
+// request, not per-row) is shown instead of a bare id.
 // ---------------------------------------------------------------------------
 
 interface EditFormState {
@@ -78,7 +93,6 @@ interface AppointmentRefDto {
   startAt: string
 }
 
-const STATUSES: CustomerRequestStatus[] = ['NEW', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'QUALIFIED', 'CONVERTED', 'CLOSED', 'CANCELLED']
 const SOURCES: CustomerRequestSource[] = ['PHONE', 'WEBSITE', 'MANUAL', 'OTHER']
 
 export interface RequestDetailPanelProps {
@@ -110,6 +124,8 @@ export function RequestDetailPanel({
   const [conversations, setConversations] = useState<ConversationDto[]>([])
   const [conversationsError, setConversationsError] = useState(false)
   const [escalation, setEscalation] = useState<EscalationDto | null>(null)
+  const [appointment, setAppointment] = useState<AppointmentSummaryDto | null>(null)
+  const [appointmentError, setAppointmentError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -130,7 +146,24 @@ export function RequestDetailPanel({
     ])
 
     if (requestResult.status === 'fulfilled') {
-      setRequest(requestResult.value.customerRequest)
+      const loadedRequest = requestResult.value.customerRequest
+      setRequest(loadedRequest)
+      // Appointment has no bulk reference list anywhere in this app (unlike
+      // customers/vehicles/services) — a single-item lookup for the one
+      // opened request's own linked appointment, not a per-row fetch.
+      if (loadedRequest.appointmentId) {
+        try {
+          const apptResult = await apiFetch<{ appointment: AppointmentSummaryDto }>(`/api/appointments/${loadedRequest.appointmentId}`)
+          setAppointment(apptResult.appointment)
+          setAppointmentError(false)
+        } catch {
+          setAppointment(null)
+          setAppointmentError(true)
+        }
+      } else {
+        setAppointment(null)
+        setAppointmentError(false)
+      }
     } else {
       setError('Не удалось загрузить заявку.')
     }
@@ -271,14 +304,24 @@ export function RequestDetailPanel({
                 Требует внимания
               </Badge>
             )}
-            {canManage ? (
+            {canManage && request.status === 'NEW' && (
+              <Button size="sm" onClick={() => handleStatusChange('IN_PROGRESS')}>
+                Взять в работу
+              </Button>
+            )}
+            {canManage && !isTerminalStatus(request.status) ? (
               <select
                 value={request.status}
                 onChange={(e) => handleStatusChange(e.target.value as CustomerRequestStatus)}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                 aria-label="Изменить статус заявки"
               >
-                {STATUSES.map((s) => (
+                {/* Only the request's real current status + its real allowed
+                    next statuses (NEXT_STATUSES, mirroring the backend's own
+                    ALLOWED_TRANSITIONS) — never all 7 values regardless of
+                    validity (spec §9). */}
+                <option value={request.status}>{REQUEST_STATUS_LABELS[request.status]}</option>
+                {NEXT_STATUSES[request.status].map((s) => (
                   <option key={s} value={s}>
                     {REQUEST_STATUS_LABELS[s]}
                   </option>
@@ -432,14 +475,23 @@ export function RequestDetailPanel({
                 <select
                   id="req-status"
                   value={form.status}
+                  disabled={request ? isTerminalStatus(request.status) : false}
                   onChange={(e) => setForm({ ...form, status: e.target.value as CustomerRequestStatus })}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {REQUEST_STATUS_LABELS[s]}
-                    </option>
-                  ))}
+                  {/* Only the request's real current status + its real allowed
+                      next statuses — same NEXT_STATUSES table as the header's
+                      quick-change control (spec §9). */}
+                  {request && (
+                    <>
+                      <option value={request.status}>{REQUEST_STATUS_LABELS[request.status]}</option>
+                      {NEXT_STATUSES[request.status].map((s) => (
+                        <option key={s} value={s}>
+                          {REQUEST_STATUS_LABELS[s]}
+                        </option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </div>
             </div>
@@ -539,6 +591,46 @@ export function RequestDetailPanel({
               <p className="text-sm text-muted-foreground">Услуга не указана</p>
             )}
           </section>
+
+          {/* "Куда ведёт CONVERTED" (spec §8/§4) — Appointment is the real
+              existing downstream entity, audited from
+              customerRequestService.ts's own transition rule (a request can
+              only become CONVERTED once appointmentId is set). Shown once a
+              link exists, or as real next-step guidance while still
+              QUALIFIED — never a fabricated progress/work-order UI. */}
+          {(request.appointmentId || request.status === 'QUALIFIED') && (
+            <section className="space-y-2 rounded-md border border-border p-3">
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <CalendarCheck className="h-4 w-4 text-muted-foreground" />
+                Запись
+              </h3>
+              {request.appointmentId ? (
+                appointmentError ? (
+                  <p className="text-sm text-destructive">Не удалось загрузить запись</p>
+                ) : appointment ? (
+                  <Link
+                    to="/appointments"
+                    className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-sm hover:bg-muted/40"
+                  >
+                    <span>
+                      {utcToZonedParts(new Date(appointment.startAt), timezone).dateStr}{' '}
+                      {utcToZonedParts(new Date(appointment.startAt), timezone).timeStr}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <Badge variant="default">{APPOINTMENT_STATUS_LABELS[appointment.status]}</Badge>
+                      <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                    </span>
+                  </Link>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Загрузка...</p>
+                )
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Чтобы преобразовать заявку в запись, свяжите её с существующей записью через «Редактировать», затем переведите статус в «{REQUEST_STATUS_LABELS.CONVERTED}».
+                </p>
+              )}
+            </section>
+          )}
 
           <section className="space-y-2 rounded-md border border-border p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold">
