@@ -9,7 +9,6 @@ import {
   Car,
   UserPlus,
   History,
-  ClipboardList,
   FileText,
   UsersRound,
 } from 'lucide-react'
@@ -50,7 +49,6 @@ const GROUPS: SettingsGroup[] = [
       { to: '/settings/vehicles', label: 'Автомобили', description: 'Автомобили клиентов', icon: Car },
       { to: '/settings/leads', label: 'Лиды', description: 'Потенциальные клиенты', icon: UserPlus },
       { to: '/settings/service-history', label: 'История обслуживания', description: 'Выполненные работы', icon: History },
-      { to: '/settings/customer-requests', label: 'Заявки клиентов', description: 'Входящие заявки и их статус', icon: ClipboardList },
     ],
   },
   {

@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { LayoutDashboard, MessageSquare, Users, CalendarDays, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
+import { LayoutDashboard, MessageSquare, Users, CalendarDays, ClipboardList, Bot, UserRoundCheck, Radio, Settings } from 'lucide-react'
 
 /**
  * The single source of truth for the primary product navigation (Prompt 19
@@ -17,6 +17,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/conversations', label: 'Диалоги', icon: MessageSquare },
   { to: '/clients', label: 'Клиенты', icon: Users },
+  { to: '/requests', label: 'Заявки', icon: ClipboardList },
   { to: '/appointments', label: 'Записи', icon: CalendarDays },
   { to: '/ai-admin', label: 'AI-администратор', icon: Bot },
   { to: '/escalations', label: 'Передача сотруднику', icon: UserRoundCheck },
@@ -36,6 +37,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/conversations': 'Диалоги',
   '/clients': 'Клиенты',
+  '/requests': 'Заявки',
   '/appointments': 'Записи',
   '/ai-admin': 'AI-администратор',
   '/escalations': 'Передача сотруднику',
@@ -49,7 +51,6 @@ const PAGE_TITLES: Record<string, string> = {
   '/settings/vehicles': 'Автомобили',
   '/settings/leads': 'Лиды',
   '/settings/service-history': 'История обслуживания',
-  '/settings/customer-requests': 'Заявки клиентов',
   '/settings/ai-logs': 'AI Logs',
   '/settings/team': 'Команда',
 }

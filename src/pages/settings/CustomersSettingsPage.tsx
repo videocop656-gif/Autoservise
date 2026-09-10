@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw, Car, ClipboardList } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import { PageHeader } from '../../components/layout/PageHeader'
@@ -81,6 +82,18 @@ export default function CustomersSettingsPage() {
   const [saving, setSaving] = useState(false)
 
   const [openId, setOpenId] = useState<string | null>(null)
+
+  // Cross-navigation from Request Detail (/clients?open=<id>) — same
+  // mechanism as /conversations' own ?open= handling (Prompt 23).
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const toOpen = searchParams.get('open')
+    if (toOpen) {
+      setOpenId(toOpen)
+      setSearchParams({}, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadCustomers() {
     setLoading(true)

@@ -51,6 +51,7 @@ export default function App() {
         <Route path="/conversations" element={<ConversationsSettingsPage />} />
         <Route path="/clients" element={<CustomersSettingsPage />} />
         <Route path="/appointments" element={<AppointmentsSettingsPage />} />
+        <Route path="/requests" element={<CustomerRequestsSettingsPage />} />
         <Route path="/ai-admin" element={<AiSettingsPage />} />
         <Route path="/escalations" element={<EscalationsSettingsPage />} />
         <Route path="/channels" element={<ChannelsSettingsPage />} />
@@ -64,7 +65,6 @@ export default function App() {
         <Route path="/settings/vehicles" element={<VehiclesSettingsPage />} />
         <Route path="/settings/leads" element={<LeadsSettingsPage />} />
         <Route path="/settings/service-history" element={<ServiceHistorySettingsPage />} />
-        <Route path="/settings/customer-requests" element={<CustomerRequestsSettingsPage />} />
         <Route path="/settings/ai-logs" element={<AiLogsSettingsPage />} />
         <Route path="/settings/team" element={<TeamSettingsPage />} />
 
@@ -72,6 +72,7 @@ export default function App() {
         <Route path="/settings/conversations" element={<Navigate to="/conversations" replace />} />
         <Route path="/settings/customers" element={<Navigate to="/clients" replace />} />
         <Route path="/settings/appointments" element={<Navigate to="/appointments" replace />} />
+        <Route path="/settings/customer-requests" element={<Navigate to="/requests" replace />} />
         <Route path="/settings/ai" element={<Navigate to="/ai-admin" replace />} />
         <Route path="/settings/escalations" element={<Navigate to="/escalations" replace />} />
         <Route path="/settings/channels" element={<Navigate to="/channels" replace />} />
