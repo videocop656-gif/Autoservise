@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, ClipboardList, History, XCircle } from 'lucide-react'
+import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, ClipboardList, History, XCircle, Plus } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -489,10 +489,29 @@ export function AppointmentDetailPanel({
           </section>
 
           <section className="space-y-2 rounded-md border border-border p-3">
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-              <History className="h-4 w-4 text-muted-foreground" />
-              История обслуживания
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <History className="h-4 w-4 text-muted-foreground" />
+                История обслуживания
+              </h3>
+              {/* Prompt 29 — completing an appointment does not create a
+                  ServiceRecord automatically (audited: appointmentService.ts
+                  never touches serviceRecordRepository). This link makes
+                  the real, existing, manual next step ("log what was
+                  actually done") one click away instead of a separate,
+                  unguided trip to Settings, pre-filling the exact
+                  customer/vehicle/service/appointment already known here —
+                  not a new workflow, just existing-form pre-fill. */}
+              {canManage && appointment.status === 'COMPLETED' && (
+                <Link
+                  to={`/settings/service-history?vehicleId=${appointment.vehicleId}&customerId=${appointment.customerId}&serviceId=${appointment.serviceId}&appointmentId=${appointment.id}`}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+                >
+                  <Plus className="h-3 w-3" />
+                  Добавить запись
+                </Link>
+              )}
+            </div>
             {historyError && <p className="text-sm text-destructive">Не удалось загрузить историю обслуживания</p>}
             {!historyError && history.length === 0 && <p className="text-sm text-muted-foreground">Записей истории по этой записи нет</p>}
             {history.map((h) => (

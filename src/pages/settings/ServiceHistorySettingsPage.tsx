@@ -175,13 +175,34 @@ export default function ServiceHistorySettingsPage() {
     setPage(1)
   }, [vehicleFilter, customerFilter, includeArchived])
 
-  function openCreateForm() {
+  function openCreateForm(prefill?: Partial<FormState>) {
     setEditingId(null)
-    setForm({ ...EMPTY_FORM, vehicleId: vehicleFilter || '' })
+    setForm({ ...EMPTY_FORM, vehicleId: vehicleFilter || '', ...prefill })
     setFormError(null)
     setFieldErrors({})
     setShowForm(true)
   }
+
+  // Prompt 29 — cross-navigation from Appointment Detail's "Добавить
+  // запись" link (/settings/service-history?vehicleId=&customerId=&
+  // serviceId=&appointmentId=): opens the create form pre-filled with the
+  // exact customer/vehicle/service/appointment already known there,
+  // instead of leaving the admin to look them all up again manually. No
+  // new endpoint, no automatic ServiceRecord creation — the admin still
+  // reviews and submits the existing form themselves.
+  useEffect(() => {
+    const appointmentId = searchParams.get('appointmentId')
+    if (appointmentId) {
+      openCreateForm({
+        customerId: searchParams.get('customerId') ?? '',
+        vehicleId: searchParams.get('vehicleId') ?? '',
+        serviceId: searchParams.get('serviceId') ?? '',
+        appointmentId,
+      })
+      setSearchParams({}, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function openEditForm(record: ServiceRecordDto) {
     const local = utcToZonedParts(new Date(record.performedAt), timezone)
@@ -288,7 +309,7 @@ export default function ServiceHistorySettingsPage() {
                   Сбросить фильтр
                 </Button>
               )}
-              <Button size="sm" onClick={openCreateForm} disabled={customers.length === 0 || services.length === 0}>
+              <Button size="sm" onClick={() => openCreateForm()} disabled={customers.length === 0 || services.length === 0}>
                 <Plus className="mr-1 h-4 w-4" />
                 Add
               </Button>
