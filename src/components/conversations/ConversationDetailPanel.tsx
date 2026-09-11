@@ -359,11 +359,15 @@ export function ConversationDetailPanel({
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Клиент</h3>
               {customer ? (
-                <div className="mt-1 space-y-0.5 text-sm">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/clients?open=${customer.id}`)}
+                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
+                >
                   <div className="font-medium">{customerName(customers, detail.customerId)}</div>
                   {customer.phone && <div className="text-muted-foreground">{customer.phone}</div>}
                   {customer.email && <div className="text-muted-foreground">{customer.email}</div>}
-                </div>
+                </button>
               ) : (
                 <p className="mt-1 text-sm text-muted-foreground">Клиент не определён</p>
               )}
@@ -390,11 +394,15 @@ export function ConversationDetailPanel({
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Заявка</h3>
               {request ? (
-                <div className="mt-1 space-y-0.5 text-sm">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/requests?open=${request.id}`)}
+                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
+                >
                   <div className="font-medium">{request.subject}</div>
                   {service && <div className="text-muted-foreground">Услуга: {serviceName(services, service.id)}</div>}
                   <div className="text-muted-foreground">Статус: {REQUEST_STATUS_LABELS[request.status]}</div>
-                </div>
+                </button>
               ) : (
                 <p className="mt-1 text-sm text-muted-foreground">Заявка не связана</p>
               )}

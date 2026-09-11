@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Pencil, Plus, Archive, ArchiveRestore } from 'lucide-react'
+import { useSearchParams, Link } from 'react-router-dom'
+import { Pencil, Plus, Archive, ArchiveRestore, CalendarDays } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import Pagination from '../../components/Pagination'
 import { Button } from '../../components/ui/button'
@@ -357,6 +357,17 @@ export default function ServiceHistorySettingsPage() {
                     <p className="line-clamp-1 text-sm text-muted-foreground">{record.workDescription}</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
+                    {/* Prompt 30 — closes the "Service History → Appointment"
+                        cross-navigation gap flagged in Prompts 28/29's own
+                        Final Reports: the real appointmentId was already on
+                        this row's data, just never linked. */}
+                    {record.appointmentId && (
+                      <Button variant="ghost" size="sm" asChild title="Открыть запись">
+                        <Link to={`/appointments?open=${record.appointmentId}`}>
+                          <CalendarDays className="h-4 w-4" />
+                        </Link>
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" onClick={() => openEditForm(record)}>
                       <Pencil className="h-4 w-4" />
                     </Button>

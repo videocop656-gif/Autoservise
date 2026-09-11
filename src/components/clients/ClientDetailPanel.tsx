@@ -522,12 +522,27 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
             <h3 className="text-sm font-semibold">История обслуживания</h3>
             {historyError && <p className="text-sm text-destructive">Не удалось загрузить историю обслуживания</p>}
             {!historyError && history.length === 0 && <p className="text-sm text-muted-foreground">История обслуживания пока отсутствует</p>}
-            {history.map((h) => (
-              <div key={h.id} className="rounded-md border border-border p-2 text-sm">
-                <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
-                <div>{h.workDescription}</div>
-              </div>
-            ))}
+            {history.map((h) =>
+              // Prompt 30 — closes the "Service History → Appointment" gap:
+              // ServiceRecord.appointmentId was already real data, just
+              // never linked from this compact list.
+              h.appointmentId ? (
+                <button
+                  key={h.id}
+                  type="button"
+                  onClick={() => navigate(`/appointments?open=${h.appointmentId}`)}
+                  className="block w-full rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
+                >
+                  <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
+                  <div>{h.workDescription}</div>
+                </button>
+              ) : (
+                <div key={h.id} className="rounded-md border border-border p-2 text-sm">
+                  <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
+                  <div>{h.workDescription}</div>
+                </div>
+              )
+            )}
           </section>
 
           {/* Appointments (Prompt 28) — read-only + link into the existing
