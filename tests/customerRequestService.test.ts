@@ -435,6 +435,42 @@ describe('updateCustomerRequest', () => {
     })
   })
 
+  // Prompt 31 — Operational Flow UX Hardening. Request Detail's new
+  // "Создать запись" action links the freshly-created Appointment through
+  // exactly this call shape: a plain PATCH { appointmentId } with no
+  // status change (the status transition to CONVERTED stays a separate,
+  // explicit step — no auto-transition is invented, per spec §5). This
+  // re-uses assertRelations' existing tenant-scoped appointment lookup
+  // (relationsChanged is true whenever input.appointmentId !== undefined,
+  // audited above) — these tests just pin that behavior for the new
+  // call site so a future change can't silently drop the tenant check.
+  describe('Prompt 31 — linking an appointment via a plain PATCH (no status change)', () => {
+    it('links a real, same-tenant appointment with no status change', async () => {
+      crFindByIdMock.mockResolvedValue(makeRequest({ status: 'QUALIFIED', appointmentId: null }))
+      await expect(
+        updateCustomerRequest(makeAuthContext('owner'), 'r1', { appointmentId: APPOINTMENT_ID } as never)
+      ).resolves.toBeDefined()
+      expect(crUpdateByIdMock).toHaveBeenCalled()
+      expect(crUpdateWithStatusHistoryMock).not.toHaveBeenCalled()
+    })
+
+    it('returns 404 when linking an appointment that belongs to another tenant / does not exist', async () => {
+      crFindByIdMock.mockResolvedValue(makeRequest({ status: 'QUALIFIED', appointmentId: null }))
+      appointmentFindByIdMock.mockResolvedValue(null)
+      await expect(
+        updateCustomerRequest(makeAuthContext('owner'), 'r1', { appointmentId: APPOINTMENT_ID } as never)
+      ).rejects.toMatchObject({ statusCode: 404 })
+    })
+
+    it('returns 400 when the appointment belongs to a different customer than the request', async () => {
+      crFindByIdMock.mockResolvedValue(makeRequest({ status: 'QUALIFIED', appointmentId: null }))
+      appointmentFindByIdMock.mockResolvedValue(makeAppt({ customerId: 'someone-else' }))
+      await expect(
+        updateCustomerRequest(makeAuthContext('owner'), 'r1', { appointmentId: APPOINTMENT_ID } as never)
+      ).rejects.toMatchObject({ statusCode: 400 })
+    })
+  })
+
   describe('requestedTimeFrom/requestedTimeTo merge on partial update', () => {
     it('rejects when the new requestedTimeFrom would be after the existing requestedTimeTo', async () => {
       crFindByIdMock.mockResolvedValue(makeRequest({ requestedTimeFrom: '09:00', requestedTimeTo: '10:00' }))

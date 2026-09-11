@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle, ArrowRight, CalendarCheck } from 'lucide-react'
+import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle, ArrowRight, CalendarCheck, Plus } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -136,6 +136,19 @@ export function RequestDetailPanel({
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
+
+  // Prompt 31 — Request → Appointment: an inline quick-create mini-form,
+  // same architecture as Client Detail's own vehicle/request quick-create
+  // forms (Prompt 23) — no new form component, no new route. Pre-filled
+  // from the request's own vehicle/service when it already has them; the
+  // customer is fixed (the request's own customerId), matching how
+  // Appointment.customerId/vehicleId/serviceId are validated server-side
+  // (appointmentService.ts requires the vehicle to belong to the customer).
+  const [showApptForm, setShowApptForm] = useState(false)
+  const [apptForm, setApptForm] = useState({ vehicleId: '', serviceId: '', date: '', startTime: '', endTime: '', notes: '' })
+  const [apptFormError, setApptFormError] = useState<string | null>(null)
+  const [apptFieldErrors, setApptFieldErrors] = useState<Record<string, string[]>>({})
+  const [apptSaving, setApptSaving] = useState(false)
 
   async function loadAll() {
     setLoading(true)
@@ -275,10 +288,90 @@ export function RequestDetailPanel({
     }
   }
 
+  function openApptForm() {
+    if (!request) return
+    setApptForm({
+      vehicleId: request.vehicleId ?? '',
+      serviceId: request.serviceId ?? '',
+      date: '',
+      startTime: '',
+      endTime: '',
+      notes: '',
+    })
+    setApptFormError(null)
+    setApptFieldErrors({})
+    setShowApptForm(true)
+  }
+
+  // Creates the Appointment through the existing POST /api/appointments
+  // endpoint (the same one AppointmentsSettingsPage's own "Новая запись"
+  // form uses — no new endpoint), then links it to this request through
+  // the existing PATCH /api/customer-requests/:id endpoint (the same call
+  // "Редактировать" already makes to set appointmentId). Two existing
+  // calls, not a new combined one — but a single user action, and the
+  // request never renders as "without an appointment" once step one
+  // succeeds even if step two fails (spec §4/§11): the error is shown and
+  // the newly-created appointment stays discoverable from /appointments.
+  //
+  // Spec §5 — audited customerRequestService.ts directly: setting
+  // appointmentId never auto-transitions status to CONVERTED. No such
+  // automation is invented here; the status control below still offers
+  // CONVERTED as an explicit next step once appointmentId is set.
+  async function handleCreateAppointment(e: FormEvent) {
+    e.preventDefault()
+    if (!request || apptSaving) return
+    setApptFormError(null)
+    setApptFieldErrors({})
+    setApptSaving(true)
+    try {
+      const startAt = zonedTimeToUtc(apptForm.date, apptForm.startTime, timezone).toISOString()
+      const endAt = zonedTimeToUtc(apptForm.date, apptForm.endTime, timezone).toISOString()
+      const created = await apiFetch<{ appointment: AppointmentSummaryDto }>('/api/appointments', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: request.customerId,
+          vehicleId: apptForm.vehicleId,
+          serviceId: apptForm.serviceId,
+          startAt,
+          endAt,
+          notes: apptForm.notes.trim() || null,
+        }),
+      })
+      try {
+        await apiFetch(`/api/customer-requests/${requestId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ appointmentId: created.appointment.id }),
+        })
+      } catch (linkErr) {
+        setApptFormError(
+          linkErr instanceof ApiClientError
+            ? `Запись создана, но не удалось связать её с заявкой: ${linkErr.message}`
+            : 'Запись создана, но не удалось связать её с заявкой.'
+        )
+        setApptSaving(false)
+        await loadAll()
+        return
+      }
+      setShowApptForm(false)
+      await loadAll()
+      onChanged()
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setApptFormError(err.message || 'Проверьте заполненные поля.')
+        setApptFieldErrors(err.fieldErrors)
+      } else {
+        setApptFormError('Не удалось создать запись.')
+      }
+    } finally {
+      setApptSaving(false)
+    }
+  }
+
   const customer = request ? customers.find((c) => c.id === request.customerId) : undefined
   const vehicle = request?.vehicleId ? vehicles.find((v) => v.id === request.vehicleId) : undefined
   const service = request?.serviceId ? services.find((s) => s.id === request.serviceId) : undefined
   const customerVehicles = form ? vehicles.filter((v) => v.customerId === form.customerId) : []
+  const requestCustomerVehicles = request ? vehicles.filter((v) => v.customerId === request.customerId) : []
   const matchingAppointments = form
     ? appointments.filter(
         (a) =>
@@ -592,13 +685,16 @@ export function RequestDetailPanel({
             )}
           </section>
 
-          {/* "Куда ведёт CONVERTED" (spec §8/§4) — Appointment is the real
-              existing downstream entity, audited from
+          {/* "Куда ведёт CONVERTED" (spec §8/§4 of Prompt 24) — Appointment is
+              the real existing downstream entity, audited from
               customerRequestService.ts's own transition rule (a request can
               only become CONVERTED once appointmentId is set). Shown once a
-              link exists, or as real next-step guidance while still
-              QUALIFIED — never a fabricated progress/work-order UI. */}
-          {(request.appointmentId || request.status === 'QUALIFIED') && (
+              link exists, or (Prompt 31 §4) whenever the request is still in
+              a non-terminal state, so "Создать запись" stays reachable
+              through the request's whole active lifecycle — never only
+              while QUALIFIED, and never offered once the request is
+              CLOSED/CANCELLED with no appointment (nothing to convert). */}
+          {(request.appointmentId || !isTerminalStatus(request.status)) && (
             <section className="space-y-2 rounded-md border border-border p-3">
               <h3 className="flex items-center gap-1.5 text-sm font-semibold">
                 <CalendarCheck className="h-4 w-4 text-muted-foreground" />
@@ -608,8 +704,14 @@ export function RequestDetailPanel({
                 appointmentError ? (
                   <p className="text-sm text-destructive">Не удалось загрузить запись</p>
                 ) : appointment ? (
+                  // Prompt 31 §4 — deep-links to the specific Appointment via
+                  // the existing ?open= cross-navigation mechanism (the same
+                  // one every other Detail-to-Detail link in this app uses),
+                  // not the bare list. §10: once an appointment is linked,
+                  // this replaces "Create Appointment" outright — reopening
+                  // Request Detail can never offer to create a second one.
                   <Link
-                    to="/appointments"
+                    to={`/appointments?open=${appointment.id}`}
                     className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-sm hover:bg-muted/40"
                   >
                     <span>
@@ -624,10 +726,97 @@ export function RequestDetailPanel({
                 ) : (
                   <p className="text-sm text-muted-foreground">Загрузка...</p>
                 )
+              ) : canManage ? (
+                <>
+                  {!showApptForm && (
+                    <Button type="button" variant="outline" size="sm" onClick={openApptForm}>
+                      <Plus className="mr-1 h-3.5 w-3.5" />
+                      Создать запись
+                    </Button>
+                  )}
+                  {showApptForm && (
+                    <form onSubmit={handleCreateAppointment} className="space-y-2 rounded-md border border-border p-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <select
+                          required
+                          aria-label="Автомобиль"
+                          value={apptForm.vehicleId}
+                          onChange={(e) => setApptForm({ ...apptForm, vehicleId: e.target.value })}
+                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        >
+                          <option value="" disabled>
+                            Выберите автомобиль...
+                          </option>
+                          {requestCustomerVehicles.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {vehicleLabel(vehicles, v.id)}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          required
+                          aria-label="Услуга"
+                          value={apptForm.serviceId}
+                          onChange={(e) => setApptForm({ ...apptForm, serviceId: e.target.value })}
+                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                        >
+                          <option value="" disabled>
+                            Выберите услугу...
+                          </option>
+                          {services.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <Input
+                          type="date"
+                          required
+                          aria-label="Дата"
+                          value={apptForm.date}
+                          onChange={(e) => setApptForm({ ...apptForm, date: e.target.value })}
+                        />
+                        <Input
+                          type="time"
+                          required
+                          aria-label="Начало"
+                          value={apptForm.startTime}
+                          onChange={(e) => setApptForm({ ...apptForm, startTime: e.target.value })}
+                        />
+                        <Input
+                          type="time"
+                          required
+                          aria-label="Окончание"
+                          value={apptForm.endTime}
+                          onChange={(e) => setApptForm({ ...apptForm, endTime: e.target.value })}
+                        />
+                      </div>
+                      <Textarea
+                        placeholder="Заметки (опционально)"
+                        value={apptForm.notes}
+                        onChange={(e) => setApptForm({ ...apptForm, notes: e.target.value })}
+                      />
+                      {apptFormError && <p className="text-sm text-destructive">{apptFormError}</p>}
+                      {Object.entries(apptFieldErrors).map(([field, messages]) => (
+                        <p key={field} className="text-sm text-destructive">
+                          {field}: {messages[0]}
+                        </p>
+                      ))}
+                      <div className="flex gap-2">
+                        <Button type="submit" size="sm" disabled={apptSaving}>
+                          {apptSaving ? 'Сохранение...' : 'Сохранить'}
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setShowApptForm(false)} disabled={apptSaving}>
+                          Отмена
+                        </Button>
+                      </div>
+                    </form>
+                  )}
+                </>
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  Чтобы преобразовать заявку в запись, свяжите её с существующей записью через «Редактировать», затем переведите статус в «{REQUEST_STATUS_LABELS.CONVERTED}».
-                </p>
+                <p className="text-sm text-muted-foreground">Запись не связана</p>
               )}
             </section>
           )}
