@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw } from 'lucide-react'
 import { PageContainer } from '../../components/layout/PageContainer'
 import { PageHeader } from '../../components/layout/PageHeader'
@@ -67,6 +67,13 @@ export default function AppointmentsSettingsPage() {
   const [customers, setCustomers] = useState<CustomerRefDto[]>([])
   const [vehicles, setVehicles] = useState<VehicleRefDto[]>([])
   const [services, setServices] = useState<ServiceRefDto[]>([])
+  // Prompt 34 — "Новая запись" is disabled until at least one customer AND
+  // one service exist (an appointment requires both, per createAppointmentSchema).
+  // Tracked separately from the list's own `loading` so the "нечего создать"
+  // notice below never flashes before this reference-data fetch has even
+  // resolved — a real, empty tenant looks identical to "still loading"
+  // otherwise (confirmed: a fresh tenant has 0 customers/0 services).
+  const [referenceLoaded, setReferenceLoaded] = useState(false)
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<AppointmentStatus | ''>('')
   const [includeCancelled, setIncludeCancelled] = useState(false)
@@ -106,6 +113,8 @@ export default function AppointmentsSettingsPage() {
       setServices(servicesResult.services)
     } catch {
       // Non-fatal: the appointments list/detail still work, just fall back to raw ids.
+    } finally {
+      setReferenceLoaded(true)
     }
   }
 
@@ -237,6 +246,32 @@ export default function AppointmentsSettingsPage() {
           ) : undefined
         }
       />
+
+      {/* Prompt 34 — the create button above is disabled (still, unchanged)
+          whenever the tenant has no customer or no service to attach an
+          appointment to — createAppointmentSchema requires both. Before
+          this, that reason was invisible: the button just sat greyed out
+          with no explanation, which is what made "Новая запись" look
+          broken rather than merely blocked on prerequisite data. Links
+          reuse the existing Clients/Services screens — no duplicate
+          client/service creation flow is introduced here. */}
+      {canManage && referenceLoaded && (customers.length === 0 || services.length === 0) && (
+        <p className="text-sm text-muted-foreground">
+          Чтобы создать запись, сначала добавьте{' '}
+          {customers.length === 0 && (
+            <Link to="/clients" className="underline hover:text-foreground">
+              клиента
+            </Link>
+          )}
+          {customers.length === 0 && services.length === 0 && ' и '}
+          {services.length === 0 && (
+            <Link to="/settings/services" className="underline hover:text-foreground">
+              услугу
+            </Link>
+          )}
+          .
+        </p>
+      )}
 
       <Card>
         <CardHeader className="space-y-3">

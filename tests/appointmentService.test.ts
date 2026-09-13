@@ -132,6 +132,37 @@ describe('getAppointment', () => {
     aptFindByIdMock.mockResolvedValue(null)
     await expect(getAppointment(makeAuthContext('owner'), 'unknown')).rejects.toMatchObject({ statusCode: 404 })
   })
+
+  // Prompt 34 §17 Test 7 — a newly created appointment can be retrieved
+  // afterward through the same, unchanged, tenant-scoped lookup.
+  it('Prompt 34 — returns the appointment when it exists in-tenant (a freshly created one can be opened afterward)', async () => {
+    const ctx = makeAuthContext('owner')
+    aptFindByIdMock.mockResolvedValue(makeAppointment())
+    const result = await getAppointment(ctx, 'a1')
+    expect(result).toMatchObject({ id: 'a1', status: 'SCHEDULED' })
+    expect(aptFindByIdMock).toHaveBeenCalledWith(ctx.tenant.id, ctx.business.id, 'a1')
+  })
+})
+
+// Prompt 34 §17 Test 2 — a newly created appointment's initial status.
+// Audited directly: createAppointmentSchema restricts `status` to
+// CREATABLE_STATUSES = ['SCHEDULED'] (tests/appointment.schemas.test.ts
+// already pins that Zod-level restriction), and createAppointment() itself
+// falls back to 'SCHEDULED' whenever the field is omitted. Nothing here
+// lets the browser choose an arbitrary initial status — these tests pin
+// that fact at the service layer, one level below the schema.
+describe('createAppointment — initial status (Prompt 34)', () => {
+  it('defaults to SCHEDULED when status is omitted from input', async () => {
+    const input = inputAt('2026-09-07T06:00:00Z', '2026-09-07T07:00:00Z')
+    await createAppointment(makeAuthContext('owner'), input)
+    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }))
+  })
+
+  it('accepts an explicitly provided SCHEDULED status (the only value CREATABLE_STATUSES allows through the schema)', async () => {
+    const input = inputAt('2026-09-07T06:00:00Z', '2026-09-07T07:00:00Z', { status: 'SCHEDULED' })
+    await createAppointment(makeAuthContext('owner'), input)
+    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }))
+  })
 })
 
 describe('createAppointment — permissions', () => {
