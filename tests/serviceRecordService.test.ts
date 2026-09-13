@@ -229,6 +229,26 @@ describe('createServiceRecord — appointment consistency', () => {
     expect(appointmentFindByIdMock).not.toHaveBeenCalled()
     expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ appointmentId: null }))
   })
+
+  // Prompt 33 §17 Test 6 — documents the CURRENT, deliberate behavior: this
+  // layer only validates that a given appointmentId is consistent
+  // (same-tenant, same customer/vehicle/service — asserted above); it never
+  // checks whether another ServiceRecord already references the same
+  // appointment, so a second create for the same appointmentId succeeds.
+  // Preventing an accidental duplicate from the UI is a frontend concern
+  // (AppointmentDetailPanel hides its "Добавить результат обслуживания"
+  // shortcut once a matching record already exists — see
+  // appointments/shared.ts's serviceCompletionState()), not a server-side
+  // uniqueness constraint — spec §11 explicitly scopes duplicate-safety to
+  // "UI должен защищать... не реализовывать общую distributed idempotency
+  // system". A legitimate second, distinct visit against the same
+  // appointment (e.g. a documented follow-up) must still be possible.
+  it('Prompt 33 — a second ServiceRecord for the same appointmentId is NOT rejected (no server-side uniqueness constraint; duplicate-safety is a UI concern)', async () => {
+    srCreateMock.mockResolvedValue(makeRecord({ appointmentId: APPOINTMENT_ID }))
+    await expect(createServiceRecord(makeAuthContext('owner'), baseInput({ appointmentId: APPOINTMENT_ID }))).resolves.toBeDefined()
+    await expect(createServiceRecord(makeAuthContext('owner'), baseInput({ appointmentId: APPOINTMENT_ID }))).resolves.toBeDefined()
+    expect(srCreateMock).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('createServiceRecord — mileage validation', () => {

@@ -60,3 +60,32 @@ export const APPOINTMENT_NEXT_STATUSES: Record<AppointmentStatus, AppointmentSta
 export function isAppointmentTerminal(status: AppointmentStatus): boolean {
   return APPOINTMENT_NEXT_STATUSES[status].length === 0
 }
+
+// ---------------------------------------------------------------------------
+// Prompt 33 — Service Completion Visibility.
+//
+// A COMPLETED appointment is never guaranteed to have a linked ServiceRecord
+// — completing an appointment is purely a status change (audited directly:
+// appointmentService.ts never touches serviceRecordRepository, see the
+// Prompt 32 audit). This is a pure, framework-free classifier over data
+// AppointmentDetailPanel already fetches for its own "История обслуживания"
+// section (GET /api/service-history?vehicleId=, filtered client-side to
+// this appointment's own real appointmentId) — no new query, no new
+// endpoint, just naming the four states that filtered result can be in:
+//
+//   'not-applicable' — status isn't COMPLETED; the missing-result question
+//                       doesn't apply (spec §4 — the warning is ONLY ever
+//                       about COMPLETED + missing ServiceRecord).
+//   'unknown'         — the history lookup itself failed; we genuinely
+//                       don't know, so neither the warning nor the
+//                       "recorded" state may be shown (never guess).
+//   'missing'         — COMPLETED, lookup succeeded, zero matching records.
+//   'recorded'        — COMPLETED, lookup succeeded, at least one match.
+// ---------------------------------------------------------------------------
+export type ServiceCompletionState = 'not-applicable' | 'unknown' | 'missing' | 'recorded'
+
+export function serviceCompletionState(status: AppointmentStatus, historyCount: number, historyError: boolean): ServiceCompletionState {
+  if (status !== 'COMPLETED') return 'not-applicable'
+  if (historyError) return 'unknown'
+  return historyCount === 0 ? 'missing' : 'recorded'
+}

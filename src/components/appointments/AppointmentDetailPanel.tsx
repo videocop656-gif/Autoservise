@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, ClipboardList, History, XCircle, Plus } from 'lucide-react'
+import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, ClipboardList, History, XCircle, Plus, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -21,6 +21,7 @@ import {
   REQUEST_STATUS_LABELS,
   APPOINTMENT_NEXT_STATUSES,
   isAppointmentTerminal,
+  serviceCompletionState,
   customerName,
   vehicleLabel,
   serviceName,
@@ -222,6 +223,7 @@ export function AppointmentDetailPanel({
   const service = appointment ? services.find((s) => s.id === appointment.serviceId) : undefined
   const customerVehicles = form ? vehicles.filter((v) => v.customerId === form.customerId) : []
   const isTerminal = appointment ? isAppointmentTerminal(appointment.status) : false
+  const completionState = appointment ? serviceCompletionState(appointment.status, history.length, historyError) : 'not-applicable'
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -501,19 +503,49 @@ export function AppointmentDetailPanel({
                   actually done") one click away instead of a separate,
                   unguided trip to Settings, pre-filling the exact
                   customer/vehicle/service/appointment already known here —
-                  not a new workflow, just existing-form pre-fill. */}
-              {canManage && appointment.status === 'COMPLETED' && (
+                  not a new workflow, just existing-form pre-fill.
+                  Prompt 33 — only shown while the result is actually
+                  missing: once a ServiceRecord exists for this appointment
+                  the shortcut disappears rather than inviting a second,
+                  likely-duplicate one (spec §3/§11) — the existing history
+                  list below still shows it, and a genuinely separate
+                  follow-up visit can still be logged from Settings directly. */}
+              {canManage && completionState === 'missing' && (
                 <Link
                   to={`/settings/service-history?vehicleId=${appointment.vehicleId}&customerId=${appointment.customerId}&serviceId=${appointment.serviceId}&appointmentId=${appointment.id}`}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:underline"
                 >
                   <Plus className="h-3 w-3" />
-                  Добавить запись
+                  Добавить результат обслуживания
                 </Link>
               )}
             </div>
+
+            {/* Prompt 33 — Service Completion Visibility. A COMPLETED
+                appointment with no ServiceRecord never surfaced any signal
+                before this — the operator had no way to tell "nobody
+                logged this visit" from "there's simply nothing to show
+                yet" apart from re-reading the empty history list below.
+                'unknown' (the history fetch itself failed) deliberately
+                shows neither state — never guess. Every other status
+                renders nothing here at all (spec §4). */}
+            {completionState === 'missing' && (
+              <Badge variant="warning">
+                <AlertTriangle className="h-3 w-3" />
+                Результат обслуживания не зафиксирован
+              </Badge>
+            )}
+            {completionState === 'recorded' && (
+              <Badge variant="success">
+                <CheckCircle2 className="h-3 w-3" />
+                Результат обслуживания зафиксирован
+              </Badge>
+            )}
+
             {historyError && <p className="text-sm text-destructive">Не удалось загрузить историю обслуживания</p>}
-            {!historyError && history.length === 0 && <p className="text-sm text-muted-foreground">Записей истории по этой записи нет</p>}
+            {!historyError && history.length === 0 && completionState !== 'missing' && (
+              <p className="text-sm text-muted-foreground">Записей истории по этой записи нет</p>
+            )}
             {history.map((h) => (
               <div key={h.id} className="rounded-md border border-border p-2 text-sm">
                 <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
