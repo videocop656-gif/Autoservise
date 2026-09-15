@@ -23,7 +23,7 @@ import {
   customerDisplayName,
   vehicleLabel,
 } from './shared'
-import { type AppointmentDto, APPOINTMENT_STATUS_LABELS } from '../appointments/shared'
+import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
 
 // ---------------------------------------------------------------------------
 // Prompt 23 — Clients v1: Client Detail.
@@ -83,6 +83,12 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
   const [historyError, setHistoryError] = useState(false)
   const [appointments, setAppointments] = useState<AppointmentDto[]>([])
   const [appointmentsError, setAppointmentsError] = useState(false)
+  // Prompt 39 — resolved once here, the same reference-data-fetch-once
+  // convention every other list/detail screen in this app already uses
+  // (AppointmentsSettingsPage/RequestDetailPanel/AppointmentDetailPanel),
+  // not a new pattern — needed to show which catalog Service each history
+  // row is for (spec §1 item 3), a field the API already returns.
+  const [services, setServices] = useState<ServiceRefDto[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -115,7 +121,7 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
   async function loadAll() {
     setLoading(true)
     setError(null)
-    const [customerResult, requestsResult, conversationsResult, historyResult, appointmentsResult] = await Promise.allSettled([
+    const [customerResult, requestsResult, conversationsResult, historyResult, appointmentsResult, servicesResult] = await Promise.allSettled([
       apiFetch<{ customer: CustomerDto; vehicles: VehicleDto[] }>(`/api/customers/${customerId}?includeVehicles=true`),
       apiFetch<Paginated<CustomerRequestDto>>(`/api/customer-requests?customerId=${customerId}&pageSize=5`),
       apiFetch<Paginated<ConversationDto>>(`/api/conversations?customerId=${customerId}&pageSize=5`),
@@ -123,6 +129,9 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
       // Prompt 28 — Appointment.customerId is a real, direct FK; a single
       // bulk fetch, not per-row.
       apiFetch<Paginated<AppointmentDto>>(`/api/appointments?customerId=${customerId}&pageSize=10&includeCancelled=true`),
+      // Prompt 39 — the same unpaginated services reference list every
+      // other appointment/service-history-adjacent screen already fetches.
+      apiFetch<{ services: ServiceRefDto[] }>('/api/services?activeOnly=false'),
     ])
 
     if (customerResult.status === 'fulfilled') {
@@ -139,6 +148,10 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
     setHistoryError(historyResult.status !== 'fulfilled')
     setAppointments(appointmentsResult.status === 'fulfilled' ? appointmentsResult.value.items : [])
     setAppointmentsError(appointmentsResult.status !== 'fulfilled')
+    // Non-fatal, same convention as vehicles/services elsewhere: a failed
+    // reference-data fetch just falls back to omitting the service name,
+    // never blocks the history section itself.
+    setServices(servicesResult.status === 'fulfilled' ? servicesResult.value.services : [])
     setLoading(false)
   }
 
@@ -522,11 +535,24 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
             <h3 className="text-sm font-semibold">История обслуживания</h3>
             {historyError && <p className="text-sm text-destructive">Не удалось загрузить историю обслуживания</p>}
             {!historyError && history.length === 0 && <p className="text-sm text-muted-foreground">История обслуживания пока отсутствует</p>}
-            {history.map((h) =>
+            {history.map((h) => {
+              // Prompt 39 — a client can own several vehicles (spec §6's
+              // explicit ambiguity concern); `vehicles` is already fetched
+              // above for the "Автомобили" section, so resolving it here
+              // costs no extra request. serviceName(services, ...) is the
+              // same helper/reference list every other appointment-adjacent
+              // screen already uses.
+              const recordVehicle = vehicles.find((v) => v.id === h.vehicleId)
+              const meta = (
+                <div className="text-xs text-muted-foreground">
+                  {recordVehicle ? vehicleLabel(recordVehicle) : 'Автомобиль не определён'} · {serviceName(services, h.serviceId) ?? '—'}
+                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {h.totalPrice} {h.currency}
+                </div>
+              )
               // Prompt 30 — closes the "Service History → Appointment" gap:
               // ServiceRecord.appointmentId was already real data, just
               // never linked from this compact list.
-              h.appointmentId ? (
+              return h.appointmentId ? (
                 <button
                   key={h.id}
                   type="button"
@@ -535,6 +561,7 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
                 >
                   <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                   <div>{h.workDescription}</div>
+                  {meta}
                   {/* Prompt 38 — the field was always in the API response;
                       it just wasn't shown here before. */}
                   {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}
@@ -543,10 +570,11 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
                 <div key={h.id} className="rounded-md border border-border p-2 text-sm">
                   <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                   <div>{h.workDescription}</div>
+                  {meta}
                   {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}
                 </div>
               )
-            )}
+            })}
           </section>
 
           {/* Appointments (Prompt 28) — read-only + link into the existing

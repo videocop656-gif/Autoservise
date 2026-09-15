@@ -57,6 +57,10 @@ export interface ServiceRecordDto {
   recommendations: string | null
   totalPrice: string
   currency: string
+  // Prompt 39 — same story as recommendations above: both already returned
+  // by every service-history response, just not previously declared here.
+  serviceId: string
+  mileage: number | null
 }
 
 export interface Paginated<T> {

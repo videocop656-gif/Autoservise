@@ -550,6 +550,16 @@ export function AppointmentDetailPanel({
               <div key={h.id} className="rounded-md border border-border p-2 text-sm">
                 <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                 <div>{h.workDescription}</div>
+                {/* Prompt 39 — same mileage/price context Vehicle/Client
+                    Detail's own history rows now show, for consistency;
+                    the service name is technically already implied by this
+                    appointment's own "Услуга" section above, but showing
+                    it here too keeps this row's shape identical everywhere
+                    a ServiceRecord is rendered. */}
+                <div className="text-xs text-muted-foreground">
+                  {serviceName(services, h.serviceId) ?? '—'}
+                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {h.totalPrice} {h.currency}
+                </div>
                 {/* Prompt 38 — the field was always in the API response;
                     it just wasn't shown here before. */}
                 {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}

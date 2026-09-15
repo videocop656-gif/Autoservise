@@ -19,7 +19,7 @@ import {
   formatActivity,
   formatDate,
 } from './shared'
-import { type AppointmentDto, APPOINTMENT_STATUS_LABELS } from '../appointments/shared'
+import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
 
 // ---------------------------------------------------------------------------
 // Prompt 26 — Vehicle Context v1: Vehicle Detail.
@@ -80,6 +80,10 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
   const [historyError, setHistoryError] = useState(false)
   const [appointments, setAppointments] = useState<AppointmentDto[]>([])
   const [appointmentsError, setAppointmentsError] = useState(false)
+  // Prompt 39 — same reference-data-fetch-once convention used everywhere
+  // else in this app; needed to show which catalog Service each history
+  // row is for (spec §2's own "which service was performed" checklist item).
+  const [services, setServices] = useState<ServiceRefDto[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -94,13 +98,14 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
   async function loadAll() {
     setLoading(true)
     setError(null)
-    const [vehicleResult, requestsResult, historyResult, appointmentsResult] = await Promise.allSettled([
+    const [vehicleResult, requestsResult, historyResult, appointmentsResult, servicesResult] = await Promise.allSettled([
       apiFetch<{ vehicle: VehicleDto }>(`/api/vehicles/${vehicleId}`),
       apiFetch<Paginated<CustomerRequestRefDto>>(`/api/customer-requests?vehicleId=${vehicleId}&pageSize=20`),
       apiFetch<Paginated<ServiceRecordDto>>(`/api/service-history?vehicleId=${vehicleId}&pageSize=5`),
       // Prompt 28 — Appointment.vehicleId is a real, direct FK; a single
       // bulk fetch, not per-row.
       apiFetch<Paginated<AppointmentDto>>(`/api/appointments?vehicleId=${vehicleId}&pageSize=10&includeCancelled=true`),
+      apiFetch<{ services: ServiceRefDto[] }>('/api/services?activeOnly=false'),
     ])
 
     if (vehicleResult.status === 'fulfilled') {
@@ -114,6 +119,7 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
     setHistoryError(historyResult.status !== 'fulfilled')
     setAppointments(appointmentsResult.status === 'fulfilled' ? appointmentsResult.value.items : [])
     setAppointmentsError(appointmentsResult.status !== 'fulfilled')
+    setServices(servicesResult.status === 'fulfilled' ? servicesResult.value.services : [])
     setLoading(false)
   }
 
@@ -375,11 +381,23 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
             </div>
             {historyError && <p className="text-sm text-destructive">Не удалось загрузить историю обслуживания</p>}
             {!historyError && history.length === 0 && <p className="text-sm text-muted-foreground">История обслуживания пока отсутствует</p>}
-            {history.map((h) =>
+            {history.map((h) => {
+              // Prompt 39 — which catalog Service + recorded mileage/price,
+              // spec §2's own checklist ("which service was performed",
+              // "what mileage was recorded") — the vehicle itself is
+              // already implicit (this whole section is scoped to one
+              // vehicle), so no vehicle attribution is needed here, unlike
+              // Client Detail's own multi-vehicle case.
+              const meta = (
+                <div className="text-xs text-muted-foreground">
+                  {serviceName(services, h.serviceId) ?? '—'}
+                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {h.totalPrice} {h.currency}
+                </div>
+              )
               // Prompt 30 — closes the "Service History → Appointment" gap:
               // ServiceRecord.appointmentId was already real data, just
               // never linked from this compact list.
-              h.appointmentId ? (
+              return h.appointmentId ? (
                 <button
                   key={h.id}
                   type="button"
@@ -388,6 +406,7 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
                 >
                   <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                   <div>{h.workDescription}</div>
+                  {meta}
                   {/* Prompt 38 — the field was always in the API response;
                       it just wasn't shown here before. */}
                   {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}
@@ -396,10 +415,11 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
                 <div key={h.id} className="rounded-md border border-border p-2 text-sm">
                   <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                   <div>{h.workDescription}</div>
+                  {meta}
                   {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}
                 </div>
               )
-            )}
+            })}
           </section>
 
           {/* Appointments (Prompt 28) — read-only + link into the existing
