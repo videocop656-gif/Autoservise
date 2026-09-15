@@ -355,6 +355,14 @@ export default function ServiceHistorySettingsPage() {
                       {record.mileage != null ? ` · ${record.mileage} км` : ''} · {record.totalPrice} {record.currency}
                     </p>
                     <p className="line-clamp-1 text-sm text-muted-foreground">{record.workDescription}</p>
+                    {/* Prompt 38 — recommendations were already captured by
+                        this page's own create/edit form and already
+                        returned by the API; they just weren't shown in the
+                        list row before this — an operator had to open
+                        "Редактировать" on a specific record to see them. */}
+                    {record.recommendations && (
+                      <p className="line-clamp-1 text-sm text-muted-foreground">Рекомендовано: {record.recommendations}</p>
+                    )}
                   </div>
                   <div className="flex shrink-0 gap-2">
                     {/* Prompt 30 — closes the "Service History → Appointment"

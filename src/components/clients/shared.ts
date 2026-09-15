@@ -50,6 +50,11 @@ export interface ServiceRecordDto {
   appointmentId: string | null
   performedAt: string
   workDescription: string
+  // Prompt 38 — already returned by GET /api/service-history's own
+  // toServiceRecordDto (server/lib/dto.ts) on every response; this type
+  // just hadn't declared it, so it never reached Vehicle/Client/Appointment
+  // Detail's own compact history rows even though the API always sent it.
+  recommendations: string | null
   totalPrice: string
   currency: string
 }

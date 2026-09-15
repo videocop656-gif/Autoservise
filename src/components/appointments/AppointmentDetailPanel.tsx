@@ -550,6 +550,9 @@ export function AppointmentDetailPanel({
               <div key={h.id} className="rounded-md border border-border p-2 text-sm">
                 <div className="text-xs text-muted-foreground">{formatDate(h.performedAt)}</div>
                 <div>{h.workDescription}</div>
+                {/* Prompt 38 — the field was always in the API response;
+                    it just wasn't shown here before. */}
+                {h.recommendations && <div className="text-muted-foreground">Рекомендовано: {h.recommendations}</div>}
               </div>
             ))}
           </section>
