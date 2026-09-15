@@ -59,7 +59,24 @@ interface AppointmentRefs {
   serviceId: string
 }
 
-/** If an Appointment is linked, it must belong to this tenant/business and reference the exact same customer/vehicle/service. */
+/**
+ * If an Appointment is linked, it must belong to this tenant/business,
+ * reference the exact same customer/vehicle/service, and not be one of the
+ * two statuses where a service visit is factually impossible.
+ *
+ * Prompt 41 audit: CANCELLED and NO_SHOW mean the visit never happened —
+ * before this, nothing stopped a ServiceRecord (real, performed work) from
+ * being linked to either, which is exactly the kind of fabricated
+ * operational state this project has consistently refused to allow
+ * elsewhere (Prompt 33's serviceCompletionState() never invents a result;
+ * Prompt 34 restricts an appointment's own creatable status to SCHEDULED
+ * only). SCHEDULED/CONFIRMED/IN_PROGRESS/COMPLETED are all still allowed —
+ * the existing UI already only ever offers to create one once an
+ * appointment is COMPLETED (AppointmentDetailPanel's "Добавить результат
+ * обслуживания" link, gated by serviceCompletionState()), and this project
+ * has never added a stricter server-side ordering requirement than what a
+ * real, provable impossibility demands.
+ */
 async function assertAppointmentConsistency(ctx: AuthContext, refs: AppointmentRefs): Promise<void> {
   const appointment = await appointmentRepository.findById(ctx.tenant.id, ctx.business.id, refs.appointmentId)
   if (!appointment) {
@@ -73,6 +90,9 @@ async function assertAppointmentConsistency(ctx: AuthContext, refs: AppointmentR
   }
   if (appointment.serviceId !== refs.serviceId) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Appointment is for a different service')
+  }
+  if (appointment.status === 'CANCELLED' || appointment.status === 'NO_SHOW') {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Cannot link a service record to a ${appointment.status} appointment — no service was performed`)
   }
 }
 

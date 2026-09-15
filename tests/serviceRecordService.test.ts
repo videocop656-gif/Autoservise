@@ -67,7 +67,16 @@ function makeSvc(overrides: Record<string, unknown> = {}) {
   return { id: SERVICE_ID, tenantId: 't1', businessId: 'b1', isActive: true, ...overrides }
 }
 function makeAppt(overrides: Record<string, unknown> = {}) {
-  return { id: APPOINTMENT_ID, tenantId: 't1', businessId: 'b1', customerId: CUSTOMER_ID, vehicleId: VEHICLE_ID, serviceId: SERVICE_ID, ...overrides }
+  return {
+    id: APPOINTMENT_ID,
+    tenantId: 't1',
+    businessId: 'b1',
+    customerId: CUSTOMER_ID,
+    vehicleId: VEHICLE_ID,
+    serviceId: SERVICE_ID,
+    status: 'COMPLETED',
+    ...overrides,
+  }
 }
 function makeRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -224,6 +233,26 @@ describe('createServiceRecord — appointment consistency', () => {
     ).rejects.toMatchObject({ statusCode: 400 })
   })
 
+  // Prompt 41 audit — CANCELLED/NO_SHOW mean the visit never happened; a
+  // ServiceRecord (real, performed work) could previously be linked to
+  // either with no server-side objection at all. SCHEDULED/CONFIRMED/
+  // IN_PROGRESS/COMPLETED remain allowed — this project has never added a
+  // stricter "must already be COMPLETED" ordering requirement than what a
+  // real, provable impossibility (CANCELLED/NO_SHOW) demands.
+  it.each(['CANCELLED', 'NO_SHOW'])('returns 400 when the appointment is %s (no service could have occurred)', async (status) => {
+    appointmentFindByIdMock.mockResolvedValue(makeAppt({ status }))
+    await expect(
+      createServiceRecord(makeAuthContext('owner'), baseInput({ appointmentId: APPOINTMENT_ID }))
+    ).rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  it.each(['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED'])('still allows linking to a %s appointment', async (status) => {
+    appointmentFindByIdMock.mockResolvedValue(makeAppt({ status }))
+    await expect(
+      createServiceRecord(makeAuthContext('owner'), baseInput({ appointmentId: APPOINTMENT_ID }))
+    ).resolves.toBeDefined()
+  })
+
   it('does not look up an appointment at all when none is provided (historical record)', async () => {
     await createServiceRecord(makeAuthContext('owner'), baseInput())
     expect(appointmentFindByIdMock).not.toHaveBeenCalled()
@@ -317,6 +346,16 @@ describe('updateServiceRecord', () => {
     customerFindByIdMock.mockResolvedValue(makeCustomer({ id: 'new-customer', isActive: false }))
     await expect(
       updateServiceRecord(makeAuthContext('owner'), 'r1', { customerId: 'new-customer' } as never)
+    ).rejects.toMatchObject({ statusCode: 400 })
+  })
+
+  // Prompt 41 — the same CANCELLED/NO_SHOW guard applies when appointmentId
+  // is being SET via an update, not just at create time (both paths share
+  // assertAppointmentConsistency).
+  it('rejects linking appointmentId to a CANCELLED appointment via update', async () => {
+    appointmentFindByIdMock.mockResolvedValue(makeAppt({ status: 'CANCELLED' }))
+    await expect(
+      updateServiceRecord(makeAuthContext('owner'), 'r1', { appointmentId: APPOINTMENT_ID } as never)
     ).rejects.toMatchObject({ statusCode: 400 })
   })
 

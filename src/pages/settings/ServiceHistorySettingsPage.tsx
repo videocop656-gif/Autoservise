@@ -51,6 +51,11 @@ interface AppointmentDto {
   vehicleId: string
   serviceId: string
   startAt: string
+  // Prompt 41 — already returned by GET /api/appointments; needed to keep
+  // CANCELLED/NO_SHOW appointments out of the "Appointment" picker below
+  // (the server now rejects linking a ServiceRecord to either — see
+  // serviceRecordService.ts's assertAppointmentConsistency).
+  status: string
 }
 
 interface Paginated<T> {
@@ -286,8 +291,17 @@ export default function ServiceHistorySettingsPage() {
   }
 
   const customerVehicles = vehicles.filter((v) => v.customerId === form.customerId)
+  // Prompt 41 — excludes CANCELLED/NO_SHOW: the server now rejects linking
+  // a ServiceRecord to either (no service can have been performed at an
+  // appointment that never happened), so they're kept out of this picker
+  // too rather than letting the operator pick one only to hit that error.
   const matchingAppointments = appointments.filter(
-    (a) => a.customerId === form.customerId && a.vehicleId === form.vehicleId && a.serviceId === form.serviceId
+    (a) =>
+      a.customerId === form.customerId &&
+      a.vehicleId === form.vehicleId &&
+      a.serviceId === form.serviceId &&
+      a.status !== 'CANCELLED' &&
+      a.status !== 'NO_SHOW'
   )
   const filterVehicle = vehicles.find((v) => v.id === vehicleFilter)
 
