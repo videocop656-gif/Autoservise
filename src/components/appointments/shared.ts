@@ -62,6 +62,33 @@ export function isAppointmentTerminal(status: AppointmentStatus): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Prompt 36 — Operations Daily Work Queue.
+//
+// Which of the six real AppointmentStatus values still represent
+// actionable, not-yet-resolved work today — audited from
+// appointmentService.ts's own ALLOWED_TRANSITIONS (the three non-terminal
+// statuses; COMPLETED/CANCELLED/NO_SHOW are the real terminal ones,
+// already established by APPOINTMENT_NEXT_STATUSES above). Shared here
+// (not declared locally in OperationsPage.tsx) so a future screen that
+// also needs "is this appointment still active today" reads the exact
+// same rule, never a second copy of it.
+// ---------------------------------------------------------------------------
+export const ACTIVE_APPOINTMENT_STATUSES: AppointmentStatus[] = ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+
+/**
+ * Splits a list of appointments (already server-filtered to one day, or
+ * any other bounded set) into the ones that belong in an active work
+ * queue and a count of the rest — never a second full list, per Operations
+ * spec §5 ("a small summary, shown separately, never mixed into the
+ * active queue"). Pure and framework-free: no fetching, no sorting
+ * opinion — the caller still owns ordering.
+ */
+export function splitAppointmentsByActivity<T extends { status: AppointmentStatus }>(appointments: T[]): { active: T[]; otherCount: number } {
+  const active = appointments.filter((a) => ACTIVE_APPOINTMENT_STATUSES.includes(a.status))
+  return { active, otherCount: appointments.length - active.length }
+}
+
+// ---------------------------------------------------------------------------
 // Prompt 33 — Service Completion Visibility.
 //
 // A COMPLETED appointment is never guaranteed to have a linked ServiceRecord

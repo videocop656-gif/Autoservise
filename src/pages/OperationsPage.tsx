@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Inbox, Clock, RefreshCw, ArrowRight } from 'lucide-react'
+import { AlertTriangle, Inbox, Clock, RefreshCw, ArrowRight, CalendarClock } from 'lucide-react'
 import { PageContainer } from '../components/layout/PageContainer'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { apiFetch, ApiClientError } from '../lib/apiClient'
+import { useAuth } from '../context/AuthContext'
+import { zonedTimeToUtc, utcToZonedParts } from '../lib/businessTime'
 import {
   type CustomerRequestDto,
   type CustomerRequestStatus,
@@ -21,6 +23,16 @@ import {
   customerName,
   formatActivity,
 } from '../components/requests/shared'
+import {
+  type AppointmentDto,
+  type VehicleRefDto,
+  type ServiceRefDto,
+  APPOINTMENT_STATUS_LABELS,
+  appointmentDateRangeBounds,
+  splitAppointmentsByActivity,
+  vehicleLabel,
+  serviceName,
+} from '../components/appointments/shared'
 
 const ESCALATION_STATUS_BADGE: Record<EscalationStatus, 'warning' | 'default'> = {
   OPEN: 'warning',
@@ -67,6 +79,32 @@ const ESCALATION_STATUS_BADGE: Record<EscalationStatus, 'warning' | 'default'> =
 // 2x escalation status filters, 1x NEW requests, 1x customers reference
 // list) — never nested, never per-row, never inside `.map()`. See the
 // Final Report's "N+1 Audit" section for the full accounting.
+//
+// Prompt 36 — Operations Daily Work Queue. Adds the one genuine gap this
+// screen's own Prompt 25/30/31/33 history had all deliberately deferred:
+// today's appointments. Reuses, rather than reinvents:
+//   - the exact dateFrom/dateTo query params GET /api/appointments already
+//     accepted before Prompt 35 even existed, and the exact 'today' bounds
+//     helper Prompt 35 built (appointmentDateRangeBounds, from
+//     components/appointments/shared.ts) — no second date-math
+//     implementation, no new endpoint.
+//   - the exact /appointments?open=<id> cross-navigation convention every
+//     other section on this page already uses for its own rows.
+//   - the exact APPOINTMENT_STATUS_LABELS/Badge convention
+//     AppointmentsSettingsPage's own list rows already use — no new status
+//     visual system.
+// One extra GET (today's appointments, tenant/date-scoped — a single
+// day's worth of rows, never all-time history) plus two small reference-
+// data GETs (vehicles/services — customers were already fetched here) are
+// added to the same Promise.allSettled batch below; still never nested,
+// never per-row.
+//
+// Per spec §5: only SCHEDULED/CONFIRMED/IN_PROGRESS appointments render as
+// full rows in the active queue. A COMPLETED/CANCELLED/NO_SHOW appointment
+// happening today is real information too, so it isn't hidden outright —
+// it's rolled into one small muted count line instead of full rows,
+// exactly the "small summary, shown separately, never mixed into the
+// active queue" the spec asks for.
 // ---------------------------------------------------------------------------
 
 interface AttentionItem {
@@ -154,25 +192,63 @@ function SectionSkeleton() {
 }
 
 export default function OperationsPage() {
+  const { business } = useAuth()
+  const timezone = business?.timezone ?? 'UTC'
+
   const [newRequests, setNewRequests] = useState<CustomerRequestDto[]>([])
   const [inProgressRequests, setInProgressRequests] = useState<CustomerRequestDto[]>([])
   const [escalations, setEscalations] = useState<EscalationDto[]>([])
   const [customers, setCustomers] = useState<CustomerRefDto[]>([])
+  const [vehicles, setVehicles] = useState<VehicleRefDto[]>([])
+  const [services, setServices] = useState<ServiceRefDto[]>([])
+  const [todayAppointments, setTodayAppointments] = useState<AppointmentDto[]>([])
 
   const [requestsError, setRequestsError] = useState(false)
   const [escalationsError, setEscalationsError] = useState(false)
+  const [appointmentsError, setAppointmentsError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshKey, setRefreshKey] = useState(0)
 
   async function loadAll() {
     setLoading(true)
-    const [newResult, inProgressResult, waitingResult, openEscResult, inProgEscResult, customersResult] = await Promise.allSettled([
+    // Prompt 36 — "today" per the Business's own local timezone
+    // (utcToZonedParts(new Date(), timezone), same helper Prompt 35
+    // introduced), never the browser's. appointmentDateRangeBounds('today', ...)
+    // is the exact bounds function AppointmentsSettingsPage already uses for
+    // its own "Сегодня" preset — reused, not reimplemented.
+    const todayDateStr = utcToZonedParts(new Date(), timezone).dateStr
+    const todayBounds = appointmentDateRangeBounds('today', todayDateStr)!
+    const dateFrom = zonedTimeToUtc(todayBounds.from, '00:00', timezone).toISOString()
+    const dateTo = zonedTimeToUtc(todayBounds.to, '00:00', timezone).toISOString()
+
+    const [
+      newResult,
+      inProgressResult,
+      waitingResult,
+      openEscResult,
+      inProgEscResult,
+      customersResult,
+      vehiclesResult,
+      servicesResult,
+      appointmentsResult,
+    ] = await Promise.allSettled([
       apiFetch<Paginated<CustomerRequestDto>>('/api/customer-requests?status=NEW&pageSize=20'),
       apiFetch<Paginated<CustomerRequestDto>>('/api/customer-requests?status=IN_PROGRESS&pageSize=20'),
       apiFetch<Paginated<CustomerRequestDto>>('/api/customer-requests?status=WAITING_CUSTOMER&pageSize=20'),
       apiFetch<Paginated<EscalationDto>>('/api/escalations?status=OPEN&pageSize=20'),
       apiFetch<Paginated<EscalationDto>>('/api/escalations?status=IN_PROGRESS&pageSize=20'),
       apiFetch<Paginated<CustomerRefDto>>('/api/customers?pageSize=100&includeInactive=true'),
+      apiFetch<Paginated<VehicleRefDto>>('/api/vehicles?pageSize=100&includeInactive=true'),
+      apiFetch<{ services: ServiceRefDto[] }>('/api/services?activeOnly=false'),
+      // Server-side, tenant-scoped, date-bounded to exactly one calendar
+      // day (spec §14) — the same GET /api/appointments?dateFrom=&dateTo=
+      // Prompt 35 wired up, not a second query mechanism.
+      // includeCancelled=true so the "also today" summary line (below) can
+      // account for every real status, not just the ones the default
+      // appointment-list view hides.
+      apiFetch<Paginated<AppointmentDto>>(
+        `/api/appointments?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&includeCancelled=true&pageSize=100`
+      ),
     ])
 
     if (newResult.status === 'fulfilled' && inProgressResult.status === 'fulfilled' && waitingResult.status === 'fulfilled') {
@@ -202,6 +278,19 @@ export default function OperationsPage() {
     }
 
     setCustomers(customersResult.status === 'fulfilled' ? customersResult.value.items : [])
+    setVehicles(vehiclesResult.status === 'fulfilled' ? vehiclesResult.value.items : [])
+    setServices(servicesResult.status === 'fulfilled' ? servicesResult.value.services : [])
+
+    if (appointmentsResult.status === 'fulfilled') {
+      // Chronological (spec §4 — a day's schedule reads earliest-first),
+      // same convention as /appointments itself (orderBy startAt asc).
+      setTodayAppointments([...appointmentsResult.value.items].sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime()))
+      setAppointmentsError(false)
+    } else {
+      setTodayAppointments([])
+      setAppointmentsError(true)
+    }
+
     setLoading(false)
   }
 
@@ -236,6 +325,12 @@ export default function OperationsPage() {
       customerId: r.customerId,
     })),
   ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+  // Prompt 36 §5 — only the real, still-actionable statuses become full
+  // rows in the active queue; a COMPLETED/CANCELLED/NO_SHOW appointment
+  // happening today is summarized as a small count instead (never a
+  // second full list, never mixed into the active one).
+  const { active: activeTodayAppointments, otherCount: otherTodayCount } = splitAppointmentsByActivity(todayAppointments)
 
   const hasError = requestsError || escalationsError
 
@@ -292,8 +387,65 @@ export default function OperationsPage() {
         </CardContent>
       </Card>
 
+      {/* Section 2 — Сегодняшние записи (Prompt 36). Only SCHEDULED/
+          CONFIRMED/IN_PROGRESS appointments render as full rows (spec §5);
+          any COMPLETED/CANCELLED/NO_SHOW ones today are rolled into the
+          small muted count line below the header instead. Each row opens
+          the existing Appointment Detail via the same /appointments?open=
+          convention every other Detail-to-Detail link in this app uses —
+          no second detail view. */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+          <div className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            <CardTitle className="text-base">Сегодняшние записи</CardTitle>
+          </div>
+          <div className="flex items-center gap-2">
+            {!loading && !appointmentsError && (
+              <span className="text-xs text-muted-foreground">
+                Сегодня — {activeTodayAppointments.length} {activeTodayAppointments.length === 1 ? 'запись' : 'записи'}
+                {otherTodayCount > 0 ? ` · ещё ${otherTodayCount} завершено/отменено` : ''}
+              </span>
+            )}
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/appointments?range=today">
+                Все записи
+                <ArrowRight className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {loading && <SectionSkeleton />}
+          {!loading && appointmentsError && <SectionError onRetry={retry} />}
+          {!loading && !appointmentsError && activeTodayAppointments.length === 0 && (
+            <p className="text-sm text-muted-foreground">Сегодня записей нет.</p>
+          )}
+          {!loading &&
+            !appointmentsError &&
+            activeTodayAppointments.map((appt) => {
+              const vehicle = vehicles.find((v) => v.id === appt.vehicleId)
+              return (
+                <Link
+                  key={appt.id}
+                  to={`/appointments?open=${appt.id}`}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-2.5 text-sm transition-colors hover:bg-muted/40"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium">{utcToZonedParts(new Date(appt.startAt), timezone).timeStr}</div>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {customerName(customers, appt.customerId)} · {vehicle ? vehicleLabel(vehicle) : '—'} · {serviceName(services, appt.serviceId) ?? '—'}
+                    </p>
+                  </div>
+                  <Badge variant="default">{APPOINTMENT_STATUS_LABELS[appt.status]}</Badge>
+                </Link>
+              )
+            })}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Section 2 — Новые заявки */}
+        {/* Section 3 — Новые заявки */}
         <Card>
           <CardHeader className="flex-row items-center gap-2 space-y-0">
             <Inbox className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
@@ -323,7 +475,7 @@ export default function OperationsPage() {
           </CardContent>
         </Card>
 
-        {/* Section 3 — Ожидают дальнейшего действия */}
+        {/* Section 4 — Ожидают дальнейшего действия */}
         <Card>
           <CardHeader className="flex-row items-center gap-2 space-y-0">
             <Clock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
@@ -354,7 +506,7 @@ export default function OperationsPage() {
         </Card>
       </div>
 
-      {/* Section 4 — Эскалации */}
+      {/* Section 5 — Эскалации */}
       <Card>
         <CardHeader className="flex-row items-center gap-2 space-y-0">
           <AlertTriangle className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
