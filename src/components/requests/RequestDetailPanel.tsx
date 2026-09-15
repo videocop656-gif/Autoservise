@@ -728,8 +728,39 @@ export function RequestDetailPanel({
                 )
               ) : canManage ? (
                 <>
+                  {/* Prompt 42 — same class of gap Prompt 34 found for
+                      /appointments' own create button: opening this form
+                      with no vehicle for this customer or no service in
+                      the tenant left both required <select>s with nothing
+                      but a disabled placeholder and no explanation why the
+                      form couldn't be submitted. Now explained up front,
+                      with a targeted link to fix it, instead of a silent
+                      dead end. */}
+                  {(requestCustomerVehicles.length === 0 || services.length === 0) && (
+                    <p className="text-sm text-muted-foreground">
+                      Чтобы создать запись, сначала добавьте{' '}
+                      {requestCustomerVehicles.length === 0 && (
+                        <Link to={`/clients?open=${request.customerId}`} className="underline hover:text-foreground">
+                          автомобиль клиенту
+                        </Link>
+                      )}
+                      {requestCustomerVehicles.length === 0 && services.length === 0 && ' и '}
+                      {services.length === 0 && (
+                        <Link to="/settings/services" className="underline hover:text-foreground">
+                          услугу
+                        </Link>
+                      )}
+                      .
+                    </p>
+                  )}
                   {!showApptForm && (
-                    <Button type="button" variant="outline" size="sm" onClick={openApptForm}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={openApptForm}
+                      disabled={requestCustomerVehicles.length === 0 || services.length === 0}
+                    >
                       <Plus className="mr-1 h-3.5 w-3.5" />
                       Создать запись
                     </Button>

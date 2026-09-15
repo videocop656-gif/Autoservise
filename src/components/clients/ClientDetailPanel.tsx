@@ -468,11 +468,20 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
             )}
             {requestsError && <p className="text-sm text-destructive">Не удалось загрузить заявки</p>}
             {!requestsError && requests.length === 0 && <p className="text-sm text-muted-foreground">Заявок пока нет</p>}
+            {/* Prompt 42 — real dead end found: these rows rendered as a
+                plain, unclickable <div> while every sibling section on
+                this same panel (Автомобили/Записи/Обращения) already
+                navigates via the existing ?open= convention. */}
             {requests.map((r) => (
-              <div key={r.id} className="flex items-center justify-between rounded-md border border-border p-2 text-sm">
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => navigate(`/requests?open=${r.id}`)}
+                className="flex w-full items-center justify-between gap-2 rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
+              >
                 <span className="truncate">{r.subject}</span>
                 <Badge variant="default">{REQUEST_STATUS_LABELS[r.status]}</Badge>
-              </div>
+              </button>
             ))}
           </section>
 

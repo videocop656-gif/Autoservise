@@ -111,7 +111,13 @@ export default function ConversationsSettingsPage() {
     const toOpen = searchParams.get('open')
     if (toOpen) {
       setOpenId(toOpen)
-      setSearchParams({}, { replace: true })
+      // Prompt 42 — strip only `open`, not the whole query string (the
+      // same stale-query-parameter fix Prompt 35 already made for
+      // /appointments; applied here too for consistency, even though this
+      // page has no other query-string state of its own today).
+      const rest = new URLSearchParams(searchParams)
+      rest.delete('open')
+      setSearchParams(rest, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
