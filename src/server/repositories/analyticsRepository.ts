@@ -21,6 +21,26 @@ function createdAtInRange(range: Range) {
   return { createdAt: { gte: range.start, lt: range.end } }
 }
 
+// Prompt 40 — appointmentsByStatus/appointmentsByDay use this instead of
+// createdAtInRange. Every other appointment-facing screen in this app
+// (the create/list date presets in AppointmentsSettingsPage, Prompt 35's
+// own appointmentDateRangeBounds(), and Operations' "Сегодняшние записи"
+// queue, Prompt 36) already defines "which appointments belong to period
+// X" by `startAt` — when the appointment is scheduled to happen — never
+// by `createdAt` — when the booking was made. Filtering the Dashboard's
+// own Appointment KPI by createdAt instead would silently disagree with
+// all of those: an appointment booked today for next month would count
+// toward today's Dashboard total but never appear in today's /appointments
+// or /operations view, and vice versa for one booked weeks ago but
+// scheduled for today. This is the one entity in this file where an
+// already-established, already-used-everywhere-else alternative date
+// field exists — every other groupBy/count here intentionally keeps
+// createdAt (see each function's own doc comment), which is why only
+// these two functions use this helper instead.
+function startAtInRange(range: Range) {
+  return { startAt: { gte: range.start, lt: range.end } }
+}
+
 /** One raw `COUNT(*)` day-bucket row. `day` comes back as a Postgres `date` (midnight-UTC `Date`, no time component). */
 interface DayCountRow {
   day: Date
@@ -131,10 +151,11 @@ export const analyticsRepository = {
     })
   },
 
+  /** Prompt 40: scoped by `startAt` (when the appointment happens), not `createdAt` — see startAtInRange()'s own comment for why this one entity differs from every other query in this file. */
   async appointmentsByStatus(tenantId: string, businessId: string, range: Range) {
     return prisma.appointment.groupBy({
       by: ['status'],
-      where: withTenant(tenantId, { businessId, ...createdAtInRange(range) }),
+      where: withTenant(tenantId, { businessId, ...startAtInRange(range) }),
       _count: { _all: true },
     })
   },
@@ -245,11 +266,12 @@ export const analyticsRepository = {
     `
   },
 
+  /** Prompt 40: bucketed by `startAt`, matching appointmentsByStatus above — see startAtInRange()'s comment. */
   appointmentsByDay(tenantId: string, businessId: string, range: Range, timezone: string): Promise<DayBucket[]> {
     return prisma.$queryRaw<DayBucket[]>`
-      SELECT (("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE ${timezone})::date AS day, COUNT(*)::int AS count
+      SELECT (("startAt" AT TIME ZONE 'UTC') AT TIME ZONE ${timezone})::date AS day, COUNT(*)::int AS count
       FROM appointments
-      WHERE "tenantId" = ${tenantId} AND "businessId" = ${businessId} AND "createdAt" >= ${range.start} AND "createdAt" < ${range.end}
+      WHERE "tenantId" = ${tenantId} AND "businessId" = ${businessId} AND "startAt" >= ${range.start} AND "startAt" < ${range.end}
       GROUP BY day
       ORDER BY day
     `

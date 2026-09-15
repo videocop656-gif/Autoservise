@@ -101,6 +101,10 @@ interface AppointmentDto {
 interface EscalationDto {
   id: string
   customerId: string | null
+  // Prompt 40 — already returned by GET /api/escalations on every
+  // response; this local type just hadn't declared it, so these rows had
+  // no way to link anywhere (see the "Требует внимания" list below).
+  conversationId: string
   status: EscalationStatus
   priority: EscalationPriority
   reason: string
@@ -427,20 +431,28 @@ export default function DashboardPage() {
             </>
           ) : (
             <ul className="space-y-1">
+              {/* Prompt 40 — each row now opens its own Conversation Detail
+                  via the existing ?open= convention (Prompts 22/23/24...),
+                  not just the section-level "Все обращения" link. */}
               {conversations.data?.items.map((c) => (
-                <li key={c.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">
-                        {customerName(customersList, c.customerId) ?? c.subject ?? 'Без темы'}
-                      </span>
-                      <Badge variant={c.status === 'OPEN' ? 'info' : 'default'}>{c.status === 'OPEN' ? 'Открыт' : 'Закрыт'}</Badge>
+                <li key={c.id}>
+                  <Link
+                    to={`/conversations?open=${c.id}`}
+                    className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {customerName(customersList, c.customerId) ?? c.subject ?? 'Без темы'}
+                        </span>
+                        <Badge variant={c.status === 'OPEN' ? 'info' : 'default'}>{c.status === 'OPEN' ? 'Открыт' : 'Закрыт'}</Badge>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{CHANNEL_LABELS[c.channel]}</p>
                     </div>
-                    <p className="truncate text-xs text-muted-foreground">{CHANNEL_LABELS[c.channel]}</p>
-                  </div>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {c.lastMessageAt ? formatDateTime(c.lastMessageAt, timezone) : formatDateTime(c.createdAt, timezone)}
-                  </span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {c.lastMessageAt ? formatDateTime(c.lastMessageAt, timezone) : formatDateTime(c.createdAt, timezone)}
+                    </span>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -458,23 +470,31 @@ export default function DashboardPage() {
             'Ближайших записей нет'
           ) : (
             <ul className="space-y-1">
+              {/* Prompt 40 — each row now opens its own Appointment Detail
+                  via the existing ?open= convention (Prompt 28), the same
+                  one /appointments' own list rows already use. */}
               {appointments.data?.items.map((a) => {
                 const vehicle = vehiclesList.find((v) => v.id === a.vehicleId)
                 const service = servicesList.find((s) => s.id === a.serviceId)
                 return (
-                  <li key={a.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">
-                          {customerName(customersList, a.customerId) ?? 'Клиент'}
-                        </span>
-                        <Badge>{APPOINTMENT_STATUS_LABELS[a.status]}</Badge>
+                  <li key={a.id}>
+                    <Link
+                      to={`/appointments?open=${a.id}`}
+                      className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium text-foreground">
+                            {customerName(customersList, a.customerId) ?? 'Клиент'}
+                          </span>
+                          <Badge>{APPOINTMENT_STATUS_LABELS[a.status]}</Badge>
+                        </div>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {[vehicle ? `${vehicle.make} ${vehicle.model}` : null, service?.name].filter(Boolean).join(' · ') || '—'}
+                        </p>
                       </div>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {[vehicle ? `${vehicle.make} ${vehicle.model}` : null, service?.name].filter(Boolean).join(' · ') || '—'}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(a.startAt, timezone)}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(a.startAt, timezone)}</span>
+                    </Link>
                   </li>
                 )
               })}
@@ -496,18 +516,27 @@ export default function DashboardPage() {
             'Сейчас ничего не требует вмешательства человека'
           ) : (
             <ul className="space-y-1">
+              {/* Prompt 40 — each row now opens the escalation's own
+                  Conversation via /conversations?open=, the exact same
+                  convention Operations' own escalation rows already use
+                  (escalations have no detail screen of their own). */}
               {attentionItems.map((e) => (
-                <li key={e.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-foreground">{customerName(customersList, e.customerId) ?? 'Клиент не определён'}</span>
-                      <Badge variant={e.priority === 'URGENT' ? 'destructive' : e.priority === 'HIGH' ? 'warning' : 'gold'}>
-                        {ESCALATION_PRIORITY_LABELS[e.priority]}
-                      </Badge>
+                <li key={e.id}>
+                  <Link
+                    to={`/conversations?open=${e.conversationId}`}
+                    className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">{customerName(customersList, e.customerId) ?? 'Клиент не определён'}</span>
+                        <Badge variant={e.priority === 'URGENT' ? 'destructive' : e.priority === 'HIGH' ? 'warning' : 'gold'}>
+                          {ESCALATION_PRIORITY_LABELS[e.priority]}
+                        </Badge>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">{e.reason}</p>
                     </div>
-                    <p className="truncate text-xs text-muted-foreground">{e.reason}</p>
-                  </div>
-                  <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(e.createdAt, timezone)}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(e.createdAt, timezone)}</span>
+                  </Link>
                 </li>
               ))}
             </ul>

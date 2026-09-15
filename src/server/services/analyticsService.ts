@@ -214,6 +214,12 @@ export async function getDashboard(ctx: AuthContext, period: DashboardPeriod, no
       cancelled: countFor(escalationsByStatus, 'CANCELLED'),
       byPriority: sortByCountDesc(escalationsByPriority),
     },
+    // Prompt 40: scoped by the appointment's own startAt (when it happens),
+    // not createdAt (when it was booked) — analyticsRepository.ts's
+    // appointmentsByStatus/appointmentsByDay, matching the already-
+    // established semantics /appointments and /operations both use for
+    // "which appointments belong to this period". Every other block in
+    // this response intentionally keeps createdAt (see analyticsRepository.ts).
     appointments: {
       total: appointmentsTotal,
       byStatus: sortByCountDesc(appointmentsByStatus.map(({ key, count }) => ({ status: key, count }))),
