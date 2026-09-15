@@ -89,3 +89,94 @@ export function serviceCompletionState(status: AppointmentStatus, historyCount: 
   if (historyError) return 'unknown'
   return historyCount === 0 ? 'missing' : 'recorded'
 }
+
+// ---------------------------------------------------------------------------
+// Prompt 35 — Appointment List & Date Navigation UX.
+//
+// Pure, framework-free date-range math over Business-local "YYYY-MM-DD"
+// calendar-date strings (the exact string shape utcToZonedParts() already
+// produces) — never the browser's own timezone, never a new date library.
+// The API's own GET /api/appointments?dateFrom=&dateTo= (already built,
+// see appointmentRepository.list's `startAt: { gte: dateFrom, lt: dateTo }`)
+// takes UTC instants; converting a calendar-date boundary to one is the
+// caller's job via the existing zonedTimeToUtc(dateStr, '00:00', timezone)
+// — these helpers only ever produce/consume the calendar-date strings, kept
+// separate from that UTC conversion so they stay trivially unit-testable
+// with no Date/timezone mocking required.
+// ---------------------------------------------------------------------------
+export type AppointmentDateRangePreset = 'all' | 'today' | 'tomorrow' | 'week' | 'nextWeek' | 'custom'
+
+export const APPOINTMENT_DATE_RANGE_LABELS: Record<AppointmentDateRangePreset, string> = {
+  all: 'Все',
+  today: 'Сегодня',
+  tomorrow: 'Завтра',
+  week: 'Эта неделя',
+  nextWeek: 'Следующая неделя',
+  custom: 'Период',
+}
+
+/** Adds (or subtracts, for a negative count) whole calendar days to a "YYYY-MM-DD" string — plain UTC-anchored arithmetic, so it is immune to DST (the string never carries a time-of-day to be shifted). */
+export function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const next = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + days))
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`
+}
+
+/** ISO weekday (1 = Monday ... 7 = Sunday) of a "YYYY-MM-DD" calendar date — used to find the Monday that starts its week (this app's week starts Monday, matching BusinessWorkingHours' own Monday-first DayOfWeek convention). */
+function isoWeekday(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const jsDay = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1)).getUTCDay()
+  return jsDay === 0 ? 7 : jsDay
+}
+
+/**
+ * The [from, to) calendar-date bounds for a quick preset, anchored on
+ * `todayDateStr` (the Business's own local "today" — the caller must pass
+ * utcToZonedParts(new Date(), timezone).dateStr, never a browser-local
+ * date). `to` is always EXCLUSIVE, matching the existing API's own
+ * `dateTo` semantics (`startAt: { lt: dateTo }`).
+ *
+ * Returns null for 'all' (no date filter — the pre-Prompt-35 default
+ * behavior, unchanged) and for 'custom' (the caller supplies its own
+ * from/to from the two date inputs; there's nothing to derive here).
+ */
+export function appointmentDateRangeBounds(
+  preset: AppointmentDateRangePreset,
+  todayDateStr: string
+): { from: string; to: string } | null {
+  switch (preset) {
+    case 'all':
+    case 'custom':
+      return null
+    case 'today':
+      return { from: todayDateStr, to: addDaysToDateStr(todayDateStr, 1) }
+    case 'tomorrow': {
+      const from = addDaysToDateStr(todayDateStr, 1)
+      return { from, to: addDaysToDateStr(from, 1) }
+    }
+    case 'week': {
+      const from = addDaysToDateStr(todayDateStr, -(isoWeekday(todayDateStr) - 1))
+      return { from, to: addDaysToDateStr(from, 7) }
+    }
+    case 'nextWeek': {
+      const thisWeekFrom = addDaysToDateStr(todayDateStr, -(isoWeekday(todayDateStr) - 1))
+      const from = addDaysToDateStr(thisWeekFrom, 7)
+      return { from, to: addDaysToDateStr(from, 7) }
+    }
+  }
+}
+
+function formatRuMonthDay(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1)))
+}
+
+/** A short, human label for the currently selected period — "Сегодня, 15 сентября" / "14 сентября — 20 сентября" / "Все" — never a bare ISO range, matching this app's existing Russian-date-formatting convention (formatDate/formatActivity). */
+export function appointmentDateRangeLabel(preset: AppointmentDateRangePreset, bounds: { from: string; to: string } | null): string {
+  if (preset === 'all' || !bounds) return APPOINTMENT_DATE_RANGE_LABELS.all
+  const inclusiveEnd = addDaysToDateStr(bounds.to, -1)
+  if (preset === 'today') return `Сегодня, ${formatRuMonthDay(bounds.from)}`
+  if (preset === 'tomorrow') return `Завтра, ${formatRuMonthDay(bounds.from)}`
+  if (bounds.from === inclusiveEnd) return formatRuMonthDay(bounds.from)
+  return `${formatRuMonthDay(bounds.from)} — ${formatRuMonthDay(inclusiveEnd)}`
+}

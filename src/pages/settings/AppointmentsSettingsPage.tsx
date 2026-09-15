@@ -17,11 +17,16 @@ import { AppointmentDetailPanel } from '../../components/appointments/Appointmen
 import {
   type AppointmentDto,
   type AppointmentStatus,
+  type AppointmentDateRangePreset,
   type CustomerRefDto,
   type VehicleRefDto,
   type ServiceRefDto,
   type Paginated,
   APPOINTMENT_STATUS_LABELS,
+  APPOINTMENT_DATE_RANGE_LABELS,
+  appointmentDateRangeBounds,
+  appointmentDateRangeLabel,
+  addDaysToDateStr,
   customerName,
   vehicleLabel,
   serviceName,
@@ -42,6 +47,20 @@ import {
 // No search box exists here (none did before, and appointmentRepository
 // has no search implementation at all — confirmed by audit — so none was
 // added; see Final Report).
+//
+// Prompt 35 — Appointment List & Date Navigation UX. Audited first:
+// GET /api/appointments already accepted dateFrom/dateTo server-side
+// (appointmentRepository.list's `startAt: { gte, lt }`, already
+// tenant-scoped, already indexed via @@index([tenantId, businessId,
+// startAt])) — the frontend simply never sent them. This adds a quick
+// date-preset row (Все/Сегодня/Завтра/Эта неделя/Следующая неделя/Период)
+// that now uses that existing capability; no new endpoint, no new Prisma
+// model/index, no client-side-only filtering of a large fetched set.
+// Status filtering already existed (the <select> below, unchanged).
+// Search was investigated again and still not added — see Final Report
+// for why. The selected date range + status are now persisted in the URL
+// query string (?range=&from=&to=&status=), reusing the exact
+// searchParams/setSearchParams already in use here for ?open=.
 // ---------------------------------------------------------------------------
 
 interface CreateFormState {
@@ -75,7 +94,24 @@ export default function AppointmentsSettingsPage() {
   // otherwise (confirmed: a fresh tenant has 0 customers/0 services).
   const [referenceLoaded, setReferenceLoaded] = useState(false)
   const [page, setPage] = useState(1)
-  const [statusFilter, setStatusFilter] = useState<AppointmentStatus | ''>('')
+
+  // Cross-navigation from Client/Vehicle/Request Detail (/appointments?open=<id>)
+  // — same mechanism as Prompts 23-26's own ?open= handling. Read once,
+  // synchronously, via lazy useState initializers rather than an effect —
+  // avoids a first-render flash of the un-filtered default before the URL's
+  // own values are applied, and sidesteps any ordering question against the
+  // ?open= stripping effect below.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [statusFilter, setStatusFilter] = useState<AppointmentStatus | ''>(() => {
+    const v = searchParams.get('status')
+    return (STATUSES as string[]).includes(v ?? '') ? (v as AppointmentStatus) : ''
+  })
+  const [datePreset, setDatePreset] = useState<AppointmentDateRangePreset>(() => {
+    const v = searchParams.get('range')
+    return v === 'today' || v === 'tomorrow' || v === 'week' || v === 'nextWeek' || v === 'custom' ? v : 'all'
+  })
+  const [customFrom, setCustomFrom] = useState(() => searchParams.get('from') ?? '')
+  const [customTo, setCustomTo] = useState(() => searchParams.get('to') ?? '')
   const [includeCancelled, setIncludeCancelled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -89,17 +125,37 @@ export default function AppointmentsSettingsPage() {
 
   const [openId, setOpenId] = useState<string | null>(null)
 
-  // Cross-navigation from Client/Vehicle/Request Detail (/appointments?open=<id>)
-  // — same mechanism as Prompts 23-26's own ?open= handling.
-  const [searchParams, setSearchParams] = useSearchParams()
   useEffect(() => {
     const toOpen = searchParams.get('open')
     if (toOpen) {
       setOpenId(toOpen)
-      setSearchParams({}, { replace: true })
+      // Strip only `open` — preserve range/status/from/to so a link like
+      // /appointments?open=<id> arriving on top of an already-filtered URL
+      // (or the reverse: returning here after a detail view) never wipes
+      // the operator's date/status selection.
+      const rest = new URLSearchParams(searchParams)
+      rest.delete('open')
+      setSearchParams(rest, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Keeps the URL in sync with the current filters (spec §10) — the same
+  // searchParams/setSearchParams already used for ?open= above, no new
+  // routing mechanism. Runs once more on mount than strictly necessary
+  // (harmless: it just re-writes the same values the initializers above
+  // already read), but never on a plain page-number change.
+  useEffect(() => {
+    const next = new URLSearchParams()
+    if (datePreset !== 'all') next.set('range', datePreset)
+    if (datePreset === 'custom') {
+      if (customFrom) next.set('from', customFrom)
+      if (customTo) next.set('to', customTo)
+    }
+    if (statusFilter) next.set('status', statusFilter)
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datePreset, customFrom, customTo, statusFilter])
 
   async function loadReferenceData() {
     try {
@@ -118,6 +174,20 @@ export default function AppointmentsSettingsPage() {
     }
   }
 
+  // The [from, to) calendar-date bounds for the current selection — null
+  // for 'all' (no filter, unchanged default behavior) and for 'custom'
+  // until at least a start date is picked. `today` is recomputed fresh on
+  // every call (never memoized across the session) so "Сегодня" is still
+  // correct if the tab is left open across local midnight.
+  function currentDateBounds(): { from: string; to: string } | null {
+    if (datePreset === 'custom') {
+      if (!customFrom) return null
+      return { from: customFrom, to: addDaysToDateStr(customTo || customFrom, 1) }
+    }
+    const todayDateStr = utcToZonedParts(new Date(), timezone).dateStr
+    return appointmentDateRangeBounds(datePreset, todayDateStr)
+  }
+
   async function loadAppointments() {
     setLoading(true)
     setListError(null)
@@ -126,6 +196,14 @@ export default function AppointmentsSettingsPage() {
       params.set('page', String(page))
       if (statusFilter) params.set('status', statusFilter)
       if (includeCancelled) params.set('includeCancelled', 'true')
+      const bounds = currentDateBounds()
+      if (bounds) {
+        // Server-side filtering (spec §11) via the existing, already
+        // tenant-scoped, already-indexed dateFrom/dateTo support in
+        // GET /api/appointments — never fetch-everything-then-filter here.
+        params.set('dateFrom', zonedTimeToUtc(bounds.from, '00:00', timezone).toISOString())
+        params.set('dateTo', zonedTimeToUtc(bounds.to, '00:00', timezone).toISOString())
+      }
       const result = await apiFetch<Paginated<AppointmentDto>>(`/api/appointments?${params.toString()}`)
       setData(result)
     } catch {
@@ -143,11 +221,11 @@ export default function AppointmentsSettingsPage() {
   useEffect(() => {
     void loadAppointments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, statusFilter, includeCancelled, refreshKey])
+  }, [page, statusFilter, includeCancelled, datePreset, customFrom, customTo, refreshKey])
 
   useEffect(() => {
     setPage(1)
-  }, [statusFilter, includeCancelled])
+  }, [statusFilter, includeCancelled, datePreset, customFrom, customTo])
 
   function retry() {
     setRefreshKey((k) => k + 1)
@@ -275,6 +353,44 @@ export default function AppointmentsSettingsPage() {
 
       <Card>
         <CardHeader className="space-y-3">
+          {/* Prompt 35 — date navigation. A quick-preset row over the
+              existing, already tenant-scoped GET /api/appointments?dateFrom=&dateTo=
+              (no new endpoint). "Все" keeps the pre-Prompt-35 default
+              (no date filter) so nothing changes for an operator who
+              never touches this row. */}
+          <div className="flex flex-wrap items-center gap-2">
+            {(Object.keys(APPOINTMENT_DATE_RANGE_LABELS) as AppointmentDateRangePreset[]).map((preset) => (
+              <Button
+                key={preset}
+                type="button"
+                size="sm"
+                variant={datePreset === preset ? 'default' : 'outline'}
+                onClick={() => setDatePreset(preset)}
+              >
+                {APPOINTMENT_DATE_RANGE_LABELS[preset]}
+              </Button>
+            ))}
+            <span className="text-sm text-muted-foreground">{appointmentDateRangeLabel(datePreset, currentDateBounds())}</span>
+          </div>
+          {datePreset === 'custom' && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="date"
+                aria-label="С даты"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-9 w-auto"
+              />
+              <span className="text-sm text-muted-foreground">—</span>
+              <Input
+                type="date"
+                aria-label="По дату"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-9 w-auto"
+              />
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-3">
             <select
               value={statusFilter}
@@ -314,9 +430,24 @@ export default function AppointmentsSettingsPage() {
             </div>
           )}
 
+          {/* Prompt 35 §8 — an empty *filtered* result ("nothing in the
+              chosen period/status") reads differently from a genuinely
+              empty tenant, and offers the same existing creation flow
+              right here instead of leaving the operator to find the
+              header button — only when creation is actually possible
+              (spec §13's Prompt 34 behavior: still gated on having a
+              customer and a service). */}
           {!loading && !listError && data?.items.length === 0 && (
-            <div className="rounded-md border border-border py-8 text-center">
-              <p className="text-sm font-medium">Записей пока нет</p>
+            <div className="flex flex-col items-center gap-3 rounded-md border border-border py-8 text-center">
+              <p className="text-sm font-medium">
+                {datePreset !== 'all' || statusFilter ? 'Записей на этот период нет' : 'Записей пока нет'}
+              </p>
+              {canManage && customers.length > 0 && services.length > 0 && (
+                <Button size="sm" onClick={openCreateForm}>
+                  <Plus className="mr-1 h-4 w-4" />
+                  Новая запись
+                </Button>
+              )}
             </div>
           )}
 

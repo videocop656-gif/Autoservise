@@ -125,6 +125,28 @@ describe('listAppointments', () => {
       take: 20,
     })
   })
+
+  // Prompt 35 §16 Test 1 — the date-range query params AppointmentsSettingsPage
+  // now sends (previously never sent by any caller) reach the repository's
+  // own tenant-scoped `startAt: { gte: dateFrom, lt: dateTo }` filter
+  // unchanged. The repository's actual Prisma query-building is not
+  // separately unit-tested anywhere in this project (no repository-level
+  // test file exists for any entity — repositories are always exercised
+  // through a service test with the repository mocked, same convention
+  // this test itself follows) — this pins the one thing that IS this
+  // service layer's job: forwarding dateFrom/dateTo through untouched.
+  it('Prompt 35 — forwards dateFrom/dateTo through to the repository unchanged', async () => {
+    aptListMock.mockResolvedValue({ items: [], total: 0 })
+    const ctx = makeAuthContext('manager')
+    const dateFrom = new Date('2026-09-15T00:00:00Z')
+    const dateTo = new Date('2026-09-16T00:00:00Z')
+    await listAppointments(ctx, { page: 1, pageSize: 20, includeCancelled: false, dateFrom, dateTo })
+    expect(aptListMock).toHaveBeenCalledWith(
+      ctx.tenant.id,
+      ctx.business.id,
+      expect.objectContaining({ dateFrom, dateTo })
+    )
+  })
 })
 
 describe('getAppointment', () => {
