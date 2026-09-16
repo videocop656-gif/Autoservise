@@ -21,7 +21,7 @@ interface RelationRefs {
  * an "active" customer — a Conversation can legitimately be the very first
  * contact from someone not yet identified as a customer at all (spec §5),
  * so there is no analogous "requireActiveCustomer" flag here unlike
- * Lead/CustomerRequest's create-only rule.
+ * CustomerRequest's create-only rule.
  */
 async function assertRelations(ctx: AuthContext, refs: RelationRefs): Promise<void> {
   if (refs.customerId) {

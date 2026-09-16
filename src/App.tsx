@@ -11,7 +11,6 @@ import KnowledgeSettingsPage from './pages/settings/KnowledgeSettingsPage'
 import RulesSettingsPage from './pages/settings/RulesSettingsPage'
 import CustomersSettingsPage from './pages/settings/CustomersSettingsPage'
 import VehiclesSettingsPage from './pages/settings/VehiclesSettingsPage'
-import LeadsSettingsPage from './pages/settings/LeadsSettingsPage'
 import AppointmentsSettingsPage from './pages/settings/AppointmentsSettingsPage'
 import ServiceHistorySettingsPage from './pages/settings/ServiceHistorySettingsPage'
 import CustomerRequestsSettingsPage from './pages/settings/CustomerRequestsSettingsPage'
@@ -32,8 +31,8 @@ import AppShell from './components/layout/AppShell'
 // The old /settings/* URLs for those five redirect to their new home
 // (single source of truth, never two parallel copies of the same feature).
 // Every other existing /settings/* page (business/hours/services/knowledge/
-// rules/vehicles/leads/service-history/customer-requests/ai-logs/team)
-// keeps its exact URL — SettingsHubPage links out to all of them. See the
+// rules/vehicles/service-history/customer-requests/ai-logs/team) keeps its
+// exact URL — SettingsHubPage links out to all of them. See the
 // Final Report's "Frontend architecture" section for the full reasoning.
 export default function App() {
   return (
@@ -65,12 +64,14 @@ export default function App() {
         <Route path="/settings/services" element={<ServicesSettingsPage />} />
         <Route path="/settings/knowledge" element={<KnowledgeSettingsPage />} />
         <Route path="/settings/rules" element={<RulesSettingsPage />} />
-        <Route path="/settings/leads" element={<LeadsSettingsPage />} />
         <Route path="/settings/service-history" element={<ServiceHistorySettingsPage />} />
         <Route path="/settings/ai-logs" element={<AiLogsSettingsPage />} />
         <Route path="/settings/team" element={<TeamSettingsPage />} />
 
         {/* Legacy URLs — redirect to the new single source of truth. */}
+        {/* /settings/leads: the Lead model itself was retired (Prompt 44) —
+            CustomerRequest is the sole canonical intake entity now. */}
+        <Route path="/settings/leads" element={<Navigate to="/requests" replace />} />
         <Route path="/settings/conversations" element={<Navigate to="/conversations" replace />} />
         <Route path="/settings/customers" element={<Navigate to="/clients" replace />} />
         <Route path="/settings/appointments" element={<Navigate to="/appointments" replace />} />

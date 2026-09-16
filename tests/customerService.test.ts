@@ -167,13 +167,14 @@ describe('deactivateCustomer', () => {
     await expect(deactivateCustomer(makeAuthContext('owner'), 'unknown')).rejects.toMatchObject({ statusCode: 404 })
   })
 
-  it('never touches Vehicle or Lead records — deactivation cascades to nothing', async () => {
+  it('never touches Vehicle or CustomerRequest records — deactivation cascades to nothing', async () => {
     deactivateMock.mockResolvedValue(1)
     await deactivateCustomer(makeAuthContext('owner'), 'c1')
     // customerService only ever calls customerRepository.deactivate for this
-    // operation; it doesn't import a Lead repository at all, and the only
-    // Vehicle repository call it's capable of making (vehicleRepository.list,
-    // for includeVehicles on GET) is never invoked here.
+    // operation; it doesn't import a CustomerRequest repository at all, and
+    // the only Vehicle repository call it's capable of making
+    // (vehicleRepository.list, for includeVehicles on GET) is never invoked
+    // here.
     expect(vehicleListMock).not.toHaveBeenCalled()
   })
 })

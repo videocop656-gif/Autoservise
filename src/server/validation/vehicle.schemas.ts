@@ -20,7 +20,8 @@ export const createVehicleSchema = z.object({
 
 // customerId is intentionally excluded: re-assigning a vehicle to a
 // different customer is not a supported operation at this stage (it would
-// also require re-validating every Lead that references this vehicle).
+// also require re-validating every CustomerRequest that references this
+// vehicle).
 export const updateVehicleSchema = z
   .object({
     make: z.string().trim().min(1, 'Make is required').max(100).optional(),

@@ -6,7 +6,7 @@ const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.t
 // vehicleId/serviceId/appointmentId go through emptyToNull too, even though
 // they're UUIDs: a naive client sending "" (a cleared <select>) means "no
 // vehicle/service/appointment", not "give me a validation error" — same
-// rule as every other optional relation field (see Lead/ServiceRecord).
+// rule as every other optional relation field (see ServiceRecord).
 const optionalUuid = (message: string) => z.preprocess(emptyToNull, z.string().uuid(message).nullable().optional())
 
 // "HH:mm", zero-padded, hours 00-23, minutes 00-59 — same format as

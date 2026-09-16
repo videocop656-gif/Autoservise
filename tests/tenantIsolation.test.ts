@@ -16,8 +16,6 @@ const {
   customerUpdateManyMock,
   vehicleFindFirstMock,
   vehicleUpdateManyMock,
-  leadFindFirstMock,
-  leadUpdateManyMock,
   appointmentFindFirstMock,
   appointmentUpdateManyMock,
   serviceRecordFindFirstMock,
@@ -99,8 +97,6 @@ const {
     customerUpdateManyMock: vi.fn(),
     vehicleFindFirstMock: vi.fn(),
     vehicleUpdateManyMock: vi.fn(),
-    leadFindFirstMock: vi.fn(),
-    leadUpdateManyMock: vi.fn(),
     appointmentFindFirstMock: vi.fn(),
     appointmentUpdateManyMock: vi.fn(),
     serviceRecordFindFirstMock: vi.fn(),
@@ -192,7 +188,6 @@ vi.mock('../src/server/db/prisma', () => {
     businessRule: { findFirst: ruleFindFirstMock, updateMany: ruleUpdateManyMock },
     customer: { findFirst: customerFindFirstMock, updateMany: customerUpdateManyMock, count: customerCountMock },
     vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock, count: vehicleCountMock },
-    lead: { findFirst: leadFindFirstMock, updateMany: leadUpdateManyMock },
     appointment: {
       findFirst: appointmentFindFirstMock,
       updateMany: appointmentUpdateManyMock,
@@ -279,7 +274,6 @@ import { knowledgeRepository } from '../src/server/repositories/knowledgeReposit
 import { businessRuleRepository } from '../src/server/repositories/businessRuleRepository'
 import { customerRepository } from '../src/server/repositories/customerRepository'
 import { vehicleRepository } from '../src/server/repositories/vehicleRepository'
-import { leadRepository } from '../src/server/repositories/leadRepository'
 import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
 import { serviceRecordRepository } from '../src/server/repositories/serviceRecordRepository'
 import { customerRequestRepository } from '../src/server/repositories/customerRequestRepository'
@@ -335,8 +329,6 @@ beforeEach(() => {
   customerUpdateManyMock.mockResolvedValue({ count: 0 })
   vehicleFindFirstMock.mockResolvedValue(null)
   vehicleUpdateManyMock.mockResolvedValue({ count: 0 })
-  leadFindFirstMock.mockResolvedValue(null)
-  leadUpdateManyMock.mockResolvedValue({ count: 0 })
   appointmentFindFirstMock.mockResolvedValue(null)
   appointmentUpdateManyMock.mockResolvedValue({ count: 0 })
   serviceRecordFindFirstMock.mockResolvedValue(null)
@@ -620,31 +612,6 @@ describe('tenant isolation — Vehicle', () => {
     expect(count).toBe(0)
   })
 
-})
-
-describe('tenant isolation — Lead', () => {
-  it('tenant B cannot GET tenant A lead', async () => {
-    leadFindFirstMock.mockResolvedValue(null)
-    const result = await leadRepository.findById('tenant-b', 'business-b', 'lead-owned-by-tenant-a')
-
-    expect(leadFindFirstMock).toHaveBeenCalledWith({
-      where: { businessId: 'business-b', id: 'lead-owned-by-tenant-a', tenantId: 'tenant-b' },
-    })
-    expect(result).toBeNull()
-  })
-
-  it('tenant B cannot PATCH tenant A lead', async () => {
-    leadUpdateManyMock.mockResolvedValue({ count: 0 })
-    const result = await leadRepository.updateById('tenant-b', 'business-b', 'lead-owned-by-tenant-a', {
-      subject: 'Hijacked',
-    })
-
-    expect(leadUpdateManyMock).toHaveBeenCalledWith({
-      where: { businessId: 'business-b', id: 'lead-owned-by-tenant-a', tenantId: 'tenant-b' },
-      data: { subject: 'Hijacked' },
-    })
-    expect(result).toBeNull()
-  })
 })
 
 describe('tenant isolation — Appointment', () => {

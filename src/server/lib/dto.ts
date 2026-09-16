@@ -6,7 +6,6 @@ import type {
   BusinessRule,
   Customer,
   Vehicle,
-  Lead,
   Appointment,
   ServiceRecord,
   CustomerRequest,
@@ -204,36 +203,6 @@ export function toVehicleDto(vehicle: Vehicle): VehicleDto {
     isActive: vehicle.isActive,
     createdAt: vehicle.createdAt,
     updatedAt: vehicle.updatedAt,
-  }
-}
-
-export interface LeadDto {
-  id: string
-  customerId: string
-  vehicleId: string | null
-  serviceId: string | null
-  status: Lead['status']
-  source: Lead['source']
-  subject: string
-  description: string | null
-  notes: string | null
-  createdAt: Date
-  updatedAt: Date
-}
-
-export function toLeadDto(lead: Lead): LeadDto {
-  return {
-    id: lead.id,
-    customerId: lead.customerId,
-    vehicleId: lead.vehicleId,
-    serviceId: lead.serviceId,
-    status: lead.status,
-    source: lead.source,
-    subject: lead.subject,
-    description: lead.description,
-    notes: lead.notes,
-    createdAt: lead.createdAt,
-    updatedAt: lead.updatedAt,
   }
 }
 

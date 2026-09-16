@@ -78,7 +78,8 @@ interface RelationRefs {
  * everywhere else it's referenced, must be active whenever it's part of
  * what's being validated (spec §7).
  *
- * `requireActiveCustomer` mirrors leadService's exact convention: only
+ * `requireActiveCustomer` follows the same create-only active-customer
+ * convention used consistently elsewhere in this app: only
  * enforced by createCustomerRequest, never by updateCustomerRequest (even
  * when customerId itself changes) — deactivating a Customer must never
  * block staff from continuing to manage requests that already reference

@@ -40,7 +40,7 @@ export const customerRequestRepository = {
       ...(opts.search ? { OR: buildSearchOr(opts.search) } : {}),
     })
     const [items, total] = await Promise.all([
-      // Newest first — same fixed convention as Lead/ServiceRecord, not a caller option.
+      // Newest first — same fixed convention as ServiceRecord, not a caller option.
       prisma.customerRequest.findMany({ where, orderBy: { createdAt: 'desc' }, skip: opts.skip, take: opts.take }),
       prisma.customerRequest.count({ where }),
     ])

@@ -137,7 +137,6 @@ Business Data
 - `BusinessRule`
 - `Customer`
 - `Vehicle`
-- `Lead`
 - `Appointment`
 - `ServiceRecord`
 - `CustomerRequest`
@@ -281,6 +280,15 @@ secret live only in server-side environment variables (`TELEGRAM_BOT_TOKEN`,
 either of them, by design (spec: never Prisma, never `ChannelConnection.config`,
 never a DTO).
 
+**Prompt 44 (Lead vs CustomerRequest Domain Consolidation) removed the
+`Lead` model** (originally added in Prompt 04, alongside `Customer` and
+`Vehicle`) — a migration, not a new model. `CustomerRequest` had superseded
+it functionally since Prompt 07 — every later feature (Conversations,
+Operations, Dashboard/analytics, AI booking tools) was built against
+`CustomerRequest`, never `Lead` — and `Lead` held zero rows in the live
+database at the time of removal. There is now exactly one customer-intake
+entity in this schema: `CustomerRequest`.
+
 **Planned, not yet in the schema** (no such Prisma model exists today): none identified for any currently-scheduled future stage.
 
 ## 6. CRM Structure
@@ -289,8 +297,6 @@ never a DTO).
 Customer
    ├── Vehicles
    │      └── Service History
-   │
-   ├── Leads
    │
    ├── Customer Requests
    │
@@ -404,8 +410,8 @@ Answer or Book
 
 Today, every step of this flow is performed by a human staff member
 through the Settings UI (search customers/vehicles, read Service History,
-consult Knowledge Base/Business Rules, then create a Lead/Appointment by
-hand). The future goal is for an AI to perform this same flow through the
+consult Knowledge Base/Business Rules, then create a CustomerRequest/
+Appointment by hand). The future goal is for an AI to perform this same flow through the
 tool set defined in `AI_BEHAVIOR_CONTRACT.md` §11 — it does not change what
 the flow *is*, only who/what executes it.
 

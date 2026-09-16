@@ -225,23 +225,11 @@ Fields: `name`, `description`, `category`, `priority`, `isActive`. Category is a
 
 ## Leads
 
-`Lead` is an inquiry: a customer (or prospect) asked something or expressed interest — "how much for an oil change?", "do you have a slot Tuesday?", "I'd like to book a repair." It optionally references the `Vehicle` and `Service` the inquiry is about.
-
-> A Lead represents an inquiry or sales opportunity.
-> An Appointment represents a confirmed scheduled time.
-> See [Appointments](#appointments) below for the latter.
-
-A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time slot exists anywhere — an `Appointment` (see below) is a separate record, so the two are never conflated.
-
-- Fields: `customerId` (required), `vehicleId` / `serviceId` (optional), `subject` (required), `description`, `notes`, `status` (`NEW` default), `source` (`MANUAL` default).
-- `status`: `NEW → IN_PROGRESS → QUALIFIED → WON | LOST` (enum `LeadStatus`; a Lead is never hard-deleted — closing one out means setting `status: "LOST"`, so there is no `DELETE /api/leads/:id`).
-- `source`: `MANUAL | WEBSITE | PHONE | OTHER` (enum `LeadSource`) — channel integrations (Telegram/WhatsApp/etc.) will extend this enum later, not before.
-- All three relations are re-verified server-side on both create and update: `customerId`/`serviceId` must belong to the current tenant+business (404 otherwise), and if `vehicleId` is set, that vehicle must belong to the *specified* `customerId` — a vehicle from a different customer in the *same* tenant is a `400 VALIDATION_ERROR`, not a 404 (it exists, it's just the wrong customer).
-- `GET /api/leads` is paginated, always sorted `createdAt DESC`, and supports `status=`, `source=`, `customerId=`, `vehicleId=`, `serviceId=`, and `search=` (subject/description) filters.
+**Retired in Prompt 44 — see [Customer Requests](#customer-requests) below.** The `Lead` model (added in Prompt 04) was retired. `CustomerRequest` (see [Customer Requests](#customer-requests) below) was purpose-built in Prompt 07 to supersede it — a richer status lifecycle, a full status-history audit trail, and direct Appointment conversion — and every later feature (Conversations, Operations, Dashboard/analytics, AI booking tools) was built on `CustomerRequest`, never `Lead`. `Lead` held zero rows in the live database at the time of retirement and was removed outright: there is no `Lead` model, no `/api/leads` route, no Leads page, and no `LeadStatus`/`LeadSource` enum in the current codebase. This heading is kept only so old links to `#leads` still resolve.
 
 ## Appointments
 
-`Appointment` is a **confirmed, scheduled booking** — the thing a `Lead` (above) doesn't represent. A Customer, Vehicle, and Service are all *required* (unlike Lead, where Vehicle/Service are optional): an Appointment always means a specific car, coming in for a specific service, at a specific time.
+`Appointment` is a **confirmed, scheduled booking** — the thing a `CustomerRequest` (see [Customer Requests](#customer-requests) below) doesn't represent. A Customer, Vehicle, and Service are all *required* (unlike CustomerRequest, where Vehicle/Service are optional): an Appointment always means a specific car, coming in for a specific service, at a specific time.
 
 - Fields: `customerId`, `vehicleId`, `serviceId` (all required), `startAt`/`endAt` (stored as UTC `DateTime`), `status` (`SCHEDULED` default), `notes`.
 - **No Appointment-level timezone.** `startAt`/`endAt` are plain UTC instants; the *only* source of truth for "what local time is this" is `Business.timezone`, read fresh on every check — never a timezone from the request, the browser, or the server's own clock.
@@ -256,7 +244,7 @@ A Lead's `status` moving to `QUALIFIED` or even `WON` does **not** mean a time s
 
 ## Service History
 
-`ServiceRecord` is the operational record of work actually performed on a vehicle — what a `Lead`/`Appointment` lead up to, but recorded as a historical fact rather than a plan. Customer, Vehicle, and Service are all required, same as Appointment; `appointmentId` is optional, covering two cases:
+`ServiceRecord` is the operational record of work actually performed on a vehicle — what a `CustomerRequest` or `Appointment` led up to, but recorded as a historical fact rather than a plan. Customer, Vehicle, and Service are all required, same as Appointment; `appointmentId` is optional, covering two cases:
 
 - **Linked to an Appointment** — the record documents work that grew out of a specific booking; its customer/vehicle/service must match that Appointment's exactly (`400` on any mismatch, `404` if the Appointment is foreign-tenant).
 - **Historical, unlinked** — for backfilling a shop's service history from before this app was in use. `appointmentId` is simply omitted.
@@ -266,7 +254,7 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - **Ownership & active state**: identical rule to Appointment — customer/vehicle/service re-verified server-side (404 if foreign-tenant, 400 if the vehicle belongs to a different customer or any of the three is inactive) for a *new* record or when a reference is *changed*; a plain edit that doesn't touch these fields is never blocked by a later deactivation, so history stays editable forever.
 - **Mileage must never decrease** across a vehicle's non-archived records: creating or updating a record to a mileage lower than that vehicle's current highest non-archived mileage is `400`. Records with `mileage: null`, and every *archived* record, are excluded from that comparison — and a record never conflicts with its own prior value when being updated. The check re-applies on **restore** (`isArchived: false`) but not on **archive** (`isArchived: true`) — archiving a record never needs to satisfy a mileage ordering it's about to stop participating in.
 - **No hard delete, ever.** `DELETE /api/service-history/:id` is `405`. Hiding a record uses `isArchived` exclusively — no separate status, no `deletedAt`/`archivedAt`. A brand-new record is always created with `isArchived: false`; the create endpoint doesn't accept the field at all. Archive and restore are both just `PATCH { isArchived: true|false }` — archiving/restoring never touches any other field, and an archived record stays fully readable by id (`GET /api/service-history/:id`), just hidden from the default list.
-- **Deactivating a Customer/Vehicle/Service, or changing/cancelling an Appointment, never archives or otherwise modifies existing ServiceRecords** — same "history survives" principle as Lead and Appointment.
+- **Deactivating a Customer/Vehicle/Service, or changing/cancelling an Appointment, never archives or otherwise modifies existing ServiceRecords** — same "history survives" principle as CustomerRequest and Appointment.
 - `GET /api/service-history` is paginated, sorted `performedAt DESC, createdAt DESC`, hides archived records by default (`includeArchived=true` to include them), and supports `customerId=`, `vehicleId=`, `serviceId=`, `dateFrom=`/`dateTo=` (filtering `performedAt`, half-open `[dateFrom, dateTo)`) — `?vehicleId=...` is this app's vehicle service-history view, linked from a "History" button on each row of `/settings/vehicles`.
 - **Manager can create, update, archive, and restore** — same operational exception as Appointment.
 
@@ -277,7 +265,7 @@ Fields: `performedAt` (UTC, ISO 8601 in/out, displayed in `Business.timezone` �
 - Fields: `customerId` (required), `vehicleId`/`serviceId`/`appointmentId` (all optional), `source` (`PHONE`/`WEBSITE`/`MANUAL`/`OTHER`, defaults `MANUAL`), `status` (see below), `subject` (required, 2–200 chars), `description` (optional, ≤10,000 chars), `requestedDate` (optional), `requestedTimeFrom`/`requestedTimeTo` (optional, `"HH:mm"`), `notes` (optional, ≤5,000 chars).
 - **`requestedDate` is a wanted local *day*, never a specific instant** — it is deliberately *not* `Appointment.startAt`. The API accepts an ISO 8601 datetime, but the server immediately normalizes it to the Business-local calendar date it falls on (via the same `toBusinessLocalDateTime` used for Appointments) and stores that date as UTC midnight — the original time-of-day submitted never survives. `requestedTimeFrom`/`requestedTimeTo` are plain `"HH:mm"` wall-clock strings, same convention as `BusinessWorkingHours`, not UTC values; if both are given, `requestedTimeFrom` must be strictly before `requestedTimeTo` (`400` otherwise) — giving only one of the two is fine.
 - **Ownership**: `customerId`/`vehicleId`/`serviceId`/`appointmentId` are all re-verified server-side against the current tenant+business (404 if foreign-tenant); a given Vehicle must belong to the given Customer (400 if not); a given Appointment's customer must match exactly, and its vehicle/service must match too *if* the request itself specifies them (400 on any mismatch). **Unlike Appointment/ServiceRecord, a CustomerRequest's Vehicle is not required to be active** — it's just an inquiry, which can legitimately be about a vehicle no longer in daily use; Service, like everywhere else, must be active whenever it's part of what's being set or changed (400 if not).
-- **A new CustomerRequest requires an active Customer** (400 otherwise) — same rule, and same create-only scope, as Lead: updating an existing request (even re-pointing it at a different Customer) never re-requires that customer to be active, so staff can always keep managing a request that's already open.
+- **A new CustomerRequest requires an active Customer** (400 otherwise) — the same create-only scope used consistently elsewhere in this app: updating an existing request (even re-pointing it at a different Customer) never re-requires that customer to be active, so staff can always keep managing a request that's already open.
 - **Historical editing**: deactivating a Customer/Service, or changing an Appointment, never touches existing CustomerRequests — no cascade, no auto status change. A plain field edit never re-checks ownership/active state; only a PATCH that actually changes a relation does.
 - **Status**: `NEW → IN_PROGRESS ⇄ WAITING_CUSTOMER`, `IN_PROGRESS → QUALIFIED → CONVERTED`, and `CLOSED`/`CANCELLED` reachable from `NEW`/`IN_PROGRESS`/`WAITING_CUSTOMER`/`QUALIFIED`. `CONVERTED`, `CLOSED`, and `CANCELLED` are terminal — no transition out of any of them is ever allowed (`400`). Re-submitting the current status is a no-op (allowed, no history entry). A request can only become `CONVERTED` if it has a linked `appointmentId` (400 otherwise), and a `CONVERTED` request can never have its `appointmentId` cleared, even by a PATCH that isn't otherwise touching status. `POST` always creates `status: NEW` regardless of whether an `appointmentId` was supplied at creation — connecting the appointment and moving the status forward are always two separate, explicit actions; there are no hidden automatic transitions.
 - **Status history**: every status change (including the initial `null → NEW` at creation) is recorded in `CustomerRequestStatusHistory` — `fromStatus`, `toStatus`, `changedByUserId`, `createdAt` — written atomically with the status-changing update (an interactive Prisma transaction; if the update matches zero rows, e.g. a foreign-tenant id, no history row is written either). The history is read-only — there is no API to edit or delete it — and is only included on `GET /api/customer-requests/:id` (oldest first), never on the list endpoint.
@@ -391,8 +379,6 @@ A safe, minimal technical audit trail — not a transcript, not a dashboard. See
 | Create / update / deactivate a customer   | ✅ | ✅ | ❌ |
 | List/read vehicles                        | ✅ | ✅ | ✅ |
 | Create / update / deactivate a vehicle    | ✅ | ✅ | ❌ |
-| List/read leads                           | ✅ | ✅ | ✅ |
-| Create / update a lead (incl. status)     | ✅ | ✅ | ❌ |
 | List/read appointments                    | ✅ | ✅ | ✅ |
 | Create / update an appointment (incl. status) | ✅ | ✅ | ✅ |
 | List/read service history (active or archived) | ✅ | ✅ | ✅ |
@@ -407,16 +393,16 @@ A safe, minimal technical audit trail — not a transcript, not a dashboard. See
 | Claim / resolve / cancel an escalation         | ✅ | ✅ | ✅ |
 | List/read AI logs                              | ✅ | ✅ | ✅ |
 
-Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `leadService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`, `escalationService.ts`, `aiLogService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Lead `status` is treated as business state, not a cosmetic field — manager cannot change it. Appointment, Service History, Customer Requests, Conversations, AI Core, Escalations, and AI Logs are the deliberate exceptions: manager has full read/write (or, for AI Logs, read) access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), [AI Core](#ai-core), [Human Escalation](#human-escalation), and [AI Logs / Audit](#ai-logs--audit)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
+Enforced server-side via `requireRole()` inside each service-layer function (`businessService.ts`, `workingHoursService.ts`, `serviceCatalogService.ts`, `knowledgeService.ts`, `businessRuleService.ts`, `customerService.ts`, `vehicleService.ts`, `appointmentService.ts`, `serviceRecordService.ts`, `customerRequestService.ts`, `conversationService.ts`, `messageService.ts`, `aiService.ts`, `escalationService.ts`, `aiLogService.ts`) — the frontend also hides unavailable actions for `manager` where relevant, but that's UX only, not the security boundary. Appointment, Service History, Customer Requests, Conversations, AI Core, Escalations, and AI Logs are the deliberate exceptions: manager has full read/write (or, for AI Logs, read) access there (see [Appointments](#appointments), [Service History](#service-history), [Customer Requests](#customer-requests), [Conversations](#conversations), [AI Core](#ai-core), [Human Escalation](#human-escalation), and [AI Logs / Audit](#ai-logs--audit)), because that work is day-to-day operations, not a Settings change — but manager still can never see or touch another tenant's data.
 
 ## Multi-tenancy
 
 - One **Tenant** = one auto service company. Every user belongs to exactly one tenant; all business data is tied to a `tenantId`.
 - Tenant isolation is enforced **server-side only** — never via frontend filtering. `tenantId`/`businessId` always come from the authenticated session (`requireAuth`), never from client-supplied fields — a client can send a `Service` **id** to identify a resource, but the server always re-checks `tenantId` and `businessId` against the session before acting on it.
 - The reusable `withTenant()` helper (`src/server/lib/tenantScope.ts`) is meant to be the one way tenant-owned queries build their `where` clause, so future endpoints don't accidentally forget the filter — see `businessRepository.update` and `serviceRepository` for the pattern (scoped `updateMany`/`findFirst`, never a bare `findUnique({ where: { id } })`).
-- A service, knowledge item, business rule, customer, vehicle, lead, or appointment belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH` (and `DELETE`, where it exists) on any of their `:id` endpoints return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
-- `knowledgeRepository`, `businessRuleRepository`, `customerRepository`, `vehicleRepository`, `leadRepository`, and `appointmentRepository` all follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all of them, including the conflict-detection query itself.
-- Relations that span models (Vehicle→Customer, Lead→Customer/Vehicle/Service, Appointment→Customer/Vehicle/Service) are re-verified server-side wherever they're set, never trusted from the client — see [Vehicles](#vehicles), [Leads](#leads), and [Appointments](#appointments).
+- A service, knowledge item, business rule, customer, vehicle, customer request, or appointment belonging to another tenant is indistinguishable from one that doesn't exist: `GET/PATCH` (and `DELETE`, where it exists) on any of their `:id` endpoints return a generic `404 NOT_FOUND` rather than a "belongs to another tenant" message.
+- `knowledgeRepository`, `businessRuleRepository`, `customerRepository`, `vehicleRepository`, and `appointmentRepository` all follow the exact same scoped `updateMany`/`findFirst` pattern as `serviceRepository` — see `tests/tenantIsolation.test.ts` for cross-tenant read/update/deactivate tests covering all of them, including the conflict-detection query itself.
+- Relations that span models (Vehicle→Customer, CustomerRequest→Customer/Vehicle/Service/Appointment, Appointment→Customer/Vehicle/Service) are re-verified server-side wherever they're set, never trusted from the client — see [Vehicles](#vehicles), [Customer Requests](#customer-requests), and [Appointments](#appointments).
 - Role-based checks (`owner`, `admin`, `manager`) via `requireRole()` (`src/server/middleware/requireRole.ts`).
 
 ## Money
@@ -431,18 +417,18 @@ The same file's `toBusinessLocalDateTime(date, timeZone)` extends this to real U
 
 ## Optional field & soft-delete semantics
 
-These rules are enforced consistently across Customer, Vehicle, and Lead (and, where applicable, everywhere else optional fields exist):
+These rules are enforced consistently across Customer, Vehicle, and CustomerRequest (and, where applicable, everywhere else optional fields exist):
 
 - **Create, field omitted** → stored as `null`.
 - **Create, field is `""` or whitespace-only** → trimmed and stored as `null` (never an empty string).
 - **Update (`PATCH`), field omitted** → left unchanged. Every validation schema's Zod output simply omits a key that wasn't in the request, and Prisma's `update`/`updateMany` skip any key absent from the `data` object — the two facts together are what make "omitted = unchanged" work without special-casing it per field.
 - **Update, field is explicit `null`** → clears the optional field to `null`.
 - **Update, field is `""` or whitespace-only** → same as explicit `null` (trimmed first).
-- **Required fields** (`Customer.firstName`/`phone`, `Vehicle.make`/`model`, `Lead.customerId`/`subject`, …) reject `null` and `""` outright — there's no way to "clear" a required field through these endpoints.
+- **Required fields** (`Customer.firstName`/`phone`, `Vehicle.make`/`model`, `CustomerRequest.customerId`/`subject`, …) reject `null` and `""` outright — there's no way to "clear" a required field through these endpoints.
 - **Soft-delete is idempotent everywhere it exists** (`Customer`, `Vehicle`, and every earlier soft-deletable model): `DELETE` sets `isActive = false` via an `updateMany` whose `where` clause never filters on the *current* `isActive` value, so deactivating an already-inactive row still matches and returns success rather than a spurious 404.
-- **Deactivating a Customer never cascades.** It only ever touches the `customers` row — existing `Vehicle`s and `Lead`s referencing that customer are left completely untouched (not deactivated, not deleted, status unchanged) and remain fully readable, since neither `Vehicle` nor `Lead` has any `isActive`-of-its-customer dependency built in.
-- **The one exception**: `POST /api/leads` (creating a *new* Lead) is rejected with `400 VALIDATION_ERROR` if `customerId` points to an inactive Customer — you can't open a new inquiry against a customer record that's been deactivated. This check is deliberately create-only: updating an *existing* Lead (e.g. setting `status: "LOST"` to close it out) still works normally even if its Customer has since been deactivated, so staff can always finish handling what's already open.
-- **Appointment generalizes this further**, since it references three entities instead of one: creating a new Appointment, or updating one to reference a *different* Customer/Vehicle/Service, requires all of them to be currently active (400 otherwise). But an update that only changes `status` or `notes` — not touching the Customer/Vehicle/Service references at all — never re-checks their active state, so an Appointment can always still be closed out (`COMPLETED`/`CANCELLED`/`NO_SHOW`) even after everything it refers to has since been deactivated. Deactivating a Customer/Vehicle/Service never touches its historical Appointments — no cascade, no auto status change, same principle as Leads above.
+- **Deactivating a Customer never cascades.** It only ever touches the `customers` row — existing `Vehicle`s and `CustomerRequest`s referencing that customer are left completely untouched (not deactivated, not deleted, status unchanged) and remain fully readable, since neither `Vehicle` nor `CustomerRequest` has any `isActive`-of-its-customer dependency built in.
+- **The one exception**: `POST /api/customer-requests` (creating a *new* CustomerRequest) is rejected with `400 VALIDATION_ERROR` if `customerId` points to an inactive Customer — you can't open a new inquiry against a customer record that's been deactivated. This check is deliberately create-only: updating an *existing* CustomerRequest (e.g. setting `status: "CLOSED"` to close it out) still works normally even if its Customer has since been deactivated, so staff can always finish handling what's already open.
+- **Appointment generalizes this further**, since it references three entities instead of one: creating a new Appointment, or updating one to reference a *different* Customer/Vehicle/Service, requires all of them to be currently active (400 otherwise). But an update that only changes `status` or `notes` — not touching the Customer/Vehicle/Service references at all — never re-checks their active state, so an Appointment can always still be closed out (`COMPLETED`/`CANCELLED`/`NO_SHOW`) even after everything it refers to has since been deactivated. Deactivating a Customer/Vehicle/Service never touches its historical Appointments — no cascade, no auto status change, same principle as CustomerRequest above.
 
 ## API
 
@@ -474,16 +460,12 @@ All endpoints require the session cookie (`requireAuth`) unless noted. Errors fo
 | GET    | `/api/customers/:id`     | any authenticated       | 404 if unknown/foreign-tenant; `?includeVehicles=true` |
 | POST   | `/api/customers`         | owner, admin            | 409 `CUSTOMER_EMAIL_EXISTS` on active-email duplicate |
 | PATCH  | `/api/customers/:id`     | owner, admin            | partial update, ≥1 field; same 409 check on email change |
-| DELETE | `/api/customers/:id`     | owner, admin            | soft delete, idempotent, never cascades to Vehicles/Leads |
+| DELETE | `/api/customers/:id`     | owner, admin            | soft delete, idempotent, never cascades to Vehicles/Requests |
 | GET    | `/api/vehicles`          | any authenticated       | paginated; `?customerId=`, `?search=`, `?includeInactive=true` |
 | GET    | `/api/vehicles/:id`      | any authenticated       | 404 if unknown or another tenant's |
 | POST   | `/api/vehicles`          | owner, admin            | `customerId` ownership re-checked server-side (404 if foreign) |
 | PATCH  | `/api/vehicles/:id`      | owner, admin            | partial update, ≥1 field; `customerId` not changeable |
 | DELETE | `/api/vehicles/:id`      | owner, admin            | soft delete (`isActive = false`), idempotent |
-| GET    | `/api/leads`             | any authenticated       | paginated, sorted `createdAt DESC`; `?status=`, `?source=`, `?customerId=`, `?vehicleId=`, `?serviceId=`, `?search=` |
-| GET    | `/api/leads/:id`         | any authenticated       | 404 if unknown or another tenant's |
-| POST   | `/api/leads`             | owner, admin            | `customerId`/`vehicleId`/`serviceId` all re-verified server-side; 400 if vehicle belongs to a different customer or the customer is inactive |
-| PATCH  | `/api/leads/:id`         | owner, admin            | partial update, ≥1 field, incl. `status`; no DELETE — use `status: "LOST"` |
 | GET    | `/api/appointments`      | any authenticated       | paginated, sorted `startAt ASC`; `?status=`, `?customerId=`, `?vehicleId=`, `?serviceId=`, `?dateFrom=`, `?dateTo=`, `?includeCancelled=true` |
 | GET    | `/api/appointments/:id`  | any authenticated       | 404 if unknown or another tenant's |
 | POST   | `/api/appointments`      | owner, admin, **manager** | `status` optional, only `SCHEDULED` accepted; working-hours + conflict + ownership/active checks all apply |
@@ -517,8 +499,8 @@ No `POST /api/escalations` and no `PATCH /api/escalations/:id` exist — an esca
 - Argon2id password hashing, no custom crypto.
 - Server-side sessions; only a hashed, HMAC-keyed token is persisted.
 - HttpOnly / Secure (prod) / SameSite=Lax cookies; nothing auth-related in localStorage/sessionStorage.
-- Zod validation on every input, including business profile, working hours, service, knowledge base, business rule, customer, vehicle, lead, and appointment payloads.
-- Customer PII (phone, email, notes) and Lead/Appointment notes and descriptions are never written to logs — `src/server/lib/logger.ts`'s redaction list covers them the same way it covers secrets; only route/status/generic error codes are logged for these operations. `AppointmentDto`/`ApiError.details` never carry PII either — a conflict response's `conflictingAppointmentId` is just an id.
+- Zod validation on every input, including business profile, working hours, service, knowledge base, business rule, customer, vehicle, and appointment payloads.
+- Customer PII (phone, email, notes) and CustomerRequest/Appointment notes and descriptions are never written to logs — `src/server/lib/logger.ts`'s redaction list covers them the same way it covers secrets; only route/status/generic error codes are logged for these operations. `AppointmentDto`/`ApiError.details` never carry PII either — a conflict response's `conflictingAppointmentId` is just an id.
 - Tenant isolation and role checks enforced server-side — see [Multi-tenancy](#multi-tenancy) and [Roles](#roles).
 - Basic rate limiting on auth endpoints.
 - Centralized error handling (`src/server/lib/errors.ts`) — no stack traces, SQL errors, env vars, or file paths ever reach the client.

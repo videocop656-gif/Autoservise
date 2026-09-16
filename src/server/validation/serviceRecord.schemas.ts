@@ -3,9 +3,9 @@ import { SUPPORTED_CURRENCIES } from '../domain/currency'
 
 const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.trim() === '' ? null : val)
 
-// appointmentId goes through emptyToNull too, same as Lead's vehicleId/
-// serviceId: a cleared <select> sends "", which means "no appointment",
-// not a validation error.
+// appointmentId goes through emptyToNull too, same as CustomerRequest's
+// vehicleId/serviceId: a cleared <select> sends "", which means "no
+// appointment", not a validation error.
 const optionalUuid = (message: string) => z.preprocess(emptyToNull, z.string().uuid(message).nullable().optional())
 
 const performedAtSchema = z

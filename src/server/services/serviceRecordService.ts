@@ -21,7 +21,7 @@ interface RelationRefs {
  * three are currently active — same shape as Appointment's equivalent
  * check (Prompt 05), reused conceptually rather than literally shared,
  * since each service module keeps its own copy (matching the project's
- * existing convention — see leadService/appointmentService).
+ * existing convention — see appointmentService).
  */
 async function assertRelationsOwnedAndActive(ctx: AuthContext, refs: RelationRefs): Promise<void> {
   const customer = await customerRepository.findById(ctx.tenant.id, ctx.business.id, refs.customerId)

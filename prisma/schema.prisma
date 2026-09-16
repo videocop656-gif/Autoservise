@@ -51,21 +51,6 @@ enum BusinessRuleCategory {
   GENERAL
 }
 
-enum LeadStatus {
-  NEW
-  IN_PROGRESS
-  QUALIFIED
-  WON
-  LOST
-}
-
-enum LeadSource {
-  MANUAL
-  WEBSITE
-  PHONE
-  OTHER
-}
-
 enum AppointmentStatus {
   SCHEDULED
   CONFIRMED
@@ -222,7 +207,6 @@ model Tenant {
   businessRules                  BusinessRule[]
   customers                      Customer[]
   vehicles                       Vehicle[]
-  leads                          Lead[]
   appointments                   Appointment[]
   serviceRecords                 ServiceRecord[]
   customerRequests               CustomerRequest[]
@@ -290,7 +274,6 @@ model Business {
   businessRules                  BusinessRule[]
   customers                      Customer[]
   vehicles                       Vehicle[]
-  leads                          Lead[]
   appointments                   Appointment[]
   serviceRecords                 ServiceRecord[]
   customerRequests               CustomerRequest[]
@@ -345,7 +328,6 @@ model Service {
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  leads            Lead[]
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
@@ -420,7 +402,6 @@ model Customer {
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
   vehicles         Vehicle[]
-  leads            Lead[]
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
@@ -458,7 +439,6 @@ model Vehicle {
   // Restrict, not Cascade: a domain record (Vehicle) is never deleted
   // just because its Customer is soft-deleted elsewhere in the app.
   customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  leads            Lead[]
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
@@ -467,37 +447,6 @@ model Vehicle {
   @@index([tenantId, businessId, customerId])
   @@index([tenantId, businessId, isActive])
   @@map("vehicles")
-}
-
-model Lead {
-  id          String     @id @default(uuid())
-  tenantId    String
-  businessId  String
-  customerId  String
-  vehicleId   String?
-  serviceId   String?
-  status      LeadStatus @default(NEW)
-  source      LeadSource @default(MANUAL)
-  subject     String
-  description String?
-  notes       String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  // Restrict/SetNull, not Cascade: a Lead's history must survive even if
-  // the Customer/Vehicle/Service it references is later removed from the
-  // database outside the app's normal soft-delete workflow.
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  vehicle  Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
-  service  Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId, businessId])
-  @@index([tenantId, businessId, status])
-  @@index([tenantId, businessId, customerId])
-  @@index([tenantId, businessId, createdAt])
-  @@map("leads")
 }
 
 model Appointment {
@@ -579,7 +528,7 @@ model ServiceRecord {
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict, not Cascade, on every domain relation below — matching
-  // Lead/Appointment's treatment of the same entities: a ServiceRecord is
+  // Appointment's treatment of the same entities: a ServiceRecord is
   // permanent history and must survive the Customer/Vehicle/Service/
   // Appointment it references being deactivated, changed, or (outside the
   // app's normal soft-delete workflow) removed.
@@ -636,7 +585,7 @@ model CustomerRequest {
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict, not Cascade, on every domain relation below — same principle
-  // as Lead/Appointment/ServiceRecord: a CustomerRequest is a historical
+  // as Appointment/ServiceRecord: a CustomerRequest is a historical
   // record of an inquiry and must survive the Customer/Vehicle/Service/
   // Appointment it references being deactivated, changed, or (outside the
   // app's normal soft-delete workflow) removed.
@@ -672,7 +621,7 @@ model CustomerRequestStatusHistory {
   customerRequest CustomerRequest @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
   // SetNull, not Restrict: the audit trail is a permanent record and must
   // survive a User being removed, even though there is no user-delete flow
-  // in the app today — same principle as Lead.vehicleId/serviceId's SetNull.
+  // in the app today — same principle as CustomerRequest.vehicleId/serviceId's SetNull.
   changedByUser   User?           @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, businessId, customerRequestId, createdAt])
@@ -782,8 +731,8 @@ model Message {
   business     Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Cascade — unlike every other domain relation added in this schema so
   // far. A Message only exists as part of its Conversation (it doesn't
-  // reference an independent CRM entity the way Lead/Appointment/
-  // ServiceRecord/CustomerRequest do), so it is an "owned child" record —
+  // reference an independent CRM entity the way Appointment/ServiceRecord/
+  // CustomerRequest do), so it is an "owned child" record —
   // the same relationship BusinessWorkingHours has to Business. There is
   // no DELETE endpoint for Conversation today, so this only matters for
   // direct DB operations outside the app's normal flow.

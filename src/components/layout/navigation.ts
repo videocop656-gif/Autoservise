@@ -52,7 +52,6 @@ const PAGE_TITLES: Record<string, string> = {
   '/settings/services': 'Услуги',
   '/settings/knowledge': 'База знаний',
   '/settings/rules': 'Бизнес-правила',
-  '/settings/leads': 'Лиды',
   '/settings/service-history': 'История обслуживания',
   '/settings/ai-logs': 'AI Logs',
   '/settings/team': 'Команда',
