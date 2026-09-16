@@ -1,0 +1,114 @@
+/*
+ * AppLaunchScreen (Prompt 45) — cinematic stage transitions.
+ * Scoped to .launch-* classes only; never touches the global design system
+ * in src/index.css. Every effect here is a one-shot CSS transition/animation
+ * driven by a class toggle — no requestAnimationFrame loops, so there is
+ * nothing to keep running (or to clean up) once the intro completes.
+ */
+
+.launch-car {
+  opacity: 0;
+  transform: scale(1.045) translateY(8px);
+  filter: blur(14px) brightness(0.7);
+  transition:
+    opacity 900ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 900ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 900ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.launch-car.is-revealed {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0) brightness(1);
+}
+
+.launch-car.is-engine-on .launch-car__body {
+  animation: launch-engine-rumble 380ms ease-in-out 1;
+}
+
+.launch-headlight-glow {
+  opacity: 0;
+  transition: opacity 750ms ease-out;
+}
+.launch-headlight-glow.is-on {
+  opacity: 0.85;
+}
+
+.launch-headlight-core {
+  opacity: 0;
+  transition: opacity 450ms ease-out;
+}
+.launch-headlight-core.is-on {
+  opacity: 1;
+}
+
+.launch-gold-line {
+  opacity: 0;
+  stroke-dashoffset: 640;
+  transition:
+    opacity 500ms ease-out,
+    stroke-dashoffset 900ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.launch-gold-line.is-on {
+  opacity: 0.9;
+  stroke-dashoffset: 0;
+}
+
+.launch-brand {
+  opacity: 0;
+  transform: translateY(10px);
+  filter: blur(6px);
+  transition:
+    opacity 700ms ease-out,
+    transform 700ms ease-out,
+    filter 700ms ease-out;
+}
+.launch-brand.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+
+.launch-cta {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 500ms ease-out,
+    transform 500ms ease-out;
+}
+.launch-cta.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@keyframes launch-engine-rumble {
+  0% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(1px);
+  }
+  55% {
+    transform: translateY(-1px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* Respect the OS-level motion preference: collapse every transition/
+   animation to an instant state change. AppLaunchScreen also skips
+   scheduling the stage timers entirely under reduced motion — this media
+   query is a belt-and-braces backstop in case a class is ever toggled
+   directly without going through that logic. */
+@media (prefers-reduced-motion: reduce) {
+  .launch-car,
+  .launch-car.is-engine-on .launch-car__body,
+  .launch-headlight-glow,
+  .launch-headlight-core,
+  .launch-gold-line,
+  .launch-brand,
+  .launch-cta {
+    transition: none !important;
+    animation: none !important;
+  }
+}

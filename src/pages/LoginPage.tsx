@@ -6,10 +6,37 @@ import { Label } from '../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { apiFetch, ApiClientError } from '../lib/apiClient'
 import { useAuth } from '../context/AuthContext'
+import { AppLaunchScreen } from '../components/launch/AppLaunchScreen'
+
+// sessionStorage (not localStorage): the cinematic intro should reappear on
+// a genuinely new browser session, but never repeat on every reload/return
+// within the same tab session (Prompt 45 spec — "показать launch experience
+// при первом открытии приложения / новой сессии", "не превращать splash
+// screen в обязательную долгую заставку").
+const LAUNCH_SEEN_KEY = 'autoservise:launch-seen'
+
+function hasSeenLaunchThisSession(): boolean {
+  try {
+    return window.sessionStorage.getItem(LAUNCH_SEEN_KEY) === 'true'
+  } catch {
+    // sessionStorage unavailable (private-mode/blocked storage) — fail open
+    // to the plain login form rather than risk getting stuck on the intro.
+    return true
+  }
+}
+
+function markLaunchSeenThisSession(): void {
+  try {
+    window.sessionStorage.setItem(LAUNCH_SEEN_KEY, 'true')
+  } catch {
+    /* best-effort only — nothing else to do if storage is unavailable. */
+  }
+}
 
 export default function LoginPage() {
   const navigate = useNavigate()
   const { refresh } = useAuth()
+  const [showLaunch, setShowLaunch] = useState(() => !hasSeenLaunchThisSession())
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -31,6 +58,20 @@ export default function LoginPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  if (showLaunch) {
+    return (
+      <AppLaunchScreen
+        brandName="AUTOSERVISE"
+        brandTagline="Система готова к работе с вашим автосервисом"
+        ctaLabel="Начать работу"
+        ctaAction={() => {
+          markLaunchSeenThisSession()
+          setShowLaunch(false)
+        }}
+      />
+    )
   }
 
   return (
