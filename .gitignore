@@ -9,3 +9,7 @@ coverage
 .DS_Store
 .vercel
 prisma/dev.db
+
+# local tooling and private go-to-market notes
+.mcp.json
+marketing/
