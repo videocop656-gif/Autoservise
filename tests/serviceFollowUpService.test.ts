@@ -16,7 +16,8 @@ const {
   fuFindByServiceRecordIdMock,
   fuCreateMock,
   fuUpdateByIdMock,
-  fuLinkCustomerRequestMock,
+  fuFindByIdForUpdateMock,
+  txCustomerRequestFindFirstMock,
   fuMarkBookedMock,
   fuListMock,
   srCreateMock,
@@ -36,7 +37,8 @@ const {
   fuFindByServiceRecordIdMock: vi.fn(),
   fuCreateMock: vi.fn(),
   fuUpdateByIdMock: vi.fn(),
-  fuLinkCustomerRequestMock: vi.fn(),
+  fuFindByIdForUpdateMock: vi.fn(),
+  txCustomerRequestFindFirstMock: vi.fn(),
   fuMarkBookedMock: vi.fn(),
   fuListMock: vi.fn(),
   srCreateMock: vi.fn(),
@@ -60,9 +62,17 @@ vi.mock('../src/server/repositories/serviceFollowUpRepository', () => ({
     findByServiceRecordId: fuFindByServiceRecordIdMock,
     create: fuCreateMock,
     updateById: fuUpdateByIdMock,
-    linkCustomerRequest: fuLinkCustomerRequestMock,
+    findByIdForUpdate: fuFindByIdForUpdateMock,
     markBookedByCustomerRequest: fuMarkBookedMock,
   },
+}))
+// Prompt 48.1 — writes run inside runInTransaction. Here it is a
+// pass-through with a recognisable TX client (so tests can assert every
+// write joins the transaction); real rollback/locking semantics are covered
+// in serviceFollowUpHardening.test.ts.
+const TX = { __tx: true, customerRequest: { findFirst: (...args: unknown[]) => txCustomerRequestFindFirstMock(...args) } }
+vi.mock('../src/server/db/transaction', () => ({
+  runInTransaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(TX),
 }))
 vi.mock('../src/server/repositories/serviceRecordRepository', () => ({
   serviceRecordRepository: {
@@ -188,7 +198,8 @@ beforeEach(() => {
   fuCreateMock.mockImplementation(async (data: Record<string, unknown>) => ({ ...makeFollowUp(), ...data }))
   fuUpdateByIdMock.mockImplementation(async (_t: string, _b: string, _id: string, data: Record<string, unknown>) => ({ ...makeFollowUp(), ...data }))
   fuFindByIdMock.mockResolvedValue(makeFollowUp())
-  fuLinkCustomerRequestMock.mockResolvedValue(true)
+  fuFindByIdForUpdateMock.mockResolvedValue(makeFollowUp())
+  txCustomerRequestFindFirstMock.mockResolvedValue({ id: REQUEST_ID, tenantId: 't1', businessId: 'b1', customerId: CUSTOMER_ID, status: 'NEW' })
   fuMarkBookedMock.mockResolvedValue(1)
   crCreateWithInitialHistoryMock.mockImplementation(async (data: Record<string, unknown>) => ({ id: REQUEST_ID, ...data }))
   crFindByIdMock.mockResolvedValue({ id: REQUEST_ID, tenantId: 't1', businessId: 'b1', customerId: CUSTOMER_ID, status: 'NEW' })
@@ -211,7 +222,7 @@ describe('follow-up creation from a ServiceRecord', () => {
       serviceRecordId: RECORD_ID,
       dueAt: new Date('2027-03-27T21:00:00.000Z'),
       status: 'PENDING',
-    })
+    }, TX)
   })
 
   it('Case A — a manual date overrides the service interval', async () => {
@@ -292,7 +303,7 @@ describe('idempotency when a ServiceRecord is saved again', () => {
       vehicleId: VEHICLE_ID,
       serviceId: SERVICE_ID,
       dueAt: new Date('2027-01-14T21:00:00.000Z'),
-    })
+    }, TX)
   })
 
   it('never passes followUpDueDate through to the ServiceRecord row itself', async () => {
@@ -328,7 +339,7 @@ describe('idempotency when a ServiceRecord is saved again', () => {
     await updateServiceRecord(ctx, RECORD_ID, { followUpDueDate: null })
 
     expect(fuCreateMock).not.toHaveBeenCalled()
-    expect(fuUpdateByIdMock).toHaveBeenCalledWith('t1', 'b1', FOLLOW_UP_ID, { status: 'DISMISSED' })
+    expect(fuUpdateByIdMock).toHaveBeenCalledWith('t1', 'b1', FOLLOW_UP_ID, { status: 'DISMISSED' }, TX)
   })
 
   it('an edit that sets a date on a record that never had a follow-up creates exactly one', async () => {
@@ -339,11 +350,12 @@ describe('idempotency when a ServiceRecord is saved again', () => {
 })
 
 describe('status transition matrix', () => {
+  // Prompt 48.1 — the matrix itself is unchanged (spec §6), but reaching
+  // BOOKED through PATCH additionally requires a real appointment (see the
+  // BOOKED describe below), so these are the transitions a plain PATCH can do.
   const allowed: Array<[Status, Status]> = [
     ['PENDING', 'CONTACTED'],
-    ['PENDING', 'BOOKED'],
     ['PENDING', 'DISMISSED'],
-    ['CONTACTED', 'BOOKED'],
     ['CONTACTED', 'DISMISSED'],
   ]
   const forbidden: Array<[Status, Status]> = [
@@ -355,6 +367,11 @@ describe('status transition matrix', () => {
     ['DISMISSED', 'CONTACTED'],
     ['DISMISSED', 'BOOKED'],
   ]
+
+  it('the matrix itself still allows PENDING/CONTACTED → BOOKED (the appointment check is a separate domain rule)', () => {
+    expect(() => assertValidFollowUpTransition('PENDING', 'BOOKED')).not.toThrow()
+    expect(() => assertValidFollowUpTransition('CONTACTED', 'BOOKED')).not.toThrow()
+  })
 
   it.each(allowed)('allows %s → %s', async (from, to) => {
     expect(() => assertValidFollowUpTransition(from, to)).not.toThrow()
@@ -396,15 +413,22 @@ describe('status transition matrix', () => {
 })
 
 describe('"Создать обращение" — CustomerRequest from a follow-up', () => {
-  it('creates one CustomerRequest with the follow-up customer, vehicle and service, source MANUAL, status NEW', async () => {
-    fuFindByIdMock
-      .mockResolvedValueOnce(makeFollowUp({ note: 'Позвонить после 18:00' }))
-      .mockResolvedValueOnce(makeFollowUp({ status: 'CONTACTED', customerRequestId: REQUEST_ID }))
+  // Prompt 48.1 — the follow-up is read once without a lock (validation
+  // phase) and again under SELECT … FOR UPDATE inside the transaction.
+  function followUpIs(row: ReturnType<typeof makeFollowUp>) {
+    fuFindByIdMock.mockResolvedValue(row)
+    fuFindByIdForUpdateMock.mockResolvedValue(row)
+  }
+
+  it('creates one CustomerRequest with the follow-up customer, vehicle and service, source MANUAL, status NEW — inside the transaction', async () => {
+    followUpIs(makeFollowUp({ note: 'Позвонить после 18:00' }))
 
     const result = await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
 
+    // The follow-up row is locked first, scoped to the requesting tenant/business.
+    expect(fuFindByIdForUpdateMock).toHaveBeenCalledWith('t1', 'b1', FOLLOW_UP_ID, TX)
     expect(crCreateWithInitialHistoryMock).toHaveBeenCalledTimes(1)
-    const [data, changedBy] = crCreateWithInitialHistoryMock.mock.calls[0]!
+    const [data, changedBy, tx] = crCreateWithInitialHistoryMock.mock.calls[0]!
     expect(data).toMatchObject({
       tenantId: 't1',
       businessId: 'b1',
@@ -417,7 +441,8 @@ describe('"Создать обращение" — CustomerRequest from a follow-
       description: 'Позвонить после 18:00',
     })
     expect(changedBy).toBe('u1')
-    expect(fuLinkCustomerRequestMock).toHaveBeenCalledWith('t1', 'b1', FOLLOW_UP_ID, REQUEST_ID)
+    expect(tx).toBe(TX)
+    expect(fuUpdateByIdMock).toHaveBeenCalledWith('t1', 'b1', FOLLOW_UP_ID, { customerRequestId: REQUEST_ID, status: 'CONTACTED' }, TX)
     expect(result.created).toBe(true)
     expect(result.request.id).toBe(REQUEST_ID)
     expect(result.followUp.status).toBe('CONTACTED')
@@ -425,7 +450,7 @@ describe('"Создать обращение" — CustomerRequest from a follow-
   })
 
   it('a follow-up without a service creates a request without serviceId', async () => {
-    fuFindByIdMock.mockResolvedValue(makeFollowUp({ serviceId: null }))
+    followUpIs(makeFollowUp({ serviceId: null }))
 
     await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
 
@@ -435,20 +460,41 @@ describe('"Создать обращение" — CustomerRequest from a follow-
     expect(serviceFindByIdMock).not.toHaveBeenCalled()
   })
 
-  it('is idempotent: a repeat call returns the already-linked request and creates nothing', async () => {
-    fuFindByIdMock.mockResolvedValue(makeFollowUp({ status: 'CONTACTED', customerRequestId: REQUEST_ID }))
+  it('an already-linked follow-up is answered from the plain read — no transaction, no lock, nothing created', async () => {
+    followUpIs(makeFollowUp({ status: 'CONTACTED', customerRequestId: REQUEST_ID }))
+
+    const result = await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
+
+    expect(fuFindByIdForUpdateMock).not.toHaveBeenCalled()
+    expect(crFindByIdMock).toHaveBeenCalledWith('t1', 'b1', REQUEST_ID)
+    expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
+    expect(result.created).toBe(false)
+    expect(result.request.id).toBe(REQUEST_ID)
+  })
+
+  it('the follow-up changed between validation and the lock → 409 CONFLICT, nothing inserted', async () => {
+    fuFindByIdMock.mockResolvedValue(makeFollowUp())
+    fuFindByIdForUpdateMock.mockResolvedValue(makeFollowUp({ vehicleId: '99999999-9999-4999-8999-999999999999' }))
+
+    await expectApiError(createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID), 409, 'CONFLICT')
+    expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
+    expect(fuUpdateByIdMock).not.toHaveBeenCalled()
+  })
+
+  it('is idempotent under a race: linked by another call while this one waited on the lock → returns that request', async () => {
+    fuFindByIdForUpdateMock.mockResolvedValue(makeFollowUp({ status: 'CONTACTED', customerRequestId: REQUEST_ID }))
 
     const result = await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
 
     expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
-    expect(fuLinkCustomerRequestMock).not.toHaveBeenCalled()
-    expect(crFindByIdMock).toHaveBeenCalledWith('t1', 'b1', REQUEST_ID)
+    expect(fuUpdateByIdMock).not.toHaveBeenCalled()
+    expect(txCustomerRequestFindFirstMock).toHaveBeenCalledWith({ where: { businessId: 'b1', id: REQUEST_ID, tenantId: 't1' } })
     expect(result.created).toBe(false)
     expect(result.request.id).toBe(REQUEST_ID)
   })
 
   it('stays idempotent after the follow-up became BOOKED: returns the existing request', async () => {
-    fuFindByIdMock.mockResolvedValue(makeFollowUp({ status: 'BOOKED', customerRequestId: REQUEST_ID }))
+    fuFindByIdForUpdateMock.mockResolvedValue(makeFollowUp({ status: 'BOOKED', customerRequestId: REQUEST_ID }))
 
     const result = await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
 
@@ -456,28 +502,15 @@ describe('"Создать обращение" — CustomerRequest from a follow-
     expect(result.created).toBe(false)
   })
 
-  it('when a concurrent call won the link, returns the winner request instead of a second one', async () => {
-    fuLinkCustomerRequestMock.mockResolvedValue(false)
-    fuFindByIdMock
-      .mockResolvedValueOnce(makeFollowUp())
-      .mockResolvedValueOnce(makeFollowUp({ status: 'CONTACTED', customerRequestId: 'winner-request' }))
-    crFindByIdMock.mockResolvedValue({ id: 'winner-request' })
-
-    const result = await createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID)
-
-    expect(result.created).toBe(false)
-    expect(result.request.id).toBe('winner-request')
-  })
-
   it.each(['BOOKED', 'DISMISSED'] as const)('a %s follow-up without a request never creates one', async (status) => {
-    fuFindByIdMock.mockResolvedValue(makeFollowUp({ status }))
+    fuFindByIdForUpdateMock.mockResolvedValue(makeFollowUp({ status }))
 
     await expectApiError(createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID), 400, 'VALIDATION_ERROR')
     expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
   })
 
   it('a foreign/unknown follow-up is a 404 and no request is created', async () => {
-    fuFindByIdMock.mockResolvedValue(null)
+    fuFindByIdForUpdateMock.mockResolvedValue(null)
 
     await expectApiError(createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID), 404, 'NOT_FOUND')
     expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
@@ -488,12 +521,21 @@ describe('"Создать обращение" — CustomerRequest from a follow-
 
     await expectApiError(createCustomerRequestFromFollowUp(ctx, FOLLOW_UP_ID), 400)
     expect(crCreateWithInitialHistoryMock).not.toHaveBeenCalled()
-    expect(fuLinkCustomerRequestMock).not.toHaveBeenCalled()
+    expect(fuUpdateByIdMock).not.toHaveBeenCalled()
   })
 })
 
 describe('BOOKED — only when the linked request is really CONVERTED to an appointment', () => {
-  it('converting the linked request marks its open follow-up BOOKED', async () => {
+  // updateWithStatusHistory's 6th argument is the in-transaction hook.
+  function runStatusHook(result: Record<string, unknown>) {
+    crUpdateWithStatusHistoryMock.mockImplementation(async (...args: unknown[]) => {
+      const hook = args[5] as ((tx: unknown) => Promise<void>) | undefined
+      if (hook) await hook(TX)
+      return result
+    })
+  }
+
+  it('converting the linked request marks its open follow-up BOOKED — in the same transaction as the status change', async () => {
     crFindByIdMock.mockResolvedValue({
       id: REQUEST_ID,
       customerId: CUSTOMER_ID,
@@ -504,16 +546,16 @@ describe('BOOKED — only when the linked request is really CONVERTED to an appo
       requestedTimeFrom: null,
       requestedTimeTo: null,
     })
-    crUpdateWithStatusHistoryMock.mockResolvedValue({ id: REQUEST_ID, status: 'CONVERTED' })
+    runStatusHook({ id: REQUEST_ID, status: 'CONVERTED' })
 
     await updateCustomerRequest(ctx, REQUEST_ID, { status: 'CONVERTED' })
 
-    expect(fuMarkBookedMock).toHaveBeenCalledWith('t1', 'b1', REQUEST_ID)
+    expect(fuMarkBookedMock).toHaveBeenCalledWith('t1', 'b1', REQUEST_ID, TX)
   })
 
   it('any other request status change leaves follow-ups alone', async () => {
     crFindByIdMock.mockResolvedValue({ id: REQUEST_ID, customerId: CUSTOMER_ID, appointmentId: null, status: 'NEW', requestedTimeFrom: null, requestedTimeTo: null })
-    crUpdateWithStatusHistoryMock.mockResolvedValue({ id: REQUEST_ID, status: 'IN_PROGRESS' })
+    runStatusHook({ id: REQUEST_ID, status: 'IN_PROGRESS' })
 
     await updateCustomerRequest(ctx, REQUEST_ID, { status: 'IN_PROGRESS' })
 

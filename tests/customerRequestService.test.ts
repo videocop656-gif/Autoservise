@@ -416,7 +416,9 @@ describe('updateCustomerRequest', () => {
         ctx.business.id,
         'r1',
         expect.anything(),
-        { fromStatus: 'NEW', toStatus: 'IN_PROGRESS', changedByUserId: ctx.user.id }
+        { fromStatus: 'NEW', toStatus: 'IN_PROGRESS', changedByUserId: ctx.user.id },
+        // Prompt 48.1 — no follow-up side effect for a non-CONVERTED change.
+        undefined
       )
     })
 

@@ -78,8 +78,12 @@ export const customerRequestRepository = {
    * the history row needs the row's generated id, which an array-form
    * transaction can't thread between two operations.
    */
-  createWithInitialHistory(data: Prisma.CustomerRequestUncheckedCreateInput, changedByUserId: string | null) {
-    return prisma.$transaction(async (tx) => {
+  // Prompt 48.1 — `tx`: when the caller already runs a transaction (a
+  // request created from a ServiceFollowUp), the request + its history row
+  // join that transaction instead of opening their own, so they roll back
+  // with it. Without `tx` the behavior is exactly as before.
+  createWithInitialHistory(data: Prisma.CustomerRequestUncheckedCreateInput, changedByUserId: string | null, tx?: Prisma.TransactionClient) {
+    const run = async (tx: Prisma.TransactionClient) => {
       const created = await tx.customerRequest.create({ data })
       await tx.customerRequestStatusHistory.create({
         data: {
@@ -92,7 +96,8 @@ export const customerRequestRepository = {
         },
       })
       return created
-    })
+    }
+    return tx ? run(tx) : prisma.$transaction(run)
   },
 
   /**
@@ -108,7 +113,10 @@ export const customerRequestRepository = {
     businessId: string,
     id: string,
     data: Prisma.CustomerRequestUpdateInput,
-    historyEntry: HistoryEntry
+    historyEntry: HistoryEntry,
+    // Prompt 48.1 — extra writes that must commit or roll back together
+    // with this status change (e.g. CONVERTED → linked follow-up BOOKED).
+    onStatusChanged?: (tx: Prisma.TransactionClient) => Promise<void>
   ) {
     try {
       return await prisma.$transaction(async (tx) => {
@@ -119,6 +127,7 @@ export const customerRequestRepository = {
         await tx.customerRequestStatusHistory.create({
           data: { tenantId, businessId, customerRequestId: id, ...historyEntry },
         })
+        if (onStatusChanged) await onStatusChanged(tx)
         return tx.customerRequest.findFirst({ where: withTenant(tenantId, { businessId, id }) })
       })
     } catch (err) {

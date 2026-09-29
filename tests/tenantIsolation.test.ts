@@ -1791,21 +1791,24 @@ describe('tenant isolation — ServiceFollowUp', () => {
     expect(result).toBeNull()
   })
 
-  it('tenant B cannot link a request to tenant A follow-up (POST /request): the link is scoped and conditional', async () => {
-    serviceFollowUpUpdateManyMock.mockResolvedValue({ count: 0 })
-    const linked = await serviceFollowUpRepository.linkCustomerRequest('tenant-b', 'business-b', 'follow-up-owned-by-tenant-a', 'req-b')
+  it('tenant B cannot lock tenant A follow-up (POST /request): the FOR UPDATE row lock is scoped by id + tenantId + businessId', async () => {
+    queryRawMock.mockResolvedValue([])
+    // The repository's own prisma mock doubles as the transaction client here.
+    const { prisma } = await import('../src/server/db/prisma')
+    const result = await serviceFollowUpRepository.findByIdForUpdate(
+      'tenant-b',
+      'business-b',
+      'follow-up-owned-by-tenant-a',
+      prisma as unknown as Parameters<typeof serviceFollowUpRepository.findByIdForUpdate>[3]
+    )
 
-    expect(serviceFollowUpUpdateManyMock).toHaveBeenCalledWith({
-      where: {
-        businessId: 'business-b',
-        id: 'follow-up-owned-by-tenant-a',
-        tenantId: 'tenant-b',
-        customerRequestId: null,
-        status: { in: ['PENDING', 'CONTACTED'] },
-      },
-      data: { customerRequestId: 'req-b', status: 'CONTACTED' },
-    })
-    expect(linked).toBe(false)
+    const sql = queryRawMock.mock.calls[0]![0] as { text: string; values: unknown[] }
+    expect(sql.text).toContain('FOR UPDATE')
+    expect(sql.text).toContain('"id" = $1 AND "tenantId" = $2 AND "businessId" = $3')
+    expect(sql.values).toEqual(['follow-up-owned-by-tenant-a', 'tenant-b', 'business-b'])
+    // Nothing matched → nothing is read back, nothing is locked.
+    expect(serviceFollowUpFindFirstMock).not.toHaveBeenCalled()
+    expect(result).toBeNull()
   })
 
   it('list queries (Operations / Client Detail / Vehicle Detail) are always scoped to tenantId + businessId', async () => {

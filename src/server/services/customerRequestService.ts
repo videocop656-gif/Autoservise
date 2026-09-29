@@ -1,4 +1,4 @@
-import type { CustomerRequestSource, CustomerRequestStatus } from '@prisma/client'
+import type { CustomerRequestSource, CustomerRequestStatus, Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
@@ -164,6 +164,22 @@ export async function getCustomerRequest(ctx: AuthContext, id: string) {
 // for Appointment/ServiceRecord: manager gets full read/write/status-change
 // access, not read-only like the Settings-style entities.
 export async function createCustomerRequest(ctx: AuthContext, input: CreateCustomerRequestInput) {
+  const data = await prepareCustomerRequestCreate(ctx, input)
+  return customerRequestRepository.createWithInitialHistory(data, ctx.user.id)
+}
+
+/**
+ * Prompt 48.1 — every check and read a new CustomerRequest needs (role,
+ * ownership/active relations, time range, requested date), returning the
+ * exact row to insert — but without inserting it. Lets a caller that must
+ * insert inside its own short transaction (a request created from a
+ * ServiceFollowUp) do all reads first, so the transaction never needs a
+ * second pool connection while it holds a row lock.
+ */
+export async function prepareCustomerRequestCreate(
+  ctx: AuthContext,
+  input: CreateCustomerRequestInput
+): Promise<Prisma.CustomerRequestUncheckedCreateInput> {
   requireRole(ctx, 'owner', 'admin', 'manager')
 
   const vehicleId = input.vehicleId ?? null
@@ -180,25 +196,22 @@ export async function createCustomerRequest(ctx: AuthContext, input: CreateCusto
   // CREATE always starts at NEW, whether or not an appointmentId was given
   // (spec §17's own recommended simplification — no hidden automatic
   // transitions; moving to QUALIFIED/CONVERTED is always a later, explicit PATCH).
-  return customerRequestRepository.createWithInitialHistory(
-    {
-      tenantId: ctx.tenant.id,
-      businessId: ctx.business.id,
-      customerId: input.customerId,
-      vehicleId,
-      serviceId,
-      appointmentId,
-      source: input.source ?? 'MANUAL',
-      status: 'NEW',
-      subject: input.subject,
-      description: input.description ?? null,
-      requestedDate,
-      requestedTimeFrom,
-      requestedTimeTo,
-      notes: input.notes ?? null,
-    },
-    ctx.user.id
-  )
+  return {
+    tenantId: ctx.tenant.id,
+    businessId: ctx.business.id,
+    customerId: input.customerId,
+    vehicleId,
+    serviceId,
+    appointmentId,
+    source: input.source ?? 'MANUAL',
+    status: 'NEW',
+    subject: input.subject,
+    description: input.description ?? null,
+    requestedDate,
+    requestedTimeFrom,
+    requestedTimeTo,
+    notes: input.notes ?? null,
+  }
 }
 
 export async function updateCustomerRequest(ctx: AuthContext, id: string, input: UpdateCustomerRequestInput) {
@@ -259,27 +272,38 @@ export async function updateCustomerRequest(ctx: AuthContext, id: string, input:
     ...(normalizedDate !== undefined ? { requestedDate: normalizedDate } : {}),
   }
 
+  // Prompt 48 / 48.1 — a request created from a ServiceFollowUp that becomes
+  // CONVERTED (which the checks above only allow with a real appointment)
+  // means the repeat visit is actually booked: its open follow-up becomes
+  // BOOKED in the SAME transaction as the status change and history row,
+  // so the two can never disagree. The request's own lifecycle is unchanged.
+  const becomesConverted = input.status === 'CONVERTED' && existing.status !== 'CONVERTED'
+  const onStatusChanged = becomesConverted
+    ? async (tx: Prisma.TransactionClient) => {
+        await serviceFollowUpRepository.markBookedByCustomerRequest(ctx.tenant.id, ctx.business.id, id, tx)
+      }
+    : undefined
+
   let updated
   if (input.status !== undefined && input.status !== existing.status) {
-    updated = await customerRequestRepository.updateWithStatusHistory(ctx.tenant.id, ctx.business.id, id, data, {
-      fromStatus: existing.status,
-      toStatus: input.status,
-      changedByUserId: ctx.user.id,
-    })
+    updated = await customerRequestRepository.updateWithStatusHistory(
+      ctx.tenant.id,
+      ctx.business.id,
+      id,
+      data,
+      {
+        fromStatus: existing.status,
+        toStatus: input.status,
+        changedByUserId: ctx.user.id,
+      },
+      onStatusChanged
+    )
   } else {
     updated = await customerRequestRepository.updateById(ctx.tenant.id, ctx.business.id, id, data)
   }
 
   if (!updated) {
     throw new ApiError(404, 'NOT_FOUND', 'Customer request not found')
-  }
-
-  // Prompt 48 — a request created from a ServiceFollowUp that becomes
-  // CONVERTED (which the checks above only allow with a real appointment)
-  // means the repeat visit is actually booked: CONTACTED → BOOKED. A pure
-  // side effect; the request's own lifecycle is unchanged.
-  if (input.status === 'CONVERTED' && existing.status !== 'CONVERTED') {
-    await serviceFollowUpRepository.markBookedByCustomerRequest(ctx.tenant.id, ctx.business.id, id)
   }
   return updated
 }

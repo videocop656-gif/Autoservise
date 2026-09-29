@@ -8,6 +8,7 @@ import { serviceRepository } from '../repositories/serviceRepository'
 import { appointmentRepository } from '../repositories/appointmentRepository'
 import type { CreateServiceRecordInput, UpdateServiceRecordInput } from '../validation/serviceRecord.schemas'
 import { syncFollowUpForServiceRecord } from './serviceFollowUpService'
+import { runInTransaction } from '../db/transaction'
 import type { PaginationParams } from '../lib/pagination'
 
 interface RelationRefs {
@@ -157,30 +158,39 @@ export async function createServiceRecord(ctx: AuthContext, input: CreateService
     await assertMileageIsNotDecreasing(ctx, input.vehicleId, input.mileage)
   }
 
-  const record = await serviceRecordRepository.create({
-    tenantId: ctx.tenant.id,
-    businessId: ctx.business.id,
-    customerId: input.customerId,
-    vehicleId: input.vehicleId,
-    serviceId: input.serviceId,
-    appointmentId,
-    performedAt: input.performedAt,
-    mileage: input.mileage ?? null,
-    totalPrice: input.totalPrice,
-    currency: input.currency ?? ctx.business.currency,
-    workDescription: input.workDescription,
-    partsDescription: input.partsDescription ?? null,
-    recommendations: input.recommendations ?? null,
-    notes: input.notes ?? null,
-  })
+  // Prompt 48.1 — the record and its follow-up are one atomic write: if the
+  // follow-up step fails, the record is rolled back too, so the API never
+  // reports an error for a record that was in fact saved.
+  return runInTransaction(async (tx) => {
+    const record = await serviceRecordRepository.create(
+      {
+        tenantId: ctx.tenant.id,
+        businessId: ctx.business.id,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        serviceId: input.serviceId,
+        appointmentId,
+        performedAt: input.performedAt,
+        mileage: input.mileage ?? null,
+        totalPrice: input.totalPrice,
+        currency: input.currency ?? ctx.business.currency,
+        workDescription: input.workDescription,
+        partsDescription: input.partsDescription ?? null,
+        recommendations: input.recommendations ?? null,
+        notes: input.notes ?? null,
+      },
+      tx
+    )
 
-  // Prompt 48 — only after the record itself was saved successfully.
-  await syncFollowUpForServiceRecord(ctx, record, {
-    dueDate: input.followUpDueDate,
-    repeatIntervalDays: service.repeatIntervalDays,
-    isCreate: true,
+    // Prompt 48 — the follow-up is derived from the record just written.
+    await syncFollowUpForServiceRecord(
+      ctx,
+      record,
+      { dueDate: input.followUpDueDate, repeatIntervalDays: service.repeatIntervalDays, isCreate: true },
+      tx
+    )
+    return record
   })
-  return record
 }
 
 export async function updateServiceRecord(ctx: AuthContext, id: string, input: UpdateServiceRecordInput) {
@@ -225,18 +235,26 @@ export async function updateServiceRecord(ctx: AuthContext, id: string, input: U
 
   // followUpDueDate is not a ServiceRecord column — it only drives the follow-up.
   const { followUpDueDate, ...recordInput } = input
-  const updated = await serviceRecordRepository.updateById(ctx.tenant.id, ctx.business.id, id, recordInput)
+  const archiving = effectiveIsArchived && !existing.isArchived
+
+  // Prompt 48.1 — record update + follow-up change in one transaction.
+  // Re-saving never duplicates: the PENDING follow-up is updated in place
+  // (or dismissed when the date is cleared); CONTACTED/BOOKED/DISMISSED are
+  // never touched; the interval is never applied on edit. Archiving the
+  // record dismisses its PENDING follow-up in the same transaction.
+  const updated = await runInTransaction(async (tx) => {
+    const record = await serviceRecordRepository.updateById(ctx.tenant.id, ctx.business.id, id, recordInput, tx)
+    if (!record) return null
+    await syncFollowUpForServiceRecord(
+      ctx,
+      record,
+      { dueDate: followUpDueDate, repeatIntervalDays: null, isCreate: false, archived: archiving },
+      tx
+    )
+    return record
+  })
   if (!updated) {
     throw new ApiError(404, 'NOT_FOUND', 'Service record not found')
   }
-
-  // Prompt 48 — re-saving never duplicates: updates the PENDING follow-up in
-  // place (or dismisses it when the date is cleared), never touches a
-  // CONTACTED/BOOKED/DISMISSED one, and never applies the interval on edit.
-  await syncFollowUpForServiceRecord(ctx, updated, {
-    dueDate: followUpDueDate,
-    repeatIntervalDays: null,
-    isCreate: false,
-  })
   return updated
 }

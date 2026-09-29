@@ -1,5 +1,6 @@
-import type { Prisma, ServiceFollowUpStatus } from '@prisma/client'
+import { Prisma, type ServiceFollowUpStatus } from '@prisma/client'
 import { prisma } from '../db/prisma'
+import type { DbClient } from '../db/transaction'
 import { withTenant } from '../lib/tenantScope'
 
 interface ListOptions {
@@ -41,46 +42,54 @@ export const serviceFollowUpRepository = {
     return prisma.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
-  findByServiceRecordId(tenantId: string, businessId: string, serviceRecordId: string) {
-    return prisma.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, serviceRecordId }) })
+  // `db` (Prompt 48.1): pass a transaction client so the follow-up change
+  // commits or rolls back together with the ServiceRecord / CustomerRequest
+  // write it belongs to.
+  findByServiceRecordId(tenantId: string, businessId: string, serviceRecordId: string, db: DbClient = prisma) {
+    return db.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, serviceRecordId }) })
   },
 
-  create(data: Prisma.ServiceFollowUpUncheckedCreateInput) {
-    return prisma.serviceFollowUp.create({ data })
+  create(data: Prisma.ServiceFollowUpUncheckedCreateInput, db: DbClient = prisma) {
+    return db.serviceFollowUp.create({ data })
   },
 
-  async updateById(tenantId: string, businessId: string, id: string, data: Prisma.ServiceFollowUpUncheckedUpdateManyInput) {
-    const result = await prisma.serviceFollowUp.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
+  async updateById(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    data: Prisma.ServiceFollowUpUncheckedUpdateManyInput,
+    db: DbClient = prisma
+  ) {
+    const result = await db.serviceFollowUp.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
     if (result.count === 0) return null
-    return prisma.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+    return db.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
   /**
-   * Links a newly created CustomerRequest to a follow-up — but only if no
-   * request is linked yet and the follow-up is still open. The condition is
-   * part of the UPDATE itself, so of two concurrent "Создать обращение"
-   * clicks at most one can ever win the link. Returns whether it won.
+   * Prompt 48.1 — reads one follow-up and takes a PostgreSQL row lock on it
+   * (SELECT … FOR UPDATE) for the rest of the caller's transaction. Must be
+   * called with a transaction client. A concurrent transaction asking for
+   * the same row waits here until this one commits, then sees its result —
+   * which is what makes "Создать обращение" produce exactly one request no
+   * matter how many calls race. Tenant/business scoped like every other
+   * query: a foreign id locks nothing and returns null.
    */
-  async linkCustomerRequest(tenantId: string, businessId: string, id: string, customerRequestId: string): Promise<boolean> {
-    const result = await prisma.serviceFollowUp.updateMany({
-      where: withTenant(tenantId, {
-        businessId,
-        id,
-        customerRequestId: null,
-        status: { in: ['PENDING', 'CONTACTED'] satisfies ServiceFollowUpStatus[] },
-      }),
-      data: { customerRequestId, status: 'CONTACTED' },
-    })
-    return result.count > 0
+  async findByIdForUpdate(tenantId: string, businessId: string, id: string, tx: Prisma.TransactionClient) {
+    const locked = await tx.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT "id" FROM "service_follow_ups" WHERE "id" = ${id} AND "tenantId" = ${tenantId} AND "businessId" = ${businessId} FOR UPDATE`
+    )
+    if (locked.length === 0) return null
+    return tx.serviceFollowUp.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
   /**
    * The linked CustomerRequest became CONVERTED — which the request
    * lifecycle only allows with a real appointment — so the repeat visit is
    * genuinely booked. Only open follow-ups move; terminal ones never change.
+   * Runs inside the request's own status-change transaction (Prompt 48.1).
    */
-  async markBookedByCustomerRequest(tenantId: string, businessId: string, customerRequestId: string): Promise<number> {
-    const result = await prisma.serviceFollowUp.updateMany({
+  async markBookedByCustomerRequest(tenantId: string, businessId: string, customerRequestId: string, db: DbClient = prisma): Promise<number> {
+    const result = await db.serviceFollowUp.updateMany({
       where: withTenant(tenantId, {
         businessId,
         customerRequestId,

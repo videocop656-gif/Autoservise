@@ -50,6 +50,13 @@ vi.mock('../src/server/repositories/appointmentRepository', () => ({
 // repository is a no-op stub here (plain functions, unaffected by
 // restoreMocks); follow-up behavior itself is covered in
 // serviceFollowUpService.test.ts.
+// Prompt 48.1 — record + follow-up now run in one transaction. These tests
+// cover ServiceRecord rules only, so the transaction is a pass-through;
+// atomicity/rollback is covered in serviceFollowUpHardening.test.ts.
+const TX = { __tx: true }
+vi.mock('../src/server/db/transaction', () => ({
+  runInTransaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(TX),
+}))
 vi.mock('../src/server/repositories/serviceFollowUpRepository', () => ({
   serviceFollowUpRepository: {
     findByServiceRecordId: async () => null,
@@ -270,7 +277,7 @@ describe('createServiceRecord — appointment consistency', () => {
   it('does not look up an appointment at all when none is provided (historical record)', async () => {
     await createServiceRecord(makeAuthContext('owner'), baseInput())
     expect(appointmentFindByIdMock).not.toHaveBeenCalled()
-    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ appointmentId: null }))
+    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ appointmentId: null }), TX)
   })
 
   // Prompt 33 §17 Test 6 — documents the CURRENT, deliberate behavior: this
@@ -327,12 +334,12 @@ describe('createServiceRecord — mileage validation', () => {
 describe('createServiceRecord — money & currency', () => {
   it('defaults currency from the business when omitted', async () => {
     await createServiceRecord(makeAuthContext('owner'), baseInput())
-    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ currency: 'RUB' }))
+    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ currency: 'RUB' }), TX)
   })
 
   it('uses an explicitly provided currency', async () => {
     await createServiceRecord(makeAuthContext('owner'), baseInput({ currency: 'USD' }))
-    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USD' }))
+    expect(srCreateMock).toHaveBeenCalledWith(expect.objectContaining({ currency: 'USD' }), TX)
   })
 })
 

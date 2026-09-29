@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../db/prisma'
+import type { DbClient } from '../db/transaction'
 import { withTenant } from '../lib/tenantScope'
 
 interface ListOptions {
@@ -50,14 +51,16 @@ export const serviceRecordRepository = {
     return prisma.serviceRecord.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
-  create(data: Prisma.ServiceRecordUncheckedCreateInput) {
-    return prisma.serviceRecord.create({ data })
+  // `db` (Prompt 48.1): pass a transaction client to make this write part
+  // of a larger atomic operation (ServiceRecord + its ServiceFollowUp).
+  create(data: Prisma.ServiceRecordUncheckedCreateInput, db: DbClient = prisma) {
+    return db.serviceRecord.create({ data })
   },
 
-  async updateById(tenantId: string, businessId: string, id: string, data: Prisma.ServiceRecordUpdateInput) {
-    const result = await prisma.serviceRecord.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
+  async updateById(tenantId: string, businessId: string, id: string, data: Prisma.ServiceRecordUpdateInput, db: DbClient = prisma) {
+    const result = await db.serviceRecord.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
     if (result.count === 0) return null
-    return prisma.serviceRecord.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+    return db.serviceRecord.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
   /**
