@@ -45,6 +45,20 @@ vi.mock('../src/server/repositories/appointmentRepository', () => ({
   appointmentRepository: { findById: appointmentFindByIdMock },
 }))
 
+// Prompt 48 — the follow-up sync/booked hook runs after every save. These
+// suites test ServiceRecord/CustomerRequest behavior only, so the follow-up
+// repository is a no-op stub here (plain functions, unaffected by
+// restoreMocks); follow-up behavior itself is covered in
+// serviceFollowUpService.test.ts.
+vi.mock('../src/server/repositories/serviceFollowUpRepository', () => ({
+  serviceFollowUpRepository: {
+    findByServiceRecordId: async () => null,
+    create: async () => null,
+    updateById: async () => null,
+    markBookedByCustomerRequest: async () => 0,
+  },
+}))
+
 import {
   listServiceRecords,
   getServiceRecord,

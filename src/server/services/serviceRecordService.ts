@@ -7,6 +7,7 @@ import { vehicleRepository } from '../repositories/vehicleRepository'
 import { serviceRepository } from '../repositories/serviceRepository'
 import { appointmentRepository } from '../repositories/appointmentRepository'
 import type { CreateServiceRecordInput, UpdateServiceRecordInput } from '../validation/serviceRecord.schemas'
+import { syncFollowUpForServiceRecord } from './serviceFollowUpService'
 import type { PaginationParams } from '../lib/pagination'
 
 interface RelationRefs {
@@ -23,7 +24,7 @@ interface RelationRefs {
  * since each service module keeps its own copy (matching the project's
  * existing convention — see appointmentService).
  */
-async function assertRelationsOwnedAndActive(ctx: AuthContext, refs: RelationRefs): Promise<void> {
+async function assertRelationsOwnedAndActive(ctx: AuthContext, refs: RelationRefs) {
   const customer = await customerRepository.findById(ctx.tenant.id, ctx.business.id, refs.customerId)
   if (!customer) {
     throw new ApiError(404, 'NOT_FOUND', 'Customer not found')
@@ -50,6 +51,7 @@ async function assertRelationsOwnedAndActive(ctx: AuthContext, refs: RelationRef
   if (!service.isActive) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Service is not active')
   }
+  return { service }
 }
 
 interface AppointmentRefs {
@@ -144,7 +146,7 @@ export async function createServiceRecord(ctx: AuthContext, input: CreateService
   requireRole(ctx, 'owner', 'admin', 'manager')
 
   const refs = { customerId: input.customerId, vehicleId: input.vehicleId, serviceId: input.serviceId }
-  await assertRelationsOwnedAndActive(ctx, refs)
+  const { service } = await assertRelationsOwnedAndActive(ctx, refs)
 
   const appointmentId = input.appointmentId ?? null
   if (appointmentId) {
@@ -155,7 +157,7 @@ export async function createServiceRecord(ctx: AuthContext, input: CreateService
     await assertMileageIsNotDecreasing(ctx, input.vehicleId, input.mileage)
   }
 
-  return serviceRecordRepository.create({
+  const record = await serviceRecordRepository.create({
     tenantId: ctx.tenant.id,
     businessId: ctx.business.id,
     customerId: input.customerId,
@@ -171,6 +173,14 @@ export async function createServiceRecord(ctx: AuthContext, input: CreateService
     recommendations: input.recommendations ?? null,
     notes: input.notes ?? null,
   })
+
+  // Prompt 48 — only after the record itself was saved successfully.
+  await syncFollowUpForServiceRecord(ctx, record, {
+    dueDate: input.followUpDueDate,
+    repeatIntervalDays: service.repeatIntervalDays,
+    isCreate: true,
+  })
+  return record
 }
 
 export async function updateServiceRecord(ctx: AuthContext, id: string, input: UpdateServiceRecordInput) {
@@ -213,9 +223,20 @@ export async function updateServiceRecord(ctx: AuthContext, id: string, input: U
     await assertMileageIsNotDecreasing(ctx, effectiveVehicleId, effectiveMileage, id)
   }
 
-  const updated = await serviceRecordRepository.updateById(ctx.tenant.id, ctx.business.id, id, input)
+  // followUpDueDate is not a ServiceRecord column — it only drives the follow-up.
+  const { followUpDueDate, ...recordInput } = input
+  const updated = await serviceRecordRepository.updateById(ctx.tenant.id, ctx.business.id, id, recordInput)
   if (!updated) {
     throw new ApiError(404, 'NOT_FOUND', 'Service record not found')
   }
+
+  // Prompt 48 — re-saving never duplicates: updates the PENDING follow-up in
+  // place (or dismisses it when the date is cleared), never touches a
+  // CONTACTED/BOOKED/DISMISSED one, and never applies the interval on edit.
+  await syncFollowUpForServiceRecord(ctx, updated, {
+    dueDate: followUpDueDate,
+    repeatIntervalDays: null,
+    isCreate: false,
+  })
   return updated
 }

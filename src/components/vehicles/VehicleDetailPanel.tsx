@@ -20,6 +20,7 @@ import {
   formatDate,
 } from './shared'
 import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
+import { NextFollowUpSection } from '../followUps/NextFollowUpSection'
 
 // ---------------------------------------------------------------------------
 // Prompt 26 — Vehicle Context v1: Vehicle Detail.
@@ -364,6 +365,9 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
               </Link>
             ))}
           </section>
+
+          {/* Prompt 48 — nearest PENDING service follow-up of this vehicle. */}
+          <NextFollowUpSection vehicleId={vehicle.id} timezone={timezone} services={services} />
 
           <section className="space-y-2 rounded-md border border-border p-3 lg:col-span-2">
             <div className="flex items-center justify-between">

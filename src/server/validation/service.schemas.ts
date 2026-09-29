@@ -13,6 +13,16 @@ const durationSchema = z
   .min(5, 'Duration must be at least 5 minutes')
   .max(1440, 'Duration cannot exceed 24 hours')
 
+// Prompt 48 — standard repeat-service interval, whole days. null = "not set"
+// (no automatic follow-up). 0, negatives and fractions are rejected; the
+// upper bound (10 years) only guards against typos.
+const repeatIntervalDaysSchema = z
+  .number()
+  .int('Repeat interval must be a whole number of days')
+  .positive('Repeat interval must be at least 1 day')
+  .max(3650, 'Repeat interval cannot exceed 3650 days')
+  .nullable()
+
 function checkPriceRange<T extends { priceFrom?: number | null; priceTo?: number | null }>(
   data: T,
   ctx: z.RefinementCtx
@@ -34,6 +44,7 @@ export const createServiceSchema = z
     priceTo: priceSchema.nullable().optional(),
     currency: z.enum(SUPPORTED_CURRENCIES).optional(),
     durationMinutes: durationSchema,
+    repeatIntervalDays: repeatIntervalDaysSchema.optional(),
   })
   .superRefine(checkPriceRange)
 
@@ -45,6 +56,7 @@ export const updateServiceSchema = z
     priceTo: priceSchema.nullable().optional(),
     currency: z.enum(SUPPORTED_CURRENCIES).optional(),
     durationMinutes: durationSchema.optional(),
+    repeatIntervalDays: repeatIntervalDaysSchema.optional(),
     isActive: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field must be provided' })

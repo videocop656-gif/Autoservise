@@ -4,6 +4,7 @@ import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { toBusinessLocalDateTime } from '../lib/timezone'
 import { customerRequestRepository } from '../repositories/customerRequestRepository'
+import { serviceFollowUpRepository } from '../repositories/serviceFollowUpRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
 import { serviceRepository } from '../repositories/serviceRepository'
@@ -271,6 +272,14 @@ export async function updateCustomerRequest(ctx: AuthContext, id: string, input:
 
   if (!updated) {
     throw new ApiError(404, 'NOT_FOUND', 'Customer request not found')
+  }
+
+  // Prompt 48 — a request created from a ServiceFollowUp that becomes
+  // CONVERTED (which the checks above only allow with a real appointment)
+  // means the repeat visit is actually booked: CONTACTED → BOOKED. A pure
+  // side effect; the request's own lifecycle is unchanged.
+  if (input.status === 'CONVERTED' && existing.status !== 'CONVERTED') {
+    await serviceFollowUpRepository.markBookedByCustomerRequest(ctx.tenant.id, ctx.business.id, id)
   }
   return updated
 }

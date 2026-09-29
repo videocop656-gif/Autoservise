@@ -17,6 +17,8 @@ interface ServiceDto {
   priceTo: string | null
   currency: string
   durationMinutes: number
+  // Prompt 48 — repeat-service interval in days; null = not set.
+  repeatIntervalDays: number | null
   isActive: boolean
 }
 
@@ -26,9 +28,18 @@ interface ServiceFormState {
   priceFrom: string
   priceTo: string
   durationMinutes: string
+  // '' = "Не задан" (sent as null).
+  repeatIntervalDays: string
 }
 
-const EMPTY_FORM: ServiceFormState = { name: '', description: '', priceFrom: '', priceTo: '', durationMinutes: '30' }
+const EMPTY_FORM: ServiceFormState = {
+  name: '',
+  description: '',
+  priceFrom: '',
+  priceTo: '',
+  durationMinutes: '30',
+  repeatIntervalDays: '',
+}
 
 function formatPrice(service: ServiceDto): string {
   if (!service.priceFrom && !service.priceTo) return 'По запросу'
@@ -88,6 +99,7 @@ export default function ServicesSettingsPage() {
       priceFrom: service.priceFrom ?? '',
       priceTo: service.priceTo ?? '',
       durationMinutes: String(service.durationMinutes),
+      repeatIntervalDays: service.repeatIntervalDays != null ? String(service.repeatIntervalDays) : '',
     })
     setFormError(null)
     setFieldErrors({})
@@ -112,6 +124,9 @@ export default function ServicesSettingsPage() {
       priceFrom: form.priceFrom === '' ? null : Number(form.priceFrom),
       priceTo: form.priceTo === '' ? null : Number(form.priceTo),
       durationMinutes: Number(form.durationMinutes),
+      // Sent as a number, never parsed/rounded here: the server rejects 0,
+      // negatives and fractions with a field error shown under the input.
+      repeatIntervalDays: form.repeatIntervalDays.trim() === '' ? null : Number(form.repeatIntervalDays),
     }
 
     try {
@@ -179,7 +194,8 @@ export default function ServicesSettingsPage() {
                   </div>
                   {service.description && <p className="text-sm text-muted-foreground">{service.description}</p>}
                   <p className="text-sm text-muted-foreground">
-                    {formatPrice(service)} · {service.durationMinutes} мин
+                    {formatPrice(service)} · {service.durationMinutes} мин · Повтор:{' '}
+                    {service.repeatIntervalDays != null ? `через ${service.repeatIntervalDays} дн.` : 'не задан'}
                   </p>
                 </div>
                 {canManage && (
@@ -266,6 +282,29 @@ export default function ServicesSettingsPage() {
                       <p className="text-sm text-destructive">{fieldErrors.durationMinutes[0]}</p>
                     )}
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="svc-repeat-interval">Интервал повторного обслуживания</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="svc-repeat-interval"
+                      type="number"
+                      min="1"
+                      step="1"
+                      className="w-32"
+                      placeholder="Не задан"
+                      value={form.repeatIntervalDays}
+                      onChange={(e) => setForm({ ...form, repeatIntervalDays: e.target.value })}
+                    />
+                    <span className="text-sm text-muted-foreground">дней</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Пусто — не задан. Если задан, при записи результата обслуживания предлагается дата следующего контакта.
+                  </p>
+                  {fieldErrors.repeatIntervalDays && (
+                    <p className="text-sm text-destructive">{fieldErrors.repeatIntervalDays[0]}</p>
+                  )}
                 </div>
 
                 {formError && <p className="text-sm text-destructive">{formError}</p>}

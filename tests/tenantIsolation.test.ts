@@ -51,6 +51,10 @@ const {
   aiEscalationGroupByMock,
   appointmentGroupByMock,
   serviceRecordGroupByMock,
+  serviceFollowUpFindFirstMock,
+  serviceFollowUpFindManyMock,
+  serviceFollowUpCountMock,
+  serviceFollowUpUpdateManyMock,
   serviceCountMock,
   customerCountMock,
   vehicleCountMock,
@@ -132,6 +136,10 @@ const {
     aiEscalationGroupByMock: vi.fn(),
     appointmentGroupByMock: vi.fn(),
     serviceRecordGroupByMock: vi.fn(),
+    serviceFollowUpFindFirstMock: vi.fn(),
+    serviceFollowUpFindManyMock: vi.fn(),
+    serviceFollowUpCountMock: vi.fn(),
+    serviceFollowUpUpdateManyMock: vi.fn(),
     serviceCountMock: vi.fn(),
     customerCountMock: vi.fn(),
     vehicleCountMock: vi.fn(),
@@ -259,6 +267,12 @@ vi.mock('../src/server/db/prisma', () => {
       updateMany: channelDeliveryUpdateManyMock,
       update: channelDeliveryUpdateMock,
     },
+    serviceFollowUp: {
+      findFirst: serviceFollowUpFindFirstMock,
+      findMany: serviceFollowUpFindManyMock,
+      count: serviceFollowUpCountMock,
+      updateMany: serviceFollowUpUpdateManyMock,
+    },
     businessWorkingHours: { upsert: vi.fn((args: unknown) => args) },
     $transaction: transactionMock,
     $queryRaw: queryRawMock,
@@ -276,6 +290,7 @@ import { customerRepository } from '../src/server/repositories/customerRepositor
 import { vehicleRepository } from '../src/server/repositories/vehicleRepository'
 import { appointmentRepository } from '../src/server/repositories/appointmentRepository'
 import { serviceRecordRepository } from '../src/server/repositories/serviceRecordRepository'
+import { serviceFollowUpRepository } from '../src/server/repositories/serviceFollowUpRepository'
 import { customerRequestRepository } from '../src/server/repositories/customerRequestRepository'
 import { conversationRepository } from '../src/server/repositories/conversationRepository'
 import { messageRepository } from '../src/server/repositories/messageRepository'
@@ -1741,6 +1756,104 @@ describe('tenant isolation — Channel Operations & Delivery (Prompt 17)', () =>
         data: { status: 'SENDING', attemptCount: { increment: 1 }, lastAttemptAt: expect.any(Date) },
       })
       expect(claim).toMatchObject({ outcome: 'CLAIMED', delivery: { id: 'del-1', attemptCount: 2 } })
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt 48 — ServiceFollowUp. Every read and write is scoped by tenantId +
+// businessId, so another tenant's follow-up simply never matches (→ 404 in
+// the service layer, never a leak of its existence). GET list (Operations,
+// Client Detail, Vehicle Detail all use it), GET by id, PATCH, the
+// "Создать обращение" link step and the CONVERTED → BOOKED hook.
+// ---------------------------------------------------------------------------
+describe('tenant isolation — ServiceFollowUp', () => {
+  it('tenant B cannot GET tenant A follow-up', async () => {
+    serviceFollowUpFindFirstMock.mockResolvedValue(null)
+    const result = await serviceFollowUpRepository.findById('tenant-b', 'business-b', 'follow-up-owned-by-tenant-a')
+
+    expect(serviceFollowUpFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'follow-up-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot PATCH tenant A follow-up: updateMany is scoped by tenantId + businessId + id', async () => {
+    serviceFollowUpUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await serviceFollowUpRepository.updateById('tenant-b', 'business-b', 'follow-up-owned-by-tenant-a', {
+      status: 'DISMISSED',
+    })
+
+    expect(serviceFollowUpUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'follow-up-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { status: 'DISMISSED' },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('tenant B cannot link a request to tenant A follow-up (POST /request): the link is scoped and conditional', async () => {
+    serviceFollowUpUpdateManyMock.mockResolvedValue({ count: 0 })
+    const linked = await serviceFollowUpRepository.linkCustomerRequest('tenant-b', 'business-b', 'follow-up-owned-by-tenant-a', 'req-b')
+
+    expect(serviceFollowUpUpdateManyMock).toHaveBeenCalledWith({
+      where: {
+        businessId: 'business-b',
+        id: 'follow-up-owned-by-tenant-a',
+        tenantId: 'tenant-b',
+        customerRequestId: null,
+        status: { in: ['PENDING', 'CONTACTED'] },
+      },
+      data: { customerRequestId: 'req-b', status: 'CONTACTED' },
+    })
+    expect(linked).toBe(false)
+  })
+
+  it('list queries (Operations / Client Detail / Vehicle Detail) are always scoped to tenantId + businessId', async () => {
+    serviceFollowUpFindManyMock.mockResolvedValue([])
+    serviceFollowUpCountMock.mockResolvedValue(0)
+    const dueBefore = new Date('2026-10-07T21:00:00.000Z')
+    await serviceFollowUpRepository.list('tenant-a', 'business-a', {
+      status: 'PENDING',
+      dueBefore,
+      customerId: 'customer-a',
+      vehicleId: 'vehicle-a',
+      skip: 0,
+      take: 20,
+    })
+
+    const expectedWhere = {
+      businessId: 'business-a',
+      status: 'PENDING',
+      dueAt: { lt: dueBefore },
+      customerId: 'customer-a',
+      vehicleId: 'vehicle-a',
+      tenantId: 'tenant-a',
+    }
+    expect(serviceFollowUpFindManyMock).toHaveBeenCalledWith(expect.objectContaining({ where: expectedWhere }))
+    expect(serviceFollowUpCountMock).toHaveBeenCalledWith({ where: expectedWhere })
+  })
+
+  it('the service-record lookup used for idempotency is scoped to tenantId + businessId', async () => {
+    serviceFollowUpFindFirstMock.mockResolvedValue(null)
+    await serviceFollowUpRepository.findByServiceRecordId('tenant-b', 'business-b', 'record-owned-by-tenant-a')
+
+    expect(serviceFollowUpFindFirstMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', serviceRecordId: 'record-owned-by-tenant-a', tenantId: 'tenant-b' },
+    })
+  })
+
+  it('the CONVERTED → BOOKED hook only ever touches the requesting tenant/business', async () => {
+    serviceFollowUpUpdateManyMock.mockResolvedValue({ count: 0 })
+    await serviceFollowUpRepository.markBookedByCustomerRequest('tenant-b', 'business-b', 'req-owned-by-tenant-a')
+
+    expect(serviceFollowUpUpdateManyMock).toHaveBeenCalledWith({
+      where: {
+        businessId: 'business-b',
+        customerRequestId: 'req-owned-by-tenant-a',
+        tenantId: 'tenant-b',
+        status: { in: ['PENDING', 'CONTACTED'] },
+      },
+      data: { status: 'BOOKED' },
     })
   })
 })

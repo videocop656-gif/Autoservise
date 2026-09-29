@@ -24,6 +24,7 @@ import {
   vehicleLabel,
 } from './shared'
 import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
+import { NextFollowUpSection } from '../followUps/NextFollowUpSection'
 
 // ---------------------------------------------------------------------------
 // Prompt 23 — Clients v1: Client Detail.
@@ -538,6 +539,9 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
               </button>
             ))}
           </section>
+
+          {/* Prompt 48 — nearest PENDING service follow-up of this client. */}
+          <NextFollowUpSection customerId={customer.id} timezone={timezone} vehicles={vehicles} services={services} />
 
           {/* Service history */}
           <section className="space-y-2 rounded-md border border-border p-3">

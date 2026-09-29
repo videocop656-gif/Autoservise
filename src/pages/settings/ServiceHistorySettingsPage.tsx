@@ -11,6 +11,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
+import {
+  FOLLOW_UP_STATUS_LABELS,
+  followUpDueDateStr,
+  suggestedFollowUpDateStr,
+  type ServiceFollowUpDto,
+} from '../../components/followUps/shared'
 
 interface ServiceRecordDto {
   id: string
@@ -44,6 +50,8 @@ interface VehicleDto {
 interface ServiceDto {
   id: string
   name: string
+  // Prompt 48 — drives the suggested "Следующий контакт" date.
+  repeatIntervalDays: number | null
 }
 interface AppointmentDto {
   id: string
@@ -79,6 +87,11 @@ interface FormState {
   partsDescription: string
   recommendations: string
   notes: string
+  // Prompt 48 — "Следующий контакт" (Business-local "YYYY-MM-DD"; '' = none).
+  followUpDate: string
+  // Once the user edits the date by hand, it is never recalculated again —
+  // a manual date always wins over the service interval (spec §7 Case A).
+  followUpTouched: boolean
 }
 
 const EMPTY_FORM: FormState = {
@@ -94,6 +107,8 @@ const EMPTY_FORM: FormState = {
   partsDescription: '',
   recommendations: '',
   notes: '',
+  followUpDate: '',
+  followUpTouched: false,
 }
 
 export default function ServiceHistorySettingsPage() {
@@ -119,6 +134,8 @@ export default function ServiceHistorySettingsPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
+  // Prompt 48 — the edited record's existing follow-up (edit mode only).
+  const [existingFollowUp, setExistingFollowUp] = useState<ServiceFollowUpDto | null>(null)
 
   function customerLabel(id: string): string {
     const c = customers.find((x) => x.id === id)
@@ -209,6 +226,18 @@ export default function ServiceHistorySettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Prompt 48 — create mode: keep the suggested next-contact date in sync
+  // with the performed date and the chosen service's repeat interval, until
+  // the user sets or clears the date themselves.
+  useEffect(() => {
+    if (!showForm || editingId || form.followUpTouched) return
+    const interval = services.find((svc) => svc.id === form.serviceId)?.repeatIntervalDays ?? null
+    const suggested = suggestedFollowUpDateStr(form.date, interval)
+    if (suggested !== form.followUpDate) {
+      setForm((prev) => ({ ...prev, followUpDate: suggested }))
+    }
+  }, [showForm, editingId, form.date, form.serviceId, form.followUpTouched, form.followUpDate, services])
+
   function openEditForm(record: ServiceRecordDto) {
     const local = utcToZonedParts(new Date(record.performedAt), timezone)
     setEditingId(record.id)
@@ -225,16 +254,34 @@ export default function ServiceHistorySettingsPage() {
       partsDescription: record.partsDescription ?? '',
       recommendations: record.recommendations ?? '',
       notes: record.notes ?? '',
+      followUpDate: '',
+      followUpTouched: false,
     })
     setFormError(null)
     setFieldErrors({})
     setShowForm(true)
+
+    // Prompt 48 — show this record's follow-up, if any. GET /api/follow-ups
+    // filters by vehicle; the record's own one is picked out client-side.
+    setExistingFollowUp(null)
+    apiFetch<Paginated<ServiceFollowUpDto>>(`/api/follow-ups?vehicleId=${record.vehicleId}&pageSize=100`)
+      .then((result) => {
+        const own = result.items.find((f) => f.serviceRecordId === record.id) ?? null
+        setExistingFollowUp(own)
+        if (own?.status === 'PENDING') {
+          setForm((prev) => ({ ...prev, followUpDate: followUpDueDateStr(own.dueAt, timezone) }))
+        }
+      })
+      .catch(() => {
+        // Non-fatal: the record can still be edited; the date field stays empty.
+      })
   }
 
   function closeForm() {
     setShowForm(false)
     setEditingId(null)
     setForm(EMPTY_FORM)
+    setExistingFollowUp(null)
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -257,6 +304,12 @@ export default function ServiceHistorySettingsPage() {
         partsDescription: form.partsDescription === '' ? null : form.partsDescription,
         recommendations: form.recommendations === '' ? null : form.recommendations,
         notes: form.notes === '' ? null : form.notes,
+        // Prompt 48 — on create the field is always sent: the (possibly
+        // suggested) date, or null = no follow-up. On edit it is sent only
+        // if the user changed it, so re-saving never touches a follow-up.
+        ...(!editingId || form.followUpTouched
+          ? { followUpDueDate: form.followUpDate === '' ? null : form.followUpDate }
+          : {}),
       }
 
       if (editingId) {
@@ -578,6 +631,31 @@ export default function ServiceHistorySettingsPage() {
                     value={form.recommendations}
                     onChange={(e) => setForm({ ...form, recommendations: e.target.value })}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="sr-follow-up">Следующий контакт</Label>
+                  {existingFollowUp && existingFollowUp.status !== 'PENDING' ? (
+                    <p className="text-sm text-muted-foreground">
+                      {followUpDueDateStr(existingFollowUp.dueAt, timezone)} ·{' '}
+                      {FOLLOW_UP_STATUS_LABELS[existingFollowUp.status]} — уже обработан, не изменяется.
+                    </p>
+                  ) : (
+                    <>
+                      <Input
+                        id="sr-follow-up"
+                        type="date"
+                        value={form.followUpDate}
+                        onChange={(e) => setForm({ ...form, followUpDate: e.target.value, followUpTouched: true })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {!editingId && !form.followUpTouched && form.followUpDate
+                          ? 'Рассчитано по интервалу повторного обслуживания услуги — можно изменить.'
+                          : 'Пустое поле — повторный контакт не запланирован.'}
+                      </p>
+                    </>
+                  )}
+                  {fieldErrors.followUpDueDate && <p className="text-sm text-destructive">{fieldErrors.followUpDueDate[0]}</p>}
                 </div>
 
                 <div className="space-y-2">

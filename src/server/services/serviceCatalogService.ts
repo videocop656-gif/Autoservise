@@ -32,6 +32,7 @@ export async function createService(ctx: AuthContext, input: CreateServiceInput)
     // silently rewrites the price of existing services.
     currency: input.currency ?? ctx.business.currency,
     durationMinutes: input.durationMinutes,
+    repeatIntervalDays: input.repeatIntervalDays ?? null,
   })
 }
 

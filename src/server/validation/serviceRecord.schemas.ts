@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { SUPPORTED_CURRENCIES } from '../domain/currency'
+import { followUpDueDateSchema } from './serviceFollowUp.schemas'
 
 const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.trim() === '' ? null : val)
 
@@ -38,6 +39,9 @@ export const createServiceRecordSchema = z.object({
   partsDescription: partsDescriptionSchema,
   recommendations: recommendationsSchema,
   notes: notesSchema,
+  // Prompt 48 — "Следующий контакт". Not a ServiceRecord column: it only
+  // drives the record's ServiceFollowUp (see followUpDueDateSchema).
+  followUpDueDate: followUpDueDateSchema,
 })
 
 export const updateServiceRecordSchema = z
@@ -54,6 +58,7 @@ export const updateServiceRecordSchema = z
     partsDescription: partsDescriptionSchema,
     recommendations: recommendationsSchema,
     notes: notesSchema,
+    followUpDueDate: followUpDueDateSchema,
     // Archive/restore both go through this same PATCH — see §14.
     isArchived: z.boolean().optional(),
   })

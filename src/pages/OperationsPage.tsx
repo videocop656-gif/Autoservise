@@ -33,6 +33,7 @@ import {
   vehicleLabel,
   serviceName,
 } from '../components/appointments/shared'
+import { FollowUpQueueSection } from '../components/followUps/FollowUpQueueSection'
 
 const ESCALATION_STATUS_BADGE: Record<EscalationStatus, 'warning' | 'default'> = {
   OPEN: 'warning',
@@ -443,6 +444,11 @@ export default function OperationsPage() {
             })}
         </CardContent>
       </Card>
+
+      {/* Prompt 48 — Повторный контакт: PENDING service follow-ups due up to
+          today + 7 days (Business timezone). Loads its own data and reloads
+          with the page's "Обновить" (refreshKey). */}
+      <FollowUpQueueSection timezone={timezone} customers={customers} vehicles={vehicles} services={services} refreshKey={refreshKey} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Section 3 — Новые заявки */}

@@ -193,6 +193,21 @@ enum ChannelDeliveryStatus {
   FAILED
 }
 
+// Prompt 48 — Service Follow-up / Retention Loop. See ServiceFollowUp.
+//   PENDING   — waiting for a staff member to act.
+//   CONTACTED — handled: further work was handed to a CustomerRequest.
+//               Does NOT mean the customer agreed to book.
+//   BOOKED    — a follow-up appointment really exists (set when the linked
+//               CustomerRequest becomes CONVERTED, which itself requires an
+//               appointment). Terminal.
+//   DISMISSED — no repeat contact needed. Terminal.
+enum ServiceFollowUpStatus {
+  PENDING
+  CONTACTED
+  BOOKED
+  DISMISSED
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -219,6 +234,7 @@ model Tenant {
   channelMessages                ChannelMessage[]
   customerChannelIdentities      CustomerChannelIdentity[]
   channelDeliveries              ChannelDelivery[]
+  serviceFollowUps               ServiceFollowUp[]
 
   @@map("tenants")
 }
@@ -286,6 +302,7 @@ model Business {
   channelMessages                ChannelMessage[]
   customerChannelIdentities      CustomerChannelIdentity[]
   channelDeliveries              ChannelDelivery[]
+  serviceFollowUps               ServiceFollowUp[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -322,6 +339,11 @@ model Service {
   priceTo         Decimal? @db.Decimal(10, 2)
   currency        String
   durationMinutes Int
+  // Prompt 48 — standard repeat-service interval in days. null = not set
+  // (no automatic follow-up); when set, always a positive integer
+  // (enforced by service.schemas.ts). Drives ServiceFollowUp.dueAt when a
+  // ServiceRecord is saved without an explicit next-contact date.
+  repeatIntervalDays Int?
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -331,6 +353,7 @@ model Service {
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
+  serviceFollowUps ServiceFollowUp[]
 
   @@index([tenantId])
   @@index([businessId])
@@ -408,6 +431,7 @@ model Customer {
   conversations    Conversation[]
   escalations      AiEscalation[]
   channelIdentities CustomerChannelIdentity[]
+  serviceFollowUps  ServiceFollowUp[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -442,6 +466,7 @@ model Vehicle {
   appointments     Appointment[]
   serviceRecords   ServiceRecord[]
   customerRequests CustomerRequest[]
+  serviceFollowUps ServiceFollowUp[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, customerId])
@@ -536,6 +561,8 @@ model ServiceRecord {
   vehicle     Vehicle      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   service     Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  // Prompt 48 — at most one (ServiceFollowUp.serviceRecordId is @unique).
+  followUp    ServiceFollowUp?
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, performedAt])
@@ -596,6 +623,8 @@ model CustomerRequest {
 
   statusHistory CustomerRequestStatusHistory[]
   conversations Conversation[]
+  // Prompt 48 — follow-ups whose repeat contact was handed to this request.
+  serviceFollowUps ServiceFollowUp[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -1162,4 +1191,50 @@ model Session {
   @@index([tokenHash])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+model ServiceFollowUp {
+  id                String                @id @default(uuid())
+  tenantId          String
+  businessId        String
+  customerId        String
+  vehicleId         String
+  // Copied from the originating ServiceRecord. Nullable by spec: a
+  // follow-up is about the customer/vehicle first; when there is no
+  // service, the CustomerRequest created from it simply has none either.
+  serviceId         String?
+  // @unique: at most one follow-up per ServiceRecord, ever — the DB-level
+  // idempotency guarantee behind "no duplicate PENDING follow-ups". A
+  // PENDING one is updated in place; a CONTACTED/BOOKED/DISMISSED one is
+  // never replaced automatically. Postgres allows many NULLs under a
+  // unique index, so follow-ups without a ServiceRecord remain possible.
+  serviceRecordId   String?               @unique
+  // The Business-local calendar day the contact is due, stored as the UTC
+  // instant of local midnight on that day (Business.timezone, DST-aware —
+  // see businessLocalToUtc in lib/timezone.ts).
+  dueAt             DateTime
+  status            ServiceFollowUpStatus @default(PENDING)
+  // Set once, by POST /api/follow-ups/:id/request; never overwritten, which
+  // is what makes that endpoint idempotent.
+  customerRequestId String?
+  note              String?               @db.Text
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business        Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle         Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  service         Service?         @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  serviceRecord   ServiceRecord?   @relation(fields: [serviceRecordId], references: [id], onDelete: Restrict)
+  customerRequest CustomerRequest? @relation(fields: [customerRequestId], references: [id], onDelete: Restrict)
+
+  // The Operations queue: PENDING, dueAt <= end of today + 7 days.
+  @@index([tenantId, businessId, status, dueAt])
+  // Client Detail / Vehicle Detail: nearest PENDING per customer/vehicle.
+  @@index([tenantId, businessId, customerId, status, dueAt])
+  @@index([tenantId, businessId, vehicleId, status, dueAt])
+  // CustomerRequest CONVERTED -> mark the linked follow-up BOOKED.
+  @@index([customerRequestId])
+  @@map("service_follow_ups")
 }

@@ -8,6 +8,7 @@ import type {
   Vehicle,
   Appointment,
   ServiceRecord,
+  ServiceFollowUp,
   CustomerRequest,
   CustomerRequestStatusHistory,
   Conversation,
@@ -82,6 +83,8 @@ export interface ServiceDto {
   priceTo: string | null
   currency: string
   durationMinutes: number
+  /** Prompt 48 — repeat-service interval in days; null = not set. */
+  repeatIntervalDays: number | null
   isActive: boolean
   createdAt: Date
   updatedAt: Date
@@ -96,6 +99,7 @@ export function toServiceDto(service: Service): ServiceDto {
     priceTo: service.priceTo ? service.priceTo.toFixed(2) : null,
     currency: service.currency,
     durationMinutes: service.durationMinutes,
+    repeatIntervalDays: service.repeatIntervalDays,
     isActive: service.isActive,
     createdAt: service.createdAt,
     updatedAt: service.updatedAt,
@@ -631,5 +635,40 @@ export function toChannelDeliveryDto(delivery: ChannelDelivery): ChannelDelivery
     errorMessage: delivery.errorMessage,
     createdAt: delivery.createdAt,
     updatedAt: delivery.updatedAt,
+  }
+}
+
+// Prompt 48 — Service Follow-up / Retention Loop. Relations are ids only,
+// same convention as ServiceRecordDto/CustomerRequestDto: screens resolve
+// names from the reference lists they already load. dueAt is the UTC
+// instant of Business-local midnight on the due day; clients render the
+// day with the Business timezone, never the browser's.
+export interface ServiceFollowUpDto {
+  id: string
+  customerId: string
+  vehicleId: string
+  serviceId: string | null
+  serviceRecordId: string | null
+  dueAt: Date
+  status: ServiceFollowUp['status']
+  customerRequestId: string | null
+  note: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export function toServiceFollowUpDto(followUp: ServiceFollowUp): ServiceFollowUpDto {
+  return {
+    id: followUp.id,
+    customerId: followUp.customerId,
+    vehicleId: followUp.vehicleId,
+    serviceId: followUp.serviceId,
+    serviceRecordId: followUp.serviceRecordId,
+    dueAt: followUp.dueAt,
+    status: followUp.status,
+    customerRequestId: followUp.customerRequestId,
+    note: followUp.note,
+    createdAt: followUp.createdAt,
+    updatedAt: followUp.updatedAt,
   }
 }
