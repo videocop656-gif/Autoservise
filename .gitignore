@@ -5,6 +5,8 @@ coverage
 .env
 .env.local
 .env.*.local
+# Local backups of .env (contain real secrets) — never commit (Prompt 48.3).
+.env.backup*
 *.log
 .DS_Store
 .vercel

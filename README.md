@@ -68,13 +68,44 @@ PostgreSQL  (managed by Supabase)
 
 1. Create a **new** Supabase project dedicated to this app (do not reuse another project).
 2. In the Supabase dashboard: **Project Settings → Database → Connection string**.
-3. Copy the **Transaction pooler** connection string (port `6543`) → this is your `DATABASE_URL`.
-4. Copy the **Session/direct** connection string (port `5432`) → this is your `DIRECT_URL`.
-5. Paste both into your local `.env` (see below).
+3. Copy the **Session pooler** connection string (port `5432`) → this is your `DIRECT_URL`,
+   and, **for local development**, also your `DATABASE_URL`.
+4. Keep the **Transaction pooler** connection string (port `6543`) for serverless
+   deployments (Vercel) — see [Database connections](#database-connections).
+5. Paste the values into your local `.env` (see below).
 6. Run the Prisma migration (see [Prisma](#prisma) below).
 7. Start the app.
 
 Never commit real connection strings.
+
+### Database connections
+
+Which Supabase connection to use depends on where the code runs (measured in
+Prompt 48.3 — see `docs/final-reports/final-report-48-3.md`):
+
+| Where | `DATABASE_URL` | `DIRECT_URL` |
+|---|---|---|
+| **Local development** (`npm run dev`, a long-running Node process) | Session pooler, port `5432`, no extra parameters | Session pooler, port `5432` |
+| **Prisma migrations** (`prisma migrate …`, run locally or in CI) | — (not used by Migrate) | Session pooler, port `5432` — never the transaction pooler |
+| **Vercel / serverless** | Transaction pooler, port `6543`, `?pgbouncer=true&connection_limit=1` | Session pooler, port `5432` |
+
+Why:
+
+- The **transaction pooler** is built for many short-lived serverless function
+  instances. Through it Prisma must run with `pgbouncer=true` (without it,
+  queries hang on prepared-statement conflicts), and in that mode each query
+  costs several network round trips. Near the database that is milliseconds;
+  from a distant development machine it multiplied every query to ~1.1 s.
+- A **long-running local server** holds its own small connection pool, which
+  is what the **session pooler** is for: one round trip per query.
+- `connection_limit=1` on Vercel keeps each function instance to one
+  connection; Supavisor multiplexes them. Locally, Prisma's default pool is
+  used. If you raise `connection_limit` locally, stay well below the project's
+  session-pooler client limit (every local connection holds one slot there;
+  two dev processes share it).
+- **Region:** the database is in `ap-northeast-1` (Tokyo). Every query pays one
+  network round trip, so deploy the serverless functions to a region close to
+  it (Vercel: `hnd1`, Tokyo) when the platform plan allows it.
 
 ## Environment
 
@@ -88,8 +119,8 @@ Variables:
 
 | Variable         | Description                                                       |
 |------------------|---------------------------------------------------------------------|
-| `DATABASE_URL`   | Pooled Postgres connection string (used by the running app)         |
-| `DIRECT_URL`     | Direct Postgres connection string (used by Prisma for migrations)   |
+| `DATABASE_URL`   | Postgres connection used by the running app — session pooler `:5432` locally, transaction pooler `:6543` with `?pgbouncer=true&connection_limit=1` on Vercel (see [Database connections](#database-connections)) |
+| `DIRECT_URL`     | Session pooler `:5432`, used by Prisma Migrate (`directUrl`) — never the transaction pooler |
 | `SESSION_SECRET` | Long random secret used to hash session tokens. Generate with: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"` |
 | `NODE_ENV`       | `development` locally, `production` when deployed                   |
 | `APP_URL`        | Public URL of the app (used for cookie/security decisions)          |
