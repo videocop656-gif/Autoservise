@@ -12,12 +12,12 @@ const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.t
  */
 export const businessDateSchema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD')
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Укажите дату в формате ГГГГ-ММ-ДД')
   .refine((value) => {
     const [y, m, d] = value.split('-').map(Number)
     const date = new Date(Date.UTC(y!, m! - 1, d!))
     return date.getUTCFullYear() === y && date.getUTCMonth() === m! - 1 && date.getUTCDate() === d
-  }, 'Invalid calendar date')
+  }, 'Такой даты не существует')
 
 /**
  * The "Следующий контакт" value on a ServiceRecord create/update:

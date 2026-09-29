@@ -59,7 +59,7 @@ export function followUpBucket(dueDateStr: string, todayDateStr: string): Follow
 }
 
 export const FOLLOW_UP_BUCKET_LABELS: Record<FollowUpBucket, string> = {
-  overdue: 'Просрочен',
+  overdue: 'Просрочено',
   today: 'Сегодня',
   upcoming: 'Скоро',
 }

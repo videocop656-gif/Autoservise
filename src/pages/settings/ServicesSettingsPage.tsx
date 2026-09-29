@@ -8,6 +8,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
+import { formatDays, formatPriceRange } from '../../lib/format'
 
 interface ServiceDto {
   id: string
@@ -41,12 +42,16 @@ const EMPTY_FORM: ServiceFormState = {
   repeatIntervalDays: '',
 }
 
+// Prompt 48.2 — human-readable Russian price ("3 000–5 000 ₽"); the API
+// values themselves stay fixed-point strings.
 function formatPrice(service: ServiceDto): string {
-  if (!service.priceFrom && !service.priceTo) return 'По запросу'
-  if (service.priceFrom && service.priceTo && service.priceFrom !== service.priceTo) {
-    return `${service.priceFrom}–${service.priceTo} ${service.currency}`
-  }
-  return `${service.priceFrom ?? service.priceTo} ${service.currency}`
+  return formatPriceRange(service.priceFrom, service.priceTo, service.currency) ?? 'По запросу'
+}
+
+function formatRepeatInterval(service: ServiceDto): string {
+  return service.repeatIntervalDays != null
+    ? `Повторное обслуживание через ${formatDays(service.repeatIntervalDays)}`
+    : 'Интервал повторного обслуживания не задан'
 }
 
 export default function ServicesSettingsPage() {
@@ -139,7 +144,10 @@ export default function ServicesSettingsPage() {
       await loadServices()
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setFormError(err.message || 'Проверьте заполненные поля.')
+        // Prompt 48.2 — a validation error's generic server line is English
+        // (shared handler for all endpoints); the per-field messages below the
+        // inputs are the useful part, so show the Russian summary instead.
+        setFormError(err.code === 'VALIDATION_ERROR' ? 'Проверьте заполненные поля.' : err.message || 'Проверьте заполненные поля.')
         setFieldErrors(err.fieldErrors)
       } else {
         setFormError('Не удалось сохранить услугу.')
@@ -169,7 +177,7 @@ export default function ServicesSettingsPage() {
             {canManage && (
               <Button size="sm" onClick={openCreateForm}>
                 <Plus className="mr-1 h-4 w-4" />
-                Add service
+                Добавить услугу
               </Button>
             )}
           </CardHeader>
@@ -194,18 +202,17 @@ export default function ServicesSettingsPage() {
                   </div>
                   {service.description && <p className="text-sm text-muted-foreground">{service.description}</p>}
                   <p className="text-sm text-muted-foreground">
-                    {formatPrice(service)} · {service.durationMinutes} мин · Повтор:{' '}
-                    {service.repeatIntervalDays != null ? `через ${service.repeatIntervalDays} дн.` : 'не задан'}
+                    {formatPrice(service)} · {service.durationMinutes} мин · {formatRepeatInterval(service)}
                   </p>
                 </div>
                 {canManage && (
                   <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => openEditForm(service)}>
+                    <Button variant="ghost" size="sm" onClick={() => openEditForm(service)} aria-label="Редактировать услугу" title="Редактировать">
                       <Pencil className="h-4 w-4" />
                     </Button>
                     {service.isActive && (
                       <Button variant="outline" size="sm" onClick={() => handleDeactivate(service.id)}>
-                        Deactivate
+                        Деактивировать
                       </Button>
                     )}
                   </div>
@@ -223,7 +230,7 @@ export default function ServicesSettingsPage() {
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="svc-name">Name</Label>
+                  <Label htmlFor="svc-name">Название</Label>
                   <Input
                     id="svc-name"
                     required
@@ -234,7 +241,7 @@ export default function ServicesSettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="svc-description">Description</Label>
+                  <Label htmlFor="svc-description">Описание</Label>
                   <Textarea
                     id="svc-description"
                     value={form.description}
@@ -244,7 +251,7 @@ export default function ServicesSettingsPage() {
 
                 <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="svc-price-from">Price from</Label>
+                    <Label htmlFor="svc-price-from">Цена от</Label>
                     <Input
                       id="svc-price-from"
                       type="number"
@@ -256,7 +263,7 @@ export default function ServicesSettingsPage() {
                     {fieldErrors.priceFrom && <p className="text-sm text-destructive">{fieldErrors.priceFrom[0]}</p>}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="svc-price-to">Price to</Label>
+                    <Label htmlFor="svc-price-to">Цена до</Label>
                     <Input
                       id="svc-price-to"
                       type="number"
@@ -268,7 +275,7 @@ export default function ServicesSettingsPage() {
                     {fieldErrors.priceTo && <p className="text-sm text-destructive">{fieldErrors.priceTo[0]}</p>}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="svc-duration">Duration (min)</Label>
+                    <Label htmlFor="svc-duration">Длительность (мин)</Label>
                     <Input
                       id="svc-duration"
                       type="number"
@@ -300,7 +307,7 @@ export default function ServicesSettingsPage() {
                     <span className="text-sm text-muted-foreground">дней</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Пусто — не задан. Если задан, при записи результата обслуживания предлагается дата следующего контакта.
+                    Пусто — не задан. Если задан, при записи результата обслуживания дата следующего контакта предлагается автоматически.
                   </p>
                   {fieldErrors.repeatIntervalDays && (
                     <p className="text-sm text-destructive">{fieldErrors.repeatIntervalDays[0]}</p>
@@ -311,10 +318,10 @@ export default function ServicesSettingsPage() {
 
                 <div className="flex gap-2">
                   <Button type="submit" disabled={saving}>
-                    {saving ? 'Сохранение...' : 'Save'}
+                    {saving ? 'Сохранение...' : 'Сохранить'}
                   </Button>
                   <Button type="button" variant="outline" onClick={closeForm}>
-                    Cancel
+                    Отмена
                   </Button>
                 </div>
               </form>

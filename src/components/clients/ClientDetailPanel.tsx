@@ -25,6 +25,7 @@ import {
 } from './shared'
 import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
 import { NextFollowUpSection } from '../followUps/NextFollowUpSection'
+import { formatMoney } from '../../lib/format'
 
 // ---------------------------------------------------------------------------
 // Prompt 23 — Clients v1: Client Detail.
@@ -348,7 +349,7 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
                 {editFieldErrors.phone && <p className="text-sm text-destructive">{editFieldErrors.phone[0]}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-email">Email</Label>
+                <Label htmlFor="edit-email">Эл. почта</Label>
                 <Input id="edit-email" type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
                 {editFieldErrors.email && <p className="text-sm text-destructive">{editFieldErrors.email[0]}</p>}
               </div>
@@ -559,7 +560,7 @@ export function ClientDetailPanel({ customerId, canManage, timezone, onBack, onC
               const meta = (
                 <div className="text-xs text-muted-foreground">
                   {recordVehicle ? vehicleLabel(recordVehicle) : 'Автомобиль не определён'} · {serviceName(services, h.serviceId) ?? '—'}
-                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {h.totalPrice} {h.currency}
+                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {formatMoney(h.totalPrice, h.currency)}
                 </div>
               )
               // Prompt 30 — closes the "Service History → Appointment" gap:

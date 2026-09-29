@@ -38,10 +38,19 @@ const ALLOWED_TRANSITIONS: Record<ServiceFollowUpStatus, ServiceFollowUpStatus[]
 
 const TERMINAL_STATUSES: ServiceFollowUpStatus[] = ['BOOKED', 'DISMISSED']
 
+// Prompt 48.2 — Russian wording for user-facing messages (codes stay English).
+const FOLLOW_UP_STATUS_RU: Record<ServiceFollowUpStatus, string> = {
+  PENDING: 'ожидает',
+  CONTACTED: 'передан в обращение',
+  BOOKED: 'записан',
+  DISMISSED: 'не требуется',
+}
+
+
 export function assertValidFollowUpTransition(from: ServiceFollowUpStatus, to: ServiceFollowUpStatus): void {
   if (from === to) return
   if (!ALLOWED_TRANSITIONS[from].includes(to)) {
-    throw new ApiError(400, 'INVALID_STATUS_TRANSITION', `Cannot change follow-up status from ${from} to ${to}`)
+    throw new ApiError(400, 'INVALID_STATUS_TRANSITION', `Нельзя изменить статус контакта: «${FOLLOW_UP_STATUS_RU[from]}» → «${FOLLOW_UP_STATUS_RU[to]}»`)
   }
 }
 
@@ -187,7 +196,7 @@ export async function listServiceFollowUps(
 export async function getServiceFollowUp(ctx: AuthContext, id: string) {
   const followUp = await serviceFollowUpRepository.findById(ctx.tenant.id, ctx.business.id, id)
   if (!followUp) {
-    throw new ApiError(404, 'NOT_FOUND', 'Follow-up not found')
+    throw new ApiError(404, 'NOT_FOUND', 'Контакт не найден')
   }
   return followUp
 }
@@ -206,7 +215,7 @@ export async function updateServiceFollowUp(ctx: AuthContext, id: string, input:
   }
   // "Отложить" only makes sense while the follow-up is still open.
   if (input.dueAt !== undefined && TERMINAL_STATUSES.includes(existing.status)) {
-    throw new ApiError(400, 'VALIDATION_ERROR', `Cannot reschedule a ${existing.status} follow-up`)
+    throw new ApiError(400, 'VALIDATION_ERROR', `Нельзя перенести контакт в статусе «${FOLLOW_UP_STATUS_RU[existing.status]}»`)
   }
 
   const updated = await serviceFollowUpRepository.updateById(ctx.tenant.id, ctx.business.id, id, {
@@ -215,7 +224,7 @@ export async function updateServiceFollowUp(ctx: AuthContext, id: string, input:
     ...(input.note !== undefined ? { note: input.note } : {}),
   })
   if (!updated) {
-    throw new ApiError(404, 'NOT_FOUND', 'Follow-up not found')
+    throw new ApiError(404, 'NOT_FOUND', 'Контакт не найден')
   }
   return updated
 }
@@ -232,7 +241,7 @@ async function assertRepeatVisitIsBooked(ctx: AuthContext, followUp: ServiceFoll
     new ApiError(
       400,
       'FOLLOW_UP_NOT_BOOKED',
-      'A follow-up can only be BOOKED once its customer request is CONVERTED to an existing appointment'
+      'Отметить «Записан» можно только после того, как обращение переведено в запись на обслуживание'
     )
   if (!followUp.customerRequestId) throw notBooked()
   const request = await customerRequestRepository.findById(ctx.tenant.id, ctx.business.id, followUp.customerRequestId)
@@ -289,7 +298,7 @@ export async function createCustomerRequestFromFollowUp(ctx: AuthContext, id: st
   return runInTransaction(async (tx) => {
     const followUp = await serviceFollowUpRepository.findByIdForUpdate(ctx.tenant.id, ctx.business.id, id, tx)
     if (!followUp) {
-      throw new ApiError(404, 'NOT_FOUND', 'Follow-up not found')
+      throw new ApiError(404, 'NOT_FOUND', 'Контакт не найден')
     }
     if (followUp.customerRequestId) {
       return { followUp, request: await loadLinkedRequest(ctx, followUp.customerRequestId, tx), created: false }
@@ -302,7 +311,7 @@ export async function createCustomerRequestFromFollowUp(ctx: AuthContext, id: st
     ) {
       // Edited between the validation reads and the lock — never insert a
       // request validated against stale data; the caller can simply retry.
-      throw new ApiError(409, 'CONFLICT', 'The follow-up changed while creating the customer request — please retry')
+      throw new ApiError(409, 'CONFLICT', 'Контакт изменился во время создания обращения — повторите действие')
     }
 
     const request = await customerRequestRepository.createWithInitialHistory(requestData, ctx.user.id, tx)
@@ -314,7 +323,7 @@ export async function createCustomerRequestFromFollowUp(ctx: AuthContext, id: st
       tx
     )
     if (!linked) {
-      throw new ApiError(404, 'NOT_FOUND', 'Follow-up not found')
+      throw new ApiError(404, 'NOT_FOUND', 'Контакт не найден')
     }
     return { followUp: linked, request, created: true }
   })
@@ -322,7 +331,7 @@ export async function createCustomerRequestFromFollowUp(ctx: AuthContext, id: st
 
 function assertCanCreateRequest(followUp: ServiceFollowUp): void {
   if (TERMINAL_STATUSES.includes(followUp.status)) {
-    throw new ApiError(400, 'VALIDATION_ERROR', `Cannot create a customer request from a ${followUp.status} follow-up`)
+    throw new ApiError(400, 'VALIDATION_ERROR', `Нельзя создать обращение из контакта в статусе «${FOLLOW_UP_STATUS_RU[followUp.status]}»`)
   }
 }
 

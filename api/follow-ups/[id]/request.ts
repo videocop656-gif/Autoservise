@@ -12,7 +12,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
   try {
     const idResult = serviceFollowUpIdParamSchema.safeParse(req.query.id)
     if (!idResult.success) {
-      throw new ApiError(404, 'NOT_FOUND', 'Follow-up not found')
+      throw new ApiError(404, 'NOT_FOUND', 'Контакт не найден')
     }
     const id = idResult.data
 

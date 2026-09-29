@@ -18,9 +18,9 @@ const durationSchema = z
 // upper bound (10 years) only guards against typos.
 const repeatIntervalDaysSchema = z
   .number()
-  .int('Repeat interval must be a whole number of days')
-  .positive('Repeat interval must be at least 1 day')
-  .max(3650, 'Repeat interval cannot exceed 3650 days')
+  .int('Интервал должен быть целым числом дней')
+  .positive('Интервал должен быть не менее 1 дня')
+  .max(3650, 'Интервал не может превышать 3650 дней')
   .nullable()
 
 function checkPriceRange<T extends { priceFrom?: number | null; priceTo?: number | null }>(

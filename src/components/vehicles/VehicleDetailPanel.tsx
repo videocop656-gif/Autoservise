@@ -21,6 +21,7 @@ import {
 } from './shared'
 import { type AppointmentDto, type ServiceRefDto, APPOINTMENT_STATUS_LABELS, serviceName } from '../appointments/shared'
 import { NextFollowUpSection } from '../followUps/NextFollowUpSection'
+import { formatMoney } from '../../lib/format'
 
 // ---------------------------------------------------------------------------
 // Prompt 26 — Vehicle Context v1: Vehicle Detail.
@@ -395,7 +396,7 @@ export function VehicleDetailPanel({ vehicleId, canManage, timezone, customers, 
               const meta = (
                 <div className="text-xs text-muted-foreground">
                   {serviceName(services, h.serviceId) ?? '—'}
-                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {h.totalPrice} {h.currency}
+                  {h.mileage != null ? ` · ${h.mileage} км` : ''} · {formatMoney(h.totalPrice, h.currency)}
                 </div>
               )
               // Prompt 30 — closes the "Service History → Appointment" gap:

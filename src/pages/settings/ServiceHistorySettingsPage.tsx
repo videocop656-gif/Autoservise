@@ -11,9 +11,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
+import { formatMoney } from '../../lib/format'
 import {
   FOLLOW_UP_STATUS_LABELS,
   followUpDueDateStr,
+  formatFollowUpDueDate,
   suggestedFollowUpDateStr,
   type ServiceFollowUpDto,
 } from '../../components/followUps/shared'
@@ -321,7 +323,10 @@ export default function ServiceHistorySettingsPage() {
       await loadRecords()
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setFormError(err.message || 'Проверьте заполненные поля.')
+        // Prompt 48.2 — a validation error's generic server line is English
+        // (shared handler for all endpoints); the per-field messages below the
+        // inputs are the useful part, so show the Russian summary instead.
+        setFormError(err.code === 'VALIDATION_ERROR' ? 'Проверьте заполненные поля.' : err.message || 'Проверьте заполненные поля.')
         setFieldErrors(err.fieldErrors)
       } else {
         setFormError('Не удалось сохранить запись.')
@@ -378,7 +383,7 @@ export default function ServiceHistorySettingsPage() {
               )}
               <Button size="sm" onClick={() => openCreateForm()} disabled={customers.length === 0 || services.length === 0}>
                 <Plus className="mr-1 h-4 w-4" />
-                Add
+                Добавить запись
               </Button>
             </div>
           </CardHeader>
@@ -419,7 +424,7 @@ export default function ServiceHistorySettingsPage() {
                     </div>
                     <p className="text-sm text-muted-foreground">
                       {customerLabel(record.customerId)} · {vehicleLabel(record.vehicleId)}
-                      {record.mileage != null ? ` · ${record.mileage} км` : ''} · {record.totalPrice} {record.currency}
+                      {record.mileage != null ? ` · ${record.mileage} км` : ''} · {formatMoney(record.totalPrice, record.currency)}
                     </p>
                     <p className="line-clamp-1 text-sm text-muted-foreground">{record.workDescription}</p>
                     {/* Prompt 38 — recommendations were already captured by
@@ -443,19 +448,19 @@ export default function ServiceHistorySettingsPage() {
                         </Link>
                       </Button>
                     )}
-                    <Button variant="ghost" size="sm" onClick={() => openEditForm(record)}>
+                    <Button variant="ghost" size="sm" onClick={() => openEditForm(record)} aria-label="Редактировать запись обслуживания" title="Редактировать">
                       <Pencil className="h-4 w-4" />
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => handleArchiveToggle(record)}>
                       {record.isArchived ? (
                         <>
                           <ArchiveRestore className="mr-1 h-4 w-4" />
-                          Restore
+                          Восстановить
                         </>
                       ) : (
                         <>
                           <Archive className="mr-1 h-4 w-4" />
-                          Archive
+                          Архивировать
                         </>
                       )}
                     </Button>
@@ -478,7 +483,7 @@ export default function ServiceHistorySettingsPage() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="sr-customer">Customer</Label>
+                    <Label htmlFor="sr-customer">Клиент</Label>
                     <select
                       id="sr-customer"
                       required
@@ -487,7 +492,7 @@ export default function ServiceHistorySettingsPage() {
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
                     >
                       <option value="" disabled>
-                        Select a customer...
+                        Выберите клиента…
                       </option>
                       {customers.map((c) => (
                         <option key={c.id} value={c.id}>
@@ -497,7 +502,7 @@ export default function ServiceHistorySettingsPage() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sr-vehicle">Vehicle</Label>
+                    <Label htmlFor="sr-vehicle">Автомобиль</Label>
                     <select
                       id="sr-vehicle"
                       required
@@ -506,7 +511,7 @@ export default function ServiceHistorySettingsPage() {
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
                     >
                       <option value="" disabled>
-                        Select a vehicle...
+                        Выберите автомобиль…
                       </option>
                       {customerVehicles.map((v) => (
                         <option key={v.id} value={v.id}>
@@ -519,7 +524,7 @@ export default function ServiceHistorySettingsPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="sr-service">Service</Label>
+                    <Label htmlFor="sr-service">Услуга</Label>
                     <select
                       id="sr-service"
                       required
@@ -528,7 +533,7 @@ export default function ServiceHistorySettingsPage() {
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
                     >
                       <option value="" disabled>
-                        Select a service...
+                        Выберите услугу…
                       </option>
                       {services.map((s) => (
                         <option key={s.id} value={s.id}>
@@ -538,14 +543,14 @@ export default function ServiceHistorySettingsPage() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sr-appointment">Appointment (optional)</Label>
+                    <Label htmlFor="sr-appointment">Запись (необязательно)</Label>
                     <select
                       id="sr-appointment"
                       value={form.appointmentId}
                       onChange={(e) => setForm({ ...form, appointmentId: e.target.value })}
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
                     >
-                      <option value="">None (historical record)</option>
+                      <option value="">Без записи (работы выполнены ранее)</option>
                       {matchingAppointments.map((a) => (
                         <option key={a.id} value={a.id}>
                           {utcToZonedParts(new Date(a.startAt), timezone).dateStr}{' '}
@@ -558,7 +563,7 @@ export default function ServiceHistorySettingsPage() {
 
                 <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="sr-date">Date performed</Label>
+                    <Label htmlFor="sr-date">Дата обслуживания</Label>
                     <Input
                       id="sr-date"
                       type="date"
@@ -568,7 +573,7 @@ export default function ServiceHistorySettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sr-time">Time</Label>
+                    <Label htmlFor="sr-time">Время</Label>
                     <Input
                       id="sr-time"
                       type="time"
@@ -578,7 +583,7 @@ export default function ServiceHistorySettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sr-mileage">Mileage (km)</Label>
+                    <Label htmlFor="sr-mileage">Пробег (км)</Label>
                     <Input
                       id="sr-mileage"
                       type="number"
@@ -591,7 +596,7 @@ export default function ServiceHistorySettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="sr-price">Total price</Label>
+                  <Label htmlFor="sr-price">Итоговая стоимость</Label>
                   <Input
                     id="sr-price"
                     type="number"
@@ -605,7 +610,7 @@ export default function ServiceHistorySettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="sr-work">Work description</Label>
+                  <Label htmlFor="sr-work">Выполненные работы</Label>
                   <Textarea
                     id="sr-work"
                     required
@@ -616,7 +621,7 @@ export default function ServiceHistorySettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="sr-parts">Parts / materials used</Label>
+                  <Label htmlFor="sr-parts">Запчасти и материалы</Label>
                   <Textarea
                     id="sr-parts"
                     value={form.partsDescription}
@@ -625,7 +630,7 @@ export default function ServiceHistorySettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="sr-recommendations">Recommendations</Label>
+                  <Label htmlFor="sr-recommendations">Рекомендации</Label>
                   <Textarea
                     id="sr-recommendations"
                     value={form.recommendations}
@@ -637,8 +642,8 @@ export default function ServiceHistorySettingsPage() {
                   <Label htmlFor="sr-follow-up">Следующий контакт</Label>
                   {existingFollowUp && existingFollowUp.status !== 'PENDING' ? (
                     <p className="text-sm text-muted-foreground">
-                      {followUpDueDateStr(existingFollowUp.dueAt, timezone)} ·{' '}
-                      {FOLLOW_UP_STATUS_LABELS[existingFollowUp.status]} — уже обработан, не изменяется.
+                      {formatFollowUpDueDate(existingFollowUp.dueAt, timezone)} ·{' '}
+                      {FOLLOW_UP_STATUS_LABELS[existingFollowUp.status]} — контакт уже обработан, дата не меняется.
                     </p>
                   ) : (
                     <>
@@ -650,8 +655,8 @@ export default function ServiceHistorySettingsPage() {
                       />
                       <p className="text-xs text-muted-foreground">
                         {!editingId && !form.followUpTouched && form.followUpDate
-                          ? 'Рассчитано по интервалу повторного обслуживания услуги — можно изменить.'
-                          : 'Пустое поле — повторный контакт не запланирован.'}
+                          ? 'Рассчитано по интервалу повторного обслуживания услуги. Можно изменить вручную.'
+                          : 'Дата следующего контакта с клиентом. Можно изменить вручную; пустое поле — контакт не запланирован.'}
                       </p>
                     </>
                   )}
@@ -659,7 +664,7 @@ export default function ServiceHistorySettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="sr-notes">Notes</Label>
+                  <Label htmlFor="sr-notes">Примечания</Label>
                   <Textarea id="sr-notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
                 </div>
 
@@ -667,10 +672,10 @@ export default function ServiceHistorySettingsPage() {
 
                 <div className="flex gap-2">
                   <Button type="submit" disabled={saving}>
-                    {saving ? 'Сохранение...' : 'Save'}
+                    {saving ? 'Сохранение...' : 'Сохранить'}
                   </Button>
                   <Button type="button" variant="outline" onClick={closeForm}>
-                    Cancel
+                    Отмена
                   </Button>
                 </div>
               </form>
