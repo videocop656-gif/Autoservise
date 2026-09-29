@@ -69,7 +69,15 @@ export interface ConversationDto {
   updatedAt: string
   channelConnectionId: string | null
   customer?: { id: string; firstName: string; lastName: string | null } | null
-  customerRequest?: { id: string; subject: string; status: string } | null
+  // Prompt 49 — richer summary of the linked request (single-GET only).
+  customerRequest?: {
+    id: string
+    subject: string
+    status: string
+    vehicleId: string | null
+    serviceId: string | null
+    createdAt: string
+  } | null
   messages?: MessageDto[]
 }
 

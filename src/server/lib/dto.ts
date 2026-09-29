@@ -396,13 +396,27 @@ export interface ConversationDto {
   // Only present on the single-GET response (spec §24); list items omit
   // both the summaries and the messages array.
   customer?: { id: string; firstName: string; lastName: string | null } | null
-  customerRequest?: { id: string; subject: string; status: CustomerRequest['status'] } | null
+  customerRequest?: {
+    id: string
+    subject: string
+    status: CustomerRequest['status']
+    vehicleId: string | null
+    serviceId: string | null
+    createdAt: Date
+  } | null
   messages?: MessageDto[]
 }
 
 type ConversationWithOptionalDetail = Conversation & {
   customer?: { id: string; firstName: string; lastName: string | null } | null
-  customerRequest?: { id: string; subject: string; status: CustomerRequest['status'] } | null
+  customerRequest?: {
+    id: string
+    subject: string
+    status: CustomerRequest['status']
+    vehicleId: string | null
+    serviceId: string | null
+    createdAt: Date
+  } | null
   messages?: MessageWithOptionalDelivery[]
 }
 

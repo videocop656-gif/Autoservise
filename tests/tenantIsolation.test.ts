@@ -1860,3 +1860,41 @@ describe('tenant isolation — ServiceFollowUp', () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Prompt 49 — Conversation → CustomerRequest bridge. The row lock that makes
+// "Создать обращение" idempotent is scoped by id + tenantId + businessId, so
+// another tenant's conversation id locks nothing and reads back nothing.
+// ---------------------------------------------------------------------------
+describe('tenant isolation — Conversation → CustomerRequest bridge', () => {
+  it('tenant B cannot lock tenant A conversation: FOR UPDATE is scoped by id + tenantId + businessId', async () => {
+    queryRawMock.mockResolvedValue([])
+    const { prisma } = await import('../src/server/db/prisma')
+    const result = await conversationRepository.findByIdForUpdate(
+      'tenant-b',
+      'business-b',
+      'conversation-owned-by-tenant-a',
+      prisma as unknown as Parameters<typeof conversationRepository.findByIdForUpdate>[3]
+    )
+
+    const sql = queryRawMock.mock.calls[0]![0] as { text: string; values: unknown[] }
+    expect(sql.text).toContain('FOR UPDATE')
+    expect(sql.text).toContain('"id" = $1 AND "tenantId" = $2 AND "businessId" = $3')
+    expect(sql.values).toEqual(['conversation-owned-by-tenant-a', 'tenant-b', 'business-b'])
+    expect(conversationFindFirstMock).not.toHaveBeenCalled()
+    expect(result).toBeNull()
+  })
+
+  it('the link write is scoped by tenantId + businessId + id (0 rows for a foreign conversation)', async () => {
+    conversationUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await conversationRepository.updateById('tenant-b', 'business-b', 'conversation-owned-by-tenant-a', {
+      customerRequestId: 'req-b',
+    })
+
+    expect(conversationUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+      data: { customerRequestId: 'req-b' },
+    })
+    expect(result).toBeNull()
+  })
+})

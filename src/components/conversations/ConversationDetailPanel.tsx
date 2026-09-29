@@ -18,15 +18,14 @@ import {
   STATUS_LABELS,
   CHANNEL_LABELS,
   ESCALATION_STATUS_LABELS,
-  REQUEST_STATUS_LABELS,
   attentionBadgeVariant,
   isActiveEscalation,
   customerName,
   vehicleLabel,
-  serviceName,
   formatActivity,
   aiLogSummary,
 } from './shared'
+import { ConversationRequestSection } from './ConversationRequestSection'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1.
@@ -114,7 +113,7 @@ export function ConversationDetailPanel({
     if (conversationResult.status === 'fulfilled') {
       setDetail(conversationResult.value.conversation)
     } else {
-      setError('Не удалось загрузить обращение.')
+      setError('Не удалось загрузить диалог.')
     }
     // Escalation/AI-log are context, not the primary record — a failure
     // here just means those context-panel sections stay empty, same
@@ -205,9 +204,11 @@ export function ConversationDetailPanel({
   }
 
   const customer = detail?.customerId ? customers.find((c) => c.id === detail.customerId) : undefined
+  // Prompt 49 — the linked request comes from the conversation's own API
+  // summary first (never capped); the reference list is only a fallback.
   const request = detail?.customerRequestId ? customerRequests.find((r) => r.id === detail.customerRequestId) : undefined
-  const vehicle = request?.vehicleId ? vehicles.find((v) => v.id === request.vehicleId) : undefined
-  const service = request?.serviceId ? services.find((s) => s.id === request.serviceId) : undefined
+  const requestVehicleId = detail?.customerRequest?.vehicleId ?? request?.vehicleId ?? null
+  const vehicle = requestVehicleId ? vehicles.find((v) => v.id === requestVehicleId) : undefined
   const escalationActive = escalation ? isActiveEscalation(escalation.status) : false
 
   return (
@@ -216,7 +217,7 @@ export function ConversationDetailPanel({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ArrowLeft className="mr-1 h-4 w-4" />
-          Назад к обращениям
+          Назад к диалогам
         </Button>
         {detail && (
           <div className="flex flex-wrap items-center gap-2">
@@ -391,22 +392,18 @@ export function ConversationDetailPanel({
               )}
             </section>
 
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Заявка</h3>
-              {request ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/requests?open=${request.id}`)}
-                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
-                >
-                  <div className="font-medium">{request.subject}</div>
-                  {service && <div className="text-muted-foreground">Услуга: {serviceName(services, service.id)}</div>}
-                  <div className="text-muted-foreground">Статус: {REQUEST_STATUS_LABELS[request.status]}</div>
-                </button>
-              ) : (
-                <p className="mt-1 text-sm text-muted-foreground">Заявка не связана</p>
-              )}
-            </section>
+            {/* Prompt 49 — Conversation → CustomerRequest bridge. */}
+            <ConversationRequestSection
+              detail={detail}
+              canManage={canManage}
+              customers={customers}
+              vehicles={vehicles}
+              services={services}
+              onCreated={() => {
+                retry()
+                onChanged()
+              }}
+            />
 
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Эскалация</h3>

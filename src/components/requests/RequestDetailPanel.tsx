@@ -855,15 +855,18 @@ export function RequestDetailPanel({
           <section className="space-y-2 rounded-md border border-border p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold">
               <MessageSquare className="h-4 w-4 text-muted-foreground" />
-              Обращение
+              Диалог
             </h3>
-            {conversationsError && <p className="text-sm text-destructive">Не удалось загрузить обращения</p>}
-            {!conversationsError && conversations.length === 0 && <p className="text-sm text-muted-foreground">Обращений нет</p>}
+            {conversationsError && <p className="text-sm text-destructive">Не удалось загрузить диалоги</p>}
+            {!conversationsError && conversations.length === 0 && <p className="text-sm text-muted-foreground">Диалогов нет</p>}
+            {/* Prompt 49 — provenance from the relation itself (no second source system). */}
+            {!conversationsError && conversations.length > 0 && <p className="text-xs text-muted-foreground">Источник: Диалог</p>}
             {conversations.map((c) => (
               <button
                 key={c.id}
                 type="button"
                 onClick={() => navigate(`/conversations?open=${c.id}`)}
+                title="Открыть диалог"
                 className="flex w-full items-center justify-between gap-2 rounded-md border border-border p-2 text-left text-sm hover:bg-muted/40"
               >
                 <span className="truncate">{c.subject ?? '(без темы)'}</span>
