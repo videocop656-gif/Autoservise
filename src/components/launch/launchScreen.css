@@ -1,114 +1,166 @@
 /*
- * AppLaunchScreen (Prompt 45) — cinematic stage transitions.
+ * AppLaunchScreen (Prompts 45–46) — cinematic stage transitions.
  * Scoped to .launch-* classes only; never touches the global design system
  * in src/index.css. Every effect here is a one-shot CSS transition/animation
  * driven by a class toggle — no requestAnimationFrame loops, so there is
  * nothing to keep running (or to clean up) once the intro completes.
+ * Animated properties are limited to opacity/transform (plus one SVG
+ * stroke-dashoffset) so the sequence stays compositor-friendly.
  */
+
+.launch-scene {
+  /* Warm amber headlight temperature — scoped to the launch scene only.
+     Same hue family as --primary (45°), shifted slightly warmer and
+     lighter so the lights read as lamps, not as the brand gold. */
+  --launch-headlight: 40 92% 58%;
+  --launch-headlight-core: 42 100% 84%;
+}
+
+/* Stage 0 — deep graphite/navy darkness, never pure black: a faint navy
+   lift toward the upper centre built only from existing tokens. */
+.launch-atmosphere {
+  background:
+    radial-gradient(ellipse 80% 60% at 55% 40%, hsl(var(--card) / 0.4) 0%, transparent 72%),
+    hsl(var(--background));
+}
 
 .launch-car {
   opacity: 0;
-  transform: scale(1.045) translateY(8px);
-  filter: blur(14px) brightness(0.7);
+  transform: scale(1.03) translateY(6px);
   transition:
-    opacity 900ms cubic-bezier(0.16, 1, 0.3, 1),
-    transform 900ms cubic-bezier(0.16, 1, 0.3, 1),
-    filter 900ms cubic-bezier(0.16, 1, 0.3, 1);
+    opacity 1000ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 1000ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .launch-car.is-revealed {
   opacity: 1;
   transform: scale(1) translateY(0);
-  filter: blur(0) brightness(1);
 }
 
 .launch-car.is-engine-on .launch-car__body {
-  animation: launch-engine-rumble 380ms ease-in-out 1;
+  animation: launch-engine-settle 420ms ease-in-out 1;
 }
 
-.launch-headlight-glow {
+/* Headlights power on like real lamps: a soft first surge, a tiny dip,
+   then a smooth climb to full — never an instant full-brightness frame. */
+.launch-headlight,
+.launch-light-pool {
   opacity: 0;
-  transition: opacity 750ms ease-out;
 }
-.launch-headlight-glow.is-on {
-  opacity: 0.85;
+.launch-headlight.is-on {
+  animation: launch-light-ignite 650ms cubic-bezier(0.33, 0, 0.2, 1) forwards;
+}
+.launch-light-pool.is-on {
+  animation: launch-light-ignite 800ms cubic-bezier(0.33, 0, 0.2, 1) forwards;
 }
 
-.launch-headlight-core {
+/* Haze only exists because the lights reveal it. */
+.launch-haze {
   opacity: 0;
-  transition: opacity 450ms ease-out;
+  transition: opacity 900ms ease-out;
 }
-.launch-headlight-core.is-on {
+.launch-haze.is-on {
   opacity: 1;
 }
 
+/* One thin gold highlight travels along the shoulder, then settles to a
+   faint residual catch-light instead of lingering at full strength. */
 .launch-gold-line {
   opacity: 0;
   stroke-dashoffset: 640;
-  transition:
-    opacity 500ms ease-out,
-    stroke-dashoffset 900ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .launch-gold-line.is-on {
-  opacity: 0.9;
-  stroke-dashoffset: 0;
+  animation: launch-gold-sweep 900ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .launch-brand {
   opacity: 0;
-  transform: translateY(10px);
-  filter: blur(6px);
+  transform: translateY(8px);
   transition:
-    opacity 700ms ease-out,
-    transform 700ms ease-out,
-    filter 700ms ease-out;
+    opacity 600ms ease-out,
+    transform 600ms ease-out;
 }
 .launch-brand.is-visible {
   opacity: 1;
   transform: translateY(0);
-  filter: blur(0);
 }
 
 .launch-cta {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(6px);
   transition:
-    opacity 500ms ease-out,
-    transform 500ms ease-out;
+    opacity 450ms ease-out,
+    transform 450ms ease-out;
 }
 .launch-cta.is-visible {
   opacity: 1;
   transform: translateY(0);
 }
 
-@keyframes launch-engine-rumble {
+@keyframes launch-engine-settle {
   0% {
     transform: translateY(0);
   }
-  25% {
+  30% {
     transform: translateY(1px);
   }
-  55% {
-    transform: translateY(-1px);
+  60% {
+    transform: translateY(-0.5px);
   }
   100% {
     transform: translateY(0);
   }
 }
 
-/* Respect the OS-level motion preference: collapse every transition/
-   animation to an instant state change. AppLaunchScreen also skips
-   scheduling the stage timers entirely under reduced motion — this media
-   query is a belt-and-braces backstop in case a class is ever toggled
-   directly without going through that logic. */
+@keyframes launch-light-ignite {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.55;
+  }
+  45% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes launch-gold-sweep {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 640;
+  }
+  45% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0.35;
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Respect the OS-level motion preference. AppLaunchScreen already skips
+   the stage timers under reduced motion and renders the final frame; this
+   block makes sure that final frame is reached instantly, including for
+   the keyframe-driven layers whose end state lives in the animation. */
 @media (prefers-reduced-motion: reduce) {
   .launch-car,
   .launch-car.is-engine-on .launch-car__body,
-  .launch-headlight-glow,
-  .launch-headlight-core,
-  .launch-gold-line,
+  .launch-haze,
   .launch-brand,
   .launch-cta {
     transition: none !important;
     animation: none !important;
+  }
+  .launch-headlight.is-on,
+  .launch-light-pool.is-on {
+    animation: none !important;
+    opacity: 1;
+  }
+  .launch-gold-line.is-on {
+    animation: none !important;
+    opacity: 0.35;
+    stroke-dashoffset: 0;
   }
 }
