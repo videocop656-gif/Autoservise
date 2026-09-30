@@ -19,6 +19,7 @@ type FormState = {
   timezone: string
   website: string
   currency: string
+  serviceBayCapacity: string
 }
 
 function toFormState(business: AuthBusiness): FormState {
@@ -31,7 +32,16 @@ function toFormState(business: AuthBusiness): FormState {
     timezone: business.timezone,
     website: business.website ?? '',
     currency: business.currency,
+    serviceBayCapacity: String(business.serviceBayCapacity),
   }
+}
+
+// Prompt 50 — a whole number goes to the server as a number; anything else
+// is sent as typed so the server answers with its own Russian message
+// ("Количество постов должно быть не менее 1.") instead of the browser's.
+function toCapacityPayload(value: string): number | string {
+  const trimmed = value.trim()
+  return /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed
 }
 
 export default function BusinessSettingsPage() {
@@ -62,13 +72,14 @@ export default function BusinessSettingsPage() {
     try {
       await apiFetch('/api/business', {
         method: 'PATCH',
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, serviceBayCapacity: toCapacityPayload(form.serviceBayCapacity) }),
       })
       await refresh()
       setSuccess(true)
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setError(err.message || 'Не удалось сохранить изменения.')
+        const hasFieldErrors = Object.keys(err.fieldErrors).length > 0
+        setError(hasFieldErrors ? 'Проверьте заполненные поля.' : err.message || 'Не удалось сохранить изменения.')
         setFieldErrors(err.fieldErrors)
       } else {
         setError('Не удалось сохранить изменения.')
@@ -164,6 +175,23 @@ export default function BusinessSettingsPage() {
                   </select>
                   {fieldErrors.currency && <p className="text-sm text-destructive">{fieldErrors.currency[0]}</p>}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="serviceBayCapacity">Количество постов</Label>
+                <Input
+                  id="serviceBayCapacity"
+                  inputMode="numeric"
+                  className="max-w-[10rem]"
+                  disabled={!canEdit}
+                  value={form.serviceBayCapacity}
+                  onChange={(e) => update('serviceBayCapacity', e.target.value)}
+                  aria-describedby="serviceBayCapacity-hint"
+                />
+                <p id="serviceBayCapacity-hint" className="text-sm text-muted-foreground">
+                  Сколько автомобилей автосервис может обслуживать одновременно.
+                </p>
+                {fieldErrors.serviceBayCapacity && <p className="text-sm text-destructive">{fieldErrors.serviceBayCapacity[0]}</p>}
               </div>
 
               <div className="space-y-2">

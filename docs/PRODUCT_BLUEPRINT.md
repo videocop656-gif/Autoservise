@@ -329,6 +329,7 @@ Implemented today, under `Business` + its related config tables:
 - `timezone` — a validated IANA identifier (`Europe/Moscow`, etc.).
 - `currency` — a whitelisted currency code, used to default money fields on Services/Appointments/ServiceRecords at creation.
 - `BusinessWorkingHours` — a 7-day schedule (`isOpen`, `openTime`, `closeTime` as local `"HH:mm"` strings).
+- `serviceBayCapacity` (Prompt 50, «Количество постов») — how many vehicles the workshop can service at the same time; a whole number ≥ 1, default 1. Business-wide only: no individual bays, no technicians, no per-service capacity.
 - `Service` catalog.
 - `KnowledgeItem`s (categorized FAQ/policy/etc. content).
 - `BusinessRule`s (categorized, prioritized operational rules).
@@ -339,6 +340,19 @@ validation, `CustomerRequest.requestedDate` normalization, and any future
 scheduling logic. The browser's timezone, the server's own clock timezone,
 and any request-supplied timezone are never used for this. This principle
 must extend unchanged into the future AI layer's own scheduling logic.
+
+**Workshop capacity (Prompt 50).** A booking is accepted only if the
+business is open (`BusinessWorkingHours`), the vehicle is free (per-vehicle
+conflict) **and** a post is free: at most `serviceBayCapacity`
+`SCHEDULED`/`CONFIRMED`/`IN_PROGRESS` appointments may run at the same
+instant (half-open `[startAt, endAt)` everywhere). Enforced server-side on
+create and reschedule inside one short transaction that locks the business
+row, so concurrent bookings cannot overbook. The canonical calculation lives
+in `src/server/domain/capacity.ts` + `appointmentService`
+(`getIntervalCapacity`, `checkIntervalAvailability`, and the slot
+generator `checkAvailability`). **Boundary for future booking UI and AI:**
+they ask this availability service and offer only what it returns — they
+never compute capacity themselves.
 
 ## 8. Main Screens
 

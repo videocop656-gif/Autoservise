@@ -1904,3 +1904,63 @@ describe('tenant isolation — Conversation → CustomerRequest bridge', () => {
     expect(result).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Prompt 50 — service-bay capacity. The scheduling lock, the occupant query
+// and the capacity update are all scoped by tenant + business, so another
+// tenant can't lock, count, read or change this business's capacity.
+// ---------------------------------------------------------------------------
+describe('tenant isolation — service-bay capacity', () => {
+  it('tenant B cannot lock tenant A business: FOR NO KEY UPDATE is scoped by id + tenantId, returns nothing', async () => {
+    queryRawMock.mockResolvedValue([])
+    const { prisma } = await import('../src/server/db/prisma')
+    const result = await businessRepository.lockForScheduling(
+      'tenant-b',
+      'business-owned-by-tenant-a',
+      prisma as unknown as Parameters<typeof businessRepository.lockForScheduling>[2]
+    )
+
+    const sql = queryRawMock.mock.calls[0]![0] as { text: string; values: unknown[] }
+    expect(sql.text).toContain('FOR NO KEY UPDATE')
+    expect(sql.text).toContain('"id" = $1 AND "tenantId" = $2')
+    expect(sql.values).toEqual(['business-owned-by-tenant-a', 'tenant-b'])
+    expect(result).toBeNull()
+  })
+
+  it('the capacity occupant query is scoped by tenantId + businessId, active statuses and a bounded half-open window', async () => {
+    const { prisma } = await import('../src/server/db/prisma')
+    const findMany = vi.fn().mockResolvedValue([])
+    const original = prisma.appointment.findMany
+    prisma.appointment.findMany = findMany as never
+    try {
+      const start = new Date('2026-10-05T07:00:00Z')
+      const end = new Date('2026-10-05T08:00:00Z')
+      await appointmentRepository.listCapacityOccupants('tenant-a', 'business-a', start, end, 'self-id')
+
+      expect(findMany).toHaveBeenCalledWith({
+        where: {
+          tenantId: 'tenant-a',
+          businessId: 'business-a',
+          status: { in: ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'] },
+          startAt: { lt: end, gt: new Date('2026-10-04T07:00:00Z') },
+          endAt: { gt: start },
+          id: { not: 'self-id' },
+        },
+        select: { startAt: true, endAt: true },
+      })
+    } finally {
+      prisma.appointment.findMany = original
+    }
+  })
+
+  it('tenant A cannot change tenant B capacity: the update is scoped by tenantId + id and matches nothing', async () => {
+    businessUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await businessRepository.update('tenant-a', 'business-owned-by-tenant-b', { serviceBayCapacity: 99 })
+
+    expect(businessUpdateManyMock).toHaveBeenCalledWith({
+      where: { id: 'business-owned-by-tenant-b', tenantId: 'tenant-a' },
+      data: { serviceBayCapacity: 99 },
+    })
+    expect(result).toBeNull()
+  })
+})

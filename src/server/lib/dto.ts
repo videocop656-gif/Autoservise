@@ -39,6 +39,8 @@ export interface BusinessDto {
   timezone: string
   website: string | null
   currency: string
+  /** Prompt 50 — simultaneous service bays / posts (>= 1). */
+  serviceBayCapacity: number
   createdAt: Date
   updatedAt: Date
 }
@@ -54,6 +56,7 @@ export function toBusinessDto(business: Business): BusinessDto {
     timezone: business.timezone,
     website: business.website,
     currency: business.currency,
+    serviceBayCapacity: business.serviceBayCapacity,
     createdAt: business.createdAt,
     updatedAt: business.updatedAt,
   }

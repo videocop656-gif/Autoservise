@@ -57,3 +57,26 @@ describe('updateBusinessProfile', () => {
     await expect(updateBusinessProfile(ctx, { name: 'X' })).rejects.toMatchObject({ statusCode: 404 })
   })
 })
+
+// Prompt 50 — Количество постов is part of the business profile.
+describe('updateBusinessProfile — serviceBayCapacity', () => {
+  it('owner/admin can set it; it is written for the session business only', async () => {
+    updateMock.mockResolvedValue(makeBusiness({ serviceBayCapacity: 3 }))
+    const ctx = makeAuthContext('admin')
+
+    const result = await updateBusinessProfile(ctx, { serviceBayCapacity: 3 })
+
+    expect(result.serviceBayCapacity).toBe(3)
+    expect(updateMock).toHaveBeenCalledWith(ctx.tenant.id, ctx.business.id, { serviceBayCapacity: 3 })
+  })
+
+  it('a manager cannot change it (403, nothing written)', async () => {
+    await expect(updateBusinessProfile(makeAuthContext('manager'), { serviceBayCapacity: 3 })).rejects.toMatchObject({ statusCode: 403 })
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it('is exposed on the business DTO (what GET /api/business and /api/auth/me return)', async () => {
+    const { toBusinessDto } = await import('../src/server/lib/dto')
+    expect(toBusinessDto(makeBusiness({ serviceBayCapacity: 4 })).serviceBayCapacity).toBe(4)
+  })
+})

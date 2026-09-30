@@ -1,9 +1,18 @@
-import type { AppointmentStatus } from '@prisma/client'
+import type { AppointmentStatus, Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { toBusinessLocalDateTime, businessLocalToUtc } from '../lib/timezone'
+import { runInTransaction, type DbClient } from '../db/transaction'
+import {
+  capacitySnapshot,
+  consumesCapacity,
+  CAPACITY_EXCEEDED_CODE,
+  CAPACITY_EXCEEDED_MESSAGE,
+  type CapacitySnapshot,
+} from '../domain/capacity'
 import { appointmentRepository } from '../repositories/appointmentRepository'
+import { businessRepository } from '../repositories/businessRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
 import { serviceRepository } from '../repositories/serviceRepository'
@@ -125,14 +134,70 @@ async function assertNoConflict(
   vehicleId: string,
   startAt: Date,
   endAt: Date,
-  excludeId?: string
+  excludeId?: string,
+  db?: DbClient
 ): Promise<void> {
-  const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, vehicleId, startAt, endAt, excludeId)
+  const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, vehicleId, startAt, endAt, excludeId, db)
   if (conflict) {
     throw new ApiError(409, 'APPOINTMENT_CONFLICT', 'This vehicle already has a conflicting appointment', {
       conflictingAppointmentId: conflict.id,
     })
   }
+}
+
+// --- Capacity (Prompt 50) --------------------------------------------------
+//
+// Business.serviceBayCapacity = how many vehicles can be serviced at once.
+// The math lives in domain/capacity.ts; this is the only place that feeds it
+// with appointments, so create, reschedule, the availability endpoint and
+// the slot generator (AI check_availability) all agree.
+
+/**
+ * Read-only capacity of [startAt, endAt) for the current business — no lock.
+ * What GET /api/appointments/availability and future booking/AI callers use
+ * to ask "is there a free post?". `excludeAppointmentId` ignores the
+ * appointment being rescheduled, exactly like the update path.
+ */
+export async function getIntervalCapacity(
+  ctx: AuthContext,
+  startAt: Date,
+  endAt: Date,
+  excludeAppointmentId?: string,
+  db?: DbClient,
+  capacity: number = ctx.business.serviceBayCapacity
+): Promise<CapacitySnapshot> {
+  const occupants = await appointmentRepository.listCapacityOccupants(ctx.tenant.id, ctx.business.id, startAt, endAt, excludeAppointmentId, db)
+  return capacitySnapshot(capacity, occupants, startAt, endAt)
+}
+
+/**
+ * Runs `write` under the per-business scheduling lock: one short
+ * transaction that locks the business row, re-reads its capacity, re-checks
+ * the vehicle conflict and (when `checkCapacity`) the capacity against the
+ * committed state, then writes. Concurrent bookings of the same business
+ * queue on the lock, so the last free post can only be taken once; any
+ * failure rolls the whole thing back.
+ */
+async function withSchedulingLock<T>(
+  ctx: AuthContext,
+  check: { vehicleId: string; startAt: Date; endAt: Date; excludeId?: string; checkCapacity: boolean },
+  write: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+  return runInTransaction(async (tx) => {
+    const locked = await businessRepository.lockForScheduling(ctx.tenant.id, ctx.business.id, tx)
+    if (!locked) {
+      throw new ApiError(404, 'NOT_FOUND', 'Business not found')
+    }
+    await assertNoConflict(ctx, check.vehicleId, check.startAt, check.endAt, check.excludeId, tx)
+    if (check.checkCapacity) {
+      const snapshot = await getIntervalCapacity(ctx, check.startAt, check.endAt, check.excludeId, tx, locked.serviceBayCapacity)
+      if (!snapshot.available) {
+        // No details: which appointments hold the posts is not the caller's business.
+        throw new ApiError(409, CAPACITY_EXCEEDED_CODE, CAPACITY_EXCEEDED_MESSAGE)
+      }
+    }
+    return write(tx)
+  })
 }
 
 export async function listAppointments(
@@ -170,19 +235,26 @@ export async function createAppointment(ctx: AuthContext, input: CreateAppointme
   await assertEntitiesActiveAndOwned(ctx, refs)
   assertDuration(input.startAt, input.endAt)
   await assertWithinWorkingHours(ctx, input.startAt, input.endAt)
-  await assertNoConflict(ctx, input.vehicleId, input.startAt, input.endAt)
 
-  return appointmentRepository.create({
-    tenantId: ctx.tenant.id,
-    businessId: ctx.business.id,
-    customerId: input.customerId,
-    vehicleId: input.vehicleId,
-    serviceId: input.serviceId,
-    startAt: input.startAt,
-    endAt: input.endAt,
-    status: input.status ?? 'SCHEDULED',
-    notes: input.notes ?? null,
-  })
+  // Vehicle conflict + capacity are checked under the scheduling lock, so a
+  // concurrent booking can't slip in between the check and the insert.
+  const check = { vehicleId: input.vehicleId, startAt: input.startAt, endAt: input.endAt, checkCapacity: true }
+  return withSchedulingLock(ctx, check, (tx) =>
+    appointmentRepository.create(
+      {
+        tenantId: ctx.tenant.id,
+        businessId: ctx.business.id,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        serviceId: input.serviceId,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        status: input.status ?? 'SCHEDULED',
+        notes: input.notes ?? null,
+      },
+      tx
+    )
+  )
 }
 
 export async function updateAppointment(ctx: AuthContext, id: string, input: UpdateAppointmentInput) {
@@ -238,15 +310,35 @@ export async function updateAppointment(ctx: AuthContext, id: string, input: Upd
     await assertWithinWorkingHours(ctx, effectiveStartAt, effectiveEndAt)
   }
 
-  if (relationsChanged || timeChanged) {
-    await assertNoConflict(ctx, effectiveVehicleId, effectiveStartAt, effectiveEndAt, id)
+  const write = async (db?: DbClient) => {
+    const updated = await appointmentRepository.updateById(ctx.tenant.id, ctx.business.id, id, input, db)
+    if (!updated) {
+      throw new ApiError(404, 'NOT_FOUND', 'Appointment not found')
+    }
+    return updated
   }
 
-  const updated = await appointmentRepository.updateById(ctx.tenant.id, ctx.business.id, id, input)
-  if (!updated) {
-    throw new ApiError(404, 'NOT_FOUND', 'Appointment not found')
+  // Status-only / notes-only edits never touch scheduling — no lock, no
+  // capacity check (a legacy over-booked slot still lets you confirm,
+  // start or close its appointments).
+  if (!relationsChanged && !timeChanged) {
+    return write()
   }
-  return updated
+
+  // Capacity only matters when the interval moves (reschedule, new end =
+  // new duration) and the appointment will still hold a post afterwards —
+  // moving and cancelling in one PATCH frees a post, it never takes one.
+  // A vehicle/customer/service change on the same interval takes no extra
+  // post. The appointment itself is excluded from its own count.
+  const effectiveStatus = input.status ?? existing.status
+  const check = {
+    vehicleId: effectiveVehicleId,
+    startAt: effectiveStartAt,
+    endAt: effectiveEndAt,
+    excludeId: id,
+    checkCapacity: timeChanged && consumesCapacity(effectiveStatus),
+  }
+  return withSchedulingLock(ctx, check, (tx) => write(tx))
 }
 
 // --- Availability (Prompt 10) --------------------------------------------
@@ -308,12 +400,15 @@ function minutesToTimeKey(totalMinutes: number): string {
  *    interval-overlap check createAppointment/updateAppointment already
  *    use, applied once per candidate slot.
  *
+ *  - Prompt 50: business capacity (serviceBayCapacity) — a slot with no free
+ *    post is never offered, computed by the same domain/capacity.ts math
+ *    createAppointment enforces, from ONE bounded query for the whole open
+ *    window of the day (no per-slot query).
+ *
  * customerId/vehicleId are optional (spec): if given, they're verified to
  * exist/belong-to-tenant/belong-to-each-other (404/400, same convention as
- * elsewhere), but only vehicleId actually affects slot filtering — this
- * app's conflict model is exclusively per-vehicle (see Appointment's own
- * findConflict), there is no separate business-wide capacity/resource
- * limit to check. Unlike createAppointment, the vehicle is NOT required to
+ * elsewhere); vehicleId additionally filters out that vehicle's own
+ * conflicts. Unlike createAppointment, the vehicle is NOT required to
  * be active here — offering slots is informational; the existing active
  * check still applies, unavoidably, at actual creation time.
  */
@@ -369,6 +464,16 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
   const closeMinutes = timeKeyToMinutes(day.closeTime)
   const now = Date.now()
 
+  // Every candidate slot lies inside [open, close) of this local day, so
+  // one query over that window returns every appointment that can take a
+  // post during any of them.
+  const dayOccupants = await appointmentRepository.listCapacityOccupants(
+    ctx.tenant.id,
+    ctx.business.id,
+    businessLocalToUtc(input.date, day.openTime, timezone),
+    businessLocalToUtc(input.date, day.closeTime, timezone)
+  )
+
   const slots: AvailabilitySlot[] = []
   for (let start = openMinutes; start + duration <= closeMinutes; start += SLOT_GRANULARITY_MINUTES) {
     const localStart = minutesToTimeKey(start)
@@ -385,6 +490,8 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
     // with no separate "is this date in the past" special case needed.
     if (startAt.getTime() <= now) continue
 
+    if (!capacitySnapshot(ctx.business.serviceBayCapacity, dayOccupants, startAt, endAt).available) continue
+
     if (input.vehicleId) {
       const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, input.vehicleId, startAt, endAt)
       if (conflict) continue
@@ -394,4 +501,88 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
   }
 
   return { date: input.date, timezone, slots }
+}
+
+// --- Interval availability (Prompt 50) --------------------------------------
+//
+// "Can this business take this vehicle/service at exactly this time?" —
+// the foundation behind GET /api/appointments/availability. Runs the SAME
+// rules createAppointment runs (working hours, vehicle conflict, capacity),
+// read-only and without the lock, and reports every rule that fails instead
+// of stopping at the first one. It deliberately adds no rule of its own
+// (e.g. no "in the past" check — createAppointment has none), so its answer
+// always matches what a create at that moment would do. The locked
+// re-check inside createAppointment stays the final word under concurrency.
+
+export type IntervalUnavailableReason = 'OUTSIDE_WORKING_HOURS' | 'VEHICLE_CONFLICT' | 'CAPACITY_EXCEEDED'
+
+const UNAVAILABLE_REASON_MESSAGES: Record<IntervalUnavailableReason, string> = {
+  OUTSIDE_WORKING_HOURS: 'Выбранное время вне рабочих часов автосервиса.',
+  VEHICLE_CONFLICT: 'У этого автомобиля уже есть запись на это время.',
+  CAPACITY_EXCEEDED: CAPACITY_EXCEEDED_MESSAGE,
+}
+
+export interface IntervalAvailabilityInput {
+  serviceId: string
+  startAt: Date
+  /** Optional explicit end; otherwise startAt + Service.durationMinutes (same as the slot generator). */
+  endAt?: Date | null
+  vehicleId?: string | null
+  /** The appointment being rescheduled — never counted against itself. */
+  excludeAppointmentId?: string | null
+}
+
+export interface IntervalAvailabilityResult {
+  startAt: Date
+  endAt: Date
+  timezone: string
+  available: boolean
+  reasons: { code: IntervalUnavailableReason; message: string }[]
+  capacity: CapacitySnapshot
+}
+
+export async function checkIntervalAvailability(ctx: AuthContext, input: IntervalAvailabilityInput): Promise<IntervalAvailabilityResult> {
+  const service = await serviceRepository.findById(ctx.tenant.id, ctx.business.id, input.serviceId)
+  if (!service) {
+    throw new ApiError(404, 'NOT_FOUND', 'Service not found')
+  }
+  if (!service.isActive) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Service is not active')
+  }
+  if (input.vehicleId) {
+    const vehicle = await vehicleRepository.findById(ctx.tenant.id, ctx.business.id, input.vehicleId)
+    if (!vehicle) {
+      throw new ApiError(404, 'NOT_FOUND', 'Vehicle not found')
+    }
+  }
+
+  const startAt = input.startAt
+  const endAt = input.endAt ?? new Date(startAt.getTime() + service.durationMinutes * 60_000)
+  assertDuration(startAt, endAt)
+
+  const reasons: IntervalUnavailableReason[] = []
+  try {
+    await assertWithinWorkingHours(ctx, startAt, endAt)
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.statusCode !== 400) throw err
+    reasons.push('OUTSIDE_WORKING_HOURS')
+  }
+
+  const excludeId = input.excludeAppointmentId ?? undefined
+  if (input.vehicleId) {
+    const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, input.vehicleId, startAt, endAt, excludeId)
+    if (conflict) reasons.push('VEHICLE_CONFLICT')
+  }
+
+  const capacity = await getIntervalCapacity(ctx, startAt, endAt, excludeId)
+  if (!capacity.available) reasons.push('CAPACITY_EXCEEDED')
+
+  return {
+    startAt,
+    endAt,
+    timezone: ctx.business.timezone,
+    available: reasons.length === 0,
+    reasons: reasons.map((code) => ({ code, message: UNAVAILABLE_REASON_MESSAGES[code] })),
+    capacity,
+  }
 }

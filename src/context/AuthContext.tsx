@@ -28,6 +28,8 @@ export interface AuthBusiness {
   timezone: string
   website: string | null
   currency: string
+  /** Prompt 50 — simultaneous service bays / posts. */
+  serviceBayCapacity: number
 }
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'

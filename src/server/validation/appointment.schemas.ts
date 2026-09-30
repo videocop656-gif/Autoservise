@@ -71,6 +71,20 @@ export const updateAppointmentSchema = z
     }
   })
 
+// Prompt 50 — GET /api/appointments/availability query. Same datetime and
+// "" = not given conventions as the create/update schemas; endAt is
+// optional (startAt + Service.durationMinutes otherwise). Duration limits
+// are enforced by checkIntervalAvailability via the shared assertDuration.
+const optionalQueryUuid = (message: string) => z.preprocess(emptyToNull, z.string().uuid(message).nullable().optional())
+
+export const intervalAvailabilityQuerySchema = z.object({
+  serviceId: z.string().uuid('Invalid service id'),
+  startAt: isoDateTime,
+  endAt: z.preprocess(emptyToNull, isoDateTime.nullable().optional()),
+  vehicleId: optionalQueryUuid('Invalid vehicle id'),
+  excludeAppointmentId: optionalQueryUuid('Invalid appointment id'),
+})
+
 export const appointmentIdParamSchema = z.string().uuid()
 export const appointmentStatusFilterSchema = z.nativeEnum(AppointmentStatus)
 

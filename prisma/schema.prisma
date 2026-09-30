@@ -280,6 +280,11 @@ model Business {
   timezone    String   @default("UTC")
   website     String?
   currency    String   @default("RUB")
+  // Prompt 50 — how many vehicles the workshop can service at the same time
+  // (service bays / posts). Always >= 1 (CHECK in the migration, Zod in
+  // business.schemas.ts). Enforced on appointment create/reschedule by
+  // appointmentService under a per-business row lock.
+  serviceBayCapacity Int @default(1)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

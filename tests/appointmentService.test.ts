@@ -11,6 +11,9 @@ const {
   vehicleFindByIdMock,
   serviceFindByIdMock,
   hoursListByBusinessMock,
+  aptListCapacityOccupantsMock,
+  lockForSchedulingMock,
+  TX,
 } = vi.hoisted(() => ({
   aptListMock: vi.fn(),
   aptFindByIdMock: vi.fn(),
@@ -21,6 +24,9 @@ const {
   vehicleFindByIdMock: vi.fn(),
   serviceFindByIdMock: vi.fn(),
   hoursListByBusinessMock: vi.fn(),
+  aptListCapacityOccupantsMock: vi.fn(),
+  lockForSchedulingMock: vi.fn(),
+  TX: { __tx: true },
 }))
 
 vi.mock('../src/server/repositories/appointmentRepository', () => ({
@@ -30,8 +36,17 @@ vi.mock('../src/server/repositories/appointmentRepository', () => ({
     create: aptCreateMock,
     updateById: aptUpdateByIdMock,
     findConflict: aptFindConflictMock,
+    listCapacityOccupants: aptListCapacityOccupantsMock,
   },
   CONFLICT_BLOCKING_STATUSES: ['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+}))
+// Prompt 50 — create/reschedule run in one transaction under the business
+// scheduling lock; here the transaction is a pass-through with a marker tx.
+vi.mock('../src/server/db/transaction', () => ({
+  runInTransaction: (fn: (tx: unknown) => Promise<unknown>) => fn(TX),
+}))
+vi.mock('../src/server/repositories/businessRepository', () => ({
+  businessRepository: { lockForScheduling: lockForSchedulingMock },
 }))
 vi.mock('../src/server/repositories/customerRepository', () => ({
   customerRepository: { findById: customerFindByIdMock },
@@ -110,6 +125,8 @@ beforeEach(() => {
   hoursListByBusinessMock.mockResolvedValue(STANDARD_WEEK)
   aptFindConflictMock.mockResolvedValue(null)
   aptCreateMock.mockResolvedValue(makeAppointment())
+  aptListCapacityOccupantsMock.mockResolvedValue([])
+  lockForSchedulingMock.mockResolvedValue({ serviceBayCapacity: 1 })
 })
 
 describe('listAppointments', () => {
@@ -177,13 +194,13 @@ describe('createAppointment — initial status (Prompt 34)', () => {
   it('defaults to SCHEDULED when status is omitted from input', async () => {
     const input = inputAt('2026-09-07T06:00:00Z', '2026-09-07T07:00:00Z')
     await createAppointment(makeAuthContext('owner'), input)
-    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }))
+    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }), TX)
   })
 
   it('accepts an explicitly provided SCHEDULED status (the only value CREATABLE_STATUSES allows through the schema)', async () => {
     const input = inputAt('2026-09-07T06:00:00Z', '2026-09-07T07:00:00Z', { status: 'SCHEDULED' })
     await createAppointment(makeAuthContext('owner'), input)
-    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }))
+    expect(aptCreateMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'SCHEDULED' }), TX)
   })
 })
 
@@ -336,7 +353,7 @@ describe('createAppointment — conflict detection', () => {
     aptFindConflictMock.mockResolvedValue(null)
     const input = inputAt('2026-09-07T08:00:00Z', '2026-09-07T09:00:00Z') // 11:00-12:00 Moscow
     await expect(createAppointment(makeAuthContext('owner'), input)).resolves.toBeDefined()
-    expect(aptFindConflictMock).toHaveBeenCalledWith('t1', 'b1', VEHICLE_ID, expect.any(Date), expect.any(Date), undefined)
+    expect(aptFindConflictMock).toHaveBeenCalledWith('t1', 'b1', VEHICLE_ID, expect.any(Date), expect.any(Date), undefined, TX)
   })
 })
 
@@ -413,7 +430,7 @@ describe('updateAppointment', () => {
 
     await updateAppointment(makeAuthContext('owner'), 'a1', { endAt: new Date('2026-09-07T07:30:00Z') } as never)
 
-    expect(aptFindConflictMock).toHaveBeenCalledWith('t1', 'b1', VEHICLE_ID, expect.any(Date), expect.any(Date), 'a1')
+    expect(aptFindConflictMock).toHaveBeenCalledWith('t1', 'b1', VEHICLE_ID, expect.any(Date), expect.any(Date), 'a1', TX)
   })
 
   it('does not re-check working hours or conflict when neither time nor vehicle changes (e.g. notes-only update)', async () => {
@@ -561,7 +578,7 @@ describe('checkAvailability', () => {
     expect(result.slots.some((s) => s.localStart === '11:00')).toBe(true)
   })
 
-  it('does not check conflicts at all when no vehicleId is given — this app has no business-wide capacity limit', async () => {
+  it('does not check vehicle conflicts at all when no vehicleId is given (only business-wide capacity applies — Prompt 50)', async () => {
     await checkAvailability(makeAuthContext('owner'), { serviceId: SERVICE_ID, date: '2026-09-07' })
     expect(aptFindConflictMock).not.toHaveBeenCalled()
   })
