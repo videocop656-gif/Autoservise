@@ -130,13 +130,13 @@ export async function createCustomerRequestFromConversation(
     }
 
     const request = await customerRequestRepository.createWithInitialHistory(requestData, ctx.user.id, tx)
-    // Scalar FK fields, same as conversationService.updateConversation:
-    // updateById is an updateMany, which only accepts scalars.
+    // The dedicated link write (Prompt 49.1) — the generic update path cannot
+    // carry customerRequestId.
     const linkData = {
       customerRequestId: request.id,
       ...(conversation.customerId ? {} : { customerId }),
     }
-    const linked = await conversationRepository.updateById(ctx.tenant.id, ctx.business.id, conversationId, linkData, tx)
+    const linked = await conversationRepository.linkCustomerRequest(ctx.tenant.id, ctx.business.id, conversationId, linkData, tx)
     if (!linked) {
       throw new ApiError(404, 'NOT_FOUND', 'Диалог не найден')
     }

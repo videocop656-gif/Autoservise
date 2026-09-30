@@ -62,12 +62,13 @@ vi.mock('../src/server/repositories/conversationRepository', () => ({
       const row = scoped(db.conversations, t, b).find((r) => r.id === id)
       return row ? { ...row } : null
     },
-    updateById: async (t: string, b: string, id: string, data: Record<string, unknown>) => {
+    // Mirrors the real conditional write (WHERE customerRequestId IS NULL).
+    linkCustomerRequest: async (t: string, b: string, id: string, data: Record<string, unknown>) => {
       if (fail.conversationUpdate) {
         fail.conversationUpdate = false
         throw new Error('conversation update failed')
       }
-      const row = scoped(db.conversations, t, b).find((r) => r.id === id)
+      const row = scoped(db.conversations, t, b).find((r) => r.id === id && r.customerRequestId === null)
       if (!row) return null
       Object.assign(row, data)
       return { ...row }

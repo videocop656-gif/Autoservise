@@ -87,10 +87,27 @@ describe('updateConversationSchema', () => {
     expect('customerId' in result).toBe(false)
   })
 
-  it('allows clearing customerId/customerRequestId to null', () => {
-    const result = updateConversationSchema.parse({ customerId: null, customerRequestId: null })
+  it('allows clearing customerId to null', () => {
+    const result = updateConversationSchema.parse({ customerId: null })
     expect(result.customerId).toBeNull()
-    expect(result.customerRequestId).toBeNull()
+  })
+
+  // Prompt 49.1 — the request link is written only by the "Создать обращение" bridge.
+  it.each([
+    ['a request id', '44444444-4444-4444-8444-444444444444'],
+    ['null (unlink)', null],
+    ['an empty string', ''],
+    ['a malformed id', 'not-a-uuid'],
+  ])('rejects customerRequestId set to %s, with a Russian message', (_label, value) => {
+    const result = updateConversationSchema.safeParse({ status: 'CLOSED', customerRequestId: value })
+    expect(result.success).toBe(false)
+    expect(result.error!.flatten().fieldErrors.customerRequestId).toEqual(['Связь диалога с обращением нельзя изменить или удалить'])
+  })
+
+  it('still rejects customerRequestId sent alone (never parsed as an empty body)', () => {
+    const result = updateConversationSchema.safeParse({ customerRequestId: null })
+    expect(result.success).toBe(false)
+    expect(result.error!.flatten().fieldErrors.customerRequestId).toBeDefined()
   })
 
   it('accepts an explicit closedAt', () => {

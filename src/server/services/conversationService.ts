@@ -126,21 +126,19 @@ export async function updateConversation(ctx: AuthContext, id: string, input: Up
     throw new ApiError(404, 'NOT_FOUND', 'Conversation not found')
   }
 
-  const effectiveCustomerId = input.customerId !== undefined ? input.customerId : existing.customerId
-  const effectiveCustomerRequestId = input.customerRequestId !== undefined ? input.customerRequestId : existing.customerRequestId
-  const relationsChanged = input.customerId !== undefined || input.customerRequestId !== undefined
-
+  // customerRequestId is never written here (Prompt 49.1): the schema rejects
+  // it, and the link is only set by the "Создать обращение" bridge. The
+  // existing link still constrains a customer change below.
   // Only re-validate what's actually changing — a plain subject edit, or a
   // status change, is never blocked by a relation set earlier.
-  if (relationsChanged) {
-    await assertRelations(ctx, { customerId: effectiveCustomerId, customerRequestId: effectiveCustomerRequestId })
+  if (input.customerId !== undefined) {
+    await assertRelations(ctx, { customerId: input.customerId, customerRequestId: existing.customerRequestId })
   }
 
   const statusFields = computeStatusFields(existing.status, { status: input.status, closedAt: input.closedAt })
 
   const data = {
     ...(input.customerId !== undefined ? { customerId: input.customerId } : {}),
-    ...(input.customerRequestId !== undefined ? { customerRequestId: input.customerRequestId } : {}),
     ...(input.subject !== undefined ? { subject: input.subject } : {}),
     ...statusFields,
   }

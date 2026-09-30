@@ -180,6 +180,18 @@ describe('updateConversation', () => {
     ).rejects.toMatchObject({ statusCode: 400 })
   })
 
+  // Prompt 49.1 — defense in depth behind the schema: even an unvalidated
+  // input carrying customerRequestId never reaches the write.
+  it('never writes customerRequestId, even if an unvalidated input carries it', async () => {
+    convFindByIdMock.mockResolvedValue(makeConversation({ customerRequestId: REQUEST_ID }))
+    await updateConversation(makeAuthContext('owner'), 'conv1', { subject: 'x', customerRequestId: null } as never)
+    await updateConversation(makeAuthContext('owner'), 'conv1', { subject: 'x', customerRequestId: 'req-other' } as never)
+    for (const call of convUpdateByIdMock.mock.calls) {
+      expect('customerRequestId' in (call[3] as Record<string, unknown>)).toBe(false)
+    }
+    expect(customerRequestFindByIdMock).not.toHaveBeenCalled()
+  })
+
   describe('status lifecycle', () => {
     it('OPEN -> CLOSED sets closedAt to now() when not given', async () => {
       convFindByIdMock.mockResolvedValue(makeConversation({ status: 'OPEN', closedAt: null }))

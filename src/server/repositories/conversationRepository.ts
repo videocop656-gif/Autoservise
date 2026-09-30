@@ -82,10 +82,40 @@ export const conversationRepository = {
   // updateMany only takes scalar fields, so the type is the unchecked
   // (scalar FK) input — the previous checked relational type accepted
   // relation writes (connect) that would fail at runtime (Prompt 49).
-  async updateById(tenantId: string, businessId: string, id: string, data: Prisma.ConversationUncheckedUpdateManyInput, db: DbClient = prisma) {
+  // customerRequestId is excluded (Prompt 49.1): the link is written only
+  // through linkCustomerRequest below.
+  async updateById(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    data: Omit<Prisma.ConversationUncheckedUpdateManyInput, 'customerRequestId'>,
+    db: DbClient = prisma
+  ) {
     const result = await db.conversation.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
     if (result.count === 0) return null
     return db.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
+  /**
+   * Prompt 49.1 — the only write of Conversation.customerRequestId, used by
+   * the "Создать обращение" bridge inside its transaction. Conditional on the
+   * conversation being still unlinked, so it can attach a request but never
+   * replace one; returns null (nothing written) for a foreign or already
+   * linked conversation. `customerId` is set alongside when given.
+   */
+  async linkCustomerRequest(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    link: { customerRequestId: string; customerId?: string },
+    tx: Prisma.TransactionClient
+  ) {
+    const result = await tx.conversation.updateMany({
+      where: withTenant(tenantId, { businessId, id, customerRequestId: null }),
+      data: link,
+    })
+    if (result.count === 0) return null
+    return tx.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },
 
   /**

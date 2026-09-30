@@ -1885,16 +1885,22 @@ describe('tenant isolation — Conversation → CustomerRequest bridge', () => {
     expect(result).toBeNull()
   })
 
-  it('the link write is scoped by tenantId + businessId + id (0 rows for a foreign conversation)', async () => {
+  it('the link write is scoped by tenantId + businessId + id and only hits an unlinked row (0 rows for a foreign conversation)', async () => {
     conversationUpdateManyMock.mockResolvedValue({ count: 0 })
-    const result = await conversationRepository.updateById('tenant-b', 'business-b', 'conversation-owned-by-tenant-a', {
-      customerRequestId: 'req-b',
-    })
+    const { prisma } = await import('../src/server/db/prisma')
+    const result = await conversationRepository.linkCustomerRequest(
+      'tenant-b',
+      'business-b',
+      'conversation-owned-by-tenant-a',
+      { customerRequestId: 'req-b' },
+      prisma as unknown as Parameters<typeof conversationRepository.linkCustomerRequest>[4]
+    )
 
     expect(conversationUpdateManyMock).toHaveBeenCalledWith({
-      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', tenantId: 'tenant-b' },
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', customerRequestId: null, tenantId: 'tenant-b' },
       data: { customerRequestId: 'req-b' },
     })
+    expect(conversationFindFirstMock).not.toHaveBeenCalled()
     expect(result).toBeNull()
   })
 })

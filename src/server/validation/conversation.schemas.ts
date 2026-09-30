@@ -19,10 +19,17 @@ export const createConversationSchema = z.object({
   startedAt: optionalIsoDateTime,
 })
 
+// Prompt 49.1 — the Conversation → CustomerRequest link is written only by the
+// "Создать обращение" bridge (conversationRequestService.ts). Rejected here
+// explicitly rather than silently stripped (the channel/team convention):
+// a PATCH { status, customerRequestId: null } must not answer 200 as if the
+// link had been removed. Any value — a UUID, null, "" — is refused.
+export const PROTECTED_REQUEST_LINK_MESSAGE = 'Связь диалога с обращением нельзя изменить или удалить'
+
 export const updateConversationSchema = z
   .object({
     customerId: optionalUuid('Invalid customer id'),
-    customerRequestId: optionalUuid('Invalid customer request id'),
+    customerRequestId: z.undefined({ invalid_type_error: PROTECTED_REQUEST_LINK_MESSAGE }).optional(),
     subject: subjectSchema,
     status: z.nativeEnum(ConversationStatus).optional(),
     closedAt: optionalIsoDateTime,
