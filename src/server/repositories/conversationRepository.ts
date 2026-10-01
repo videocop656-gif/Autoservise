@@ -63,11 +63,12 @@ export const conversationRepository = {
     return prisma.conversation.findFirst({
       where: withTenant(tenantId, { businessId, id }),
       include: {
-        customer: { select: { id: true, firstName: true, lastName: true } },
+        // Prompt 54 — phone/email for the identity section (never capped by a reference list).
+        customer: { select: { id: true, firstName: true, lastName: true, phone: true, email: true } },
         // Prompt 49 — vehicleId/serviceId/createdAt feed the «Обращение создано»
         // card; read straight from the relation, so it never depends on a
         // capped reference list on the client.
-        customerRequest: { select: { id: true, subject: true, status: true, vehicleId: true, serviceId: true, createdAt: true } },
+        customerRequest: { select: { id: true, subject: true, status: true, customerId: true, vehicleId: true, serviceId: true, createdAt: true } },
         messages: { orderBy: { createdAt: 'asc' }, include: { channelDelivery: true } },
       },
     })
@@ -92,6 +93,29 @@ export const conversationRepository = {
     db: DbClient = prisma
   ) {
     const result = await db.conversation.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
+    if (result.count === 0) return null
+    return db.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
+  /**
+   * Prompt 54 — sets the conversation's customer only if it is still
+   * `expectedCustomerId` (null = still unlinked): a compare-and-set, so an
+   * operator's link never silently overwrites a newer decision made in
+   * another tab or by another operator. Returns null (nothing written) when
+   * the row changed or isn't this tenant's.
+   */
+  async setCustomerIfUnchanged(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    expectedCustomerId: string | null,
+    customerId: string,
+    db: DbClient = prisma
+  ) {
+    const result = await db.conversation.updateMany({
+      where: withTenant(tenantId, { businessId, id, customerId: expectedCustomerId }),
+      data: { customerId },
+    })
     if (result.count === 0) return null
     return db.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
   },

@@ -122,6 +122,19 @@ export interface AiBusinessContext {
     mileage: number | null
   } | null
   /**
+   * Prompt 54 — the known customer's stored, active vehicles (trusted
+   * domain data, linked by an operator), newest first, bounded. No ids: the
+   * vehicle a piece of work is about is `vehicle` above (from the linked
+   * request) — this list is context, not a selection. Empty when no
+   * customer is known.
+   */
+  customerVehicles: {
+    make: string
+    model: string
+    year: number | null
+    licensePlate: string | null
+  }[]
+  /**
    * The known vehicle's upcoming, non-cancelled appointments — the only
    * way the AI can reference a specific appointment for
    * reschedule_appointment/cancel_appointment (spec: "AI must not control

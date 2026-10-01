@@ -132,6 +132,12 @@ export async function updateConversation(ctx: AuthContext, id: string, input: Up
   // Only re-validate what's actually changing — a plain subject edit, or a
   // status change, is never blocked by a relation set earlier.
   if (input.customerId !== undefined) {
+    // Prompt 54 — a conversation with a linked request keeps that request's
+    // customer: clearing it would leave the conversation contradicting its
+    // own request (a different customer is already refused by assertRelations).
+    if (input.customerId === null && existing.customerRequestId) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Cannot unlink the customer of a conversation with a linked customer request')
+    }
     await assertRelations(ctx, { customerId: input.customerId, customerRequestId: existing.customerRequestId })
   }
 

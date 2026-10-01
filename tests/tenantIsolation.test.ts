@@ -1964,3 +1964,19 @@ describe('tenant isolation — service-bay capacity', () => {
     expect(result).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Prompt 54 — the intake link write is a tenant/business-scoped compare-and-set.
+// ---------------------------------------------------------------------------
+describe('tenant isolation — conversation customer intake', () => {
+  it('setCustomerIfUnchanged is scoped by tenantId + businessId + id + the expected customer (0 rows for a foreign conversation)', async () => {
+    conversationUpdateManyMock.mockResolvedValue({ count: 0 })
+    const result = await conversationRepository.setCustomerIfUnchanged('tenant-b', 'business-b', 'conversation-owned-by-tenant-a', null, 'customer-b')
+
+    expect(conversationUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'conversation-owned-by-tenant-a', customerId: null, tenantId: 'tenant-b' },
+      data: { customerId: 'customer-b' },
+    })
+    expect(result).toBeNull()
+  })
+})

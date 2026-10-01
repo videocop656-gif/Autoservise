@@ -11,6 +11,7 @@ const {
   appointmentListMock,
   serviceRecordListMock,
   hoursListByBusinessMock,
+  vehicleListMock,
 } = vi.hoisted(() => ({
   serviceListMock: vi.fn(),
   knowledgeListMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   appointmentListMock: vi.fn(),
   serviceRecordListMock: vi.fn(),
   hoursListByBusinessMock: vi.fn(),
+  vehicleListMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/serviceRepository', () => ({
@@ -36,7 +38,7 @@ vi.mock('../src/server/repositories/customerRepository', () => ({
   customerRepository: { findById: customerFindByIdMock },
 }))
 vi.mock('../src/server/repositories/vehicleRepository', () => ({
-  vehicleRepository: { findById: vehicleFindByIdMock },
+  vehicleRepository: { findById: vehicleFindByIdMock, list: vehicleListMock },
 }))
 vi.mock('../src/server/repositories/customerRequestRepository', () => ({
   customerRequestRepository: { findById: customerRequestFindByIdMock },
@@ -80,6 +82,7 @@ beforeEach(() => {
   appointmentListMock.mockResolvedValue({ items: [], total: 0 })
   serviceRecordListMock.mockResolvedValue({ items: [], total: 0 })
   hoursListByBusinessMock.mockResolvedValue([])
+  vehicleListMock.mockResolvedValue({ items: [], total: 0 })
 })
 
 describe('buildAiContext', () => {
@@ -431,5 +434,41 @@ describe('buildAiContext — current business-local date and working hours (Prom
     expect(context.services).toHaveLength(1)
     expect(context.knowledge).toHaveLength(1)
     expect(context.rules).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt 54 — the known customer's stored vehicles (trusted context, no ids).
+// ---------------------------------------------------------------------------
+describe('buildAiContext — customerVehicles (Prompt 54)', () => {
+  const customerRow = { id: 'cust1', firstName: 'Ivan', lastName: null, phone: '+79001234567', email: null, isActive: true }
+
+  it('lists the linked customer’s active vehicles, scoped to tenant/business/customer, without ids', async () => {
+    customerFindByIdMock.mockResolvedValue(customerRow)
+    vehicleListMock.mockResolvedValue({
+      items: [{ id: 'veh-secret-id', customerId: 'cust1', make: 'Kia', model: 'Rio', year: 2019, licensePlate: 'A123BC77', vin: 'VIN123', mileage: 1000, notes: 'private' }],
+      total: 1,
+    })
+    const ctx = makeAuthContext('owner', { business: makeBusiness({ id: 'business-a' }) })
+    const context = await buildAiContext(ctx, { customerId: 'cust1', customerRequestId: null })
+
+    expect(vehicleListMock).toHaveBeenCalledWith(ctx.tenant.id, 'business-a', expect.objectContaining({ activeOnly: true, customerId: 'cust1' }))
+    expect(context.customerVehicles).toEqual([{ make: 'Kia', model: 'Rio', year: 2019, licensePlate: 'A123BC77' }])
+    expect(JSON.stringify(context.customerVehicles)).not.toMatch(/veh-secret-id|VIN123|private/)
+  })
+
+  it('a stored vehicle list is context only — `vehicle` stays null without a linked request', async () => {
+    customerFindByIdMock.mockResolvedValue(customerRow)
+    vehicleListMock.mockResolvedValue({ items: [{ id: 'v1', make: 'Kia', model: 'Rio', year: 2019, licensePlate: null }], total: 1 })
+    const context = await buildAiContext(makeAuthContext('owner'), { customerId: 'cust1', customerRequestId: null })
+    expect(context.vehicle).toBeNull()
+    expect(context.customerVehicles).toHaveLength(1)
+  })
+
+  it('no customer (or a foreign one the scoped lookup cannot find) → no vehicles, no vehicle query', async () => {
+    customerFindByIdMock.mockResolvedValue(null)
+    const context = await buildAiContext(makeAuthContext('owner'), { customerId: 'foreign', customerRequestId: null })
+    expect(context.customerVehicles).toEqual([])
+    expect(vehicleListMock).not.toHaveBeenCalled()
   })
 })

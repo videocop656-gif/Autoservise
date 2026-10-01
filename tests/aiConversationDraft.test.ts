@@ -20,6 +20,7 @@ const m = vi.hoisted(() => ({
   ruleList: vi.fn(),
   customerFindById: vi.fn(),
   hoursList: vi.fn(),
+  vehicleList: vi.fn(),
   checkAvailability: vi.fn(),
   createAppointment: vi.fn(),
   updateAppointment: vi.fn(),
@@ -39,7 +40,7 @@ vi.mock('../src/server/repositories/serviceRepository', () => ({ serviceReposito
 vi.mock('../src/server/repositories/knowledgeRepository', () => ({ knowledgeRepository: { listByBusiness: m.knowledgeList } }))
 vi.mock('../src/server/repositories/businessRuleRepository', () => ({ businessRuleRepository: { listByBusiness: m.ruleList } }))
 vi.mock('../src/server/repositories/customerRepository', () => ({ customerRepository: { findById: m.customerFindById } }))
-vi.mock('../src/server/repositories/vehicleRepository', () => ({ vehicleRepository: { findById: vi.fn() } }))
+vi.mock('../src/server/repositories/vehicleRepository', () => ({ vehicleRepository: { findById: vi.fn(), list: m.vehicleList } }))
 vi.mock('../src/server/repositories/customerRequestRepository', () => ({ customerRequestRepository: { findById: vi.fn() } }))
 vi.mock('../src/server/repositories/appointmentRepository', () => ({
   appointmentRepository: { list: vi.fn() },
@@ -131,6 +132,7 @@ beforeEach(() => {
   m.checkAvailability.mockResolvedValue({ date: '2026-10-05', timezone: 'Europe/Moscow', slots: [] })
   m.escalationFindActive.mockResolvedValue(null)
   m.aiLogCreate.mockResolvedValue({})
+  m.vehicleList.mockResolvedValue({ items: [], total: 0 })
 })
 
 function expectNoSideEffects() {
@@ -225,6 +227,23 @@ describe('generateConversationDraft — real conversation context', () => {
 
     expect(m.customerFindById).toHaveBeenCalledWith('t1', 'b1', CUSTOMER)
     expect(requests[0]!.businessContext.customer).toMatchObject({ id: CUSTOMER, firstName: 'Иван' })
+  })
+
+  it('Prompt 54 — after intake, the draft sees the linked customer and their stored vehicles; still no mutation or send', async () => {
+    m.convFindById.mockResolvedValue(conversation({ customerId: CUSTOMER }))
+    m.customerFindById.mockResolvedValue({ id: CUSTOMER, firstName: 'Алексей', lastName: 'Смирнов', phone: '+79015554433', email: null })
+    m.vehicleList.mockResolvedValue({ items: [{ id: VEHICLE, make: 'Toyota', model: 'Camry', year: 2021, licensePlate: 'K001KK77' }], total: 1 })
+    const { provider, requests } = scriptedProvider(finalAnswer('Алексей, для Toyota Camry есть время завтра.'))
+
+    await generateConversationDraft(ctx, CONV, { provider })
+
+    const context = requests[0]!.businessContext
+    expect(m.vehicleList).toHaveBeenCalledWith('t1', 'b1', expect.objectContaining({ customerId: CUSTOMER, activeOnly: true }))
+    expect(context.customer).toMatchObject({ firstName: 'Алексей', lastName: 'Смирнов' })
+    expect(context.customerVehicles).toEqual([{ make: 'Toyota', model: 'Camry', year: 2021, licensePlate: 'K001KK77' }])
+    expect(context.vehicle).toBeNull() // no linked request → no selected vehicle
+    expect(requests[0]!.systemPrompt).toContain('непроверенные слова клиента')
+    expectNoSideEffects()
   })
 })
 

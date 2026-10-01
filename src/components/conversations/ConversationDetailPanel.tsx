@@ -21,11 +21,12 @@ import {
   attentionBadgeVariant,
   isActiveEscalation,
   customerName,
-  vehicleLabel,
   formatActivity,
   aiLogSummary,
 } from './shared'
 import { ConversationRequestSection } from './ConversationRequestSection'
+import { ConversationIdentitySection } from './ConversationIdentitySection'
+import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,9 @@ export function ConversationDetailPanel({
   onChanged,
 }: ConversationDetailPanelProps) {
   const navigate = useNavigate()
+  // Prompt 54 — creating customers/vehicles is owner/admin (same as the Clients/Vehicles screens).
+  const { user } = useAuth()
+  const canCreateRecords = canManage && (user?.role === 'owner' || user?.role === 'admin')
   const [detail, setDetail] = useState<ConversationDto | null>(null)
   const [escalation, setEscalation] = useState<EscalationDto | null>(null)
   const [aiLog, setAiLog] = useState<AiLogDto | null>(null)
@@ -258,12 +262,6 @@ export function ConversationDetailPanel({
     lastMessageDirection: lastMessage ? lastMessage.direction : null,
   })
 
-  const customer = detail?.customerId ? customers.find((c) => c.id === detail.customerId) : undefined
-  // Prompt 49 — the linked request comes from the conversation's own API
-  // summary first (never capped); the reference list is only a fallback.
-  const request = detail?.customerRequestId ? customerRequests.find((r) => r.id === detail.customerRequestId) : undefined
-  const requestVehicleId = detail?.customerRequest?.vehicleId ?? request?.vehicleId ?? null
-  const vehicle = requestVehicleId ? vehicles.find((v) => v.id === requestVehicleId) : undefined
   const escalationActive = escalation ? isActiveEscalation(escalation.status) : false
 
   return (
@@ -303,7 +301,7 @@ export function ConversationDetailPanel({
       </div>
       {detail && (
         <div className="border-b border-border px-4 py-3">
-          <div className="truncate text-lg font-semibold">{customerName(customers, detail.customerId)}</div>
+          <div className="truncate text-lg font-semibold">{detail.customer ? `${detail.customer.firstName} ${detail.customer.lastName ?? ''}`.trim() : customerName(customers, detail.customerId)}</div>
           <p className="truncate text-sm text-muted-foreground">
             {detail.subject ?? '(без темы)'} · {CHANNEL_LABELS[detail.channel]}
           </p>
@@ -435,40 +433,16 @@ export function ConversationDetailPanel({
 
           {/* Context panel */}
           <div className="space-y-4 border-b border-border p-4 lg:col-start-2 lg:row-start-1 lg:max-h-[60vh] lg:overflow-y-auto lg:border-b-0">
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Клиент</h3>
-              {customer ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/clients?open=${customer.id}`)}
-                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
-                >
-                  <div className="font-medium">{customerName(customers, detail.customerId)}</div>
-                  {customer.phone && <div className="text-muted-foreground">{customer.phone}</div>}
-                  {customer.email && <div className="text-muted-foreground">{customer.email}</div>}
-                </button>
-              ) : (
-                <p className="mt-1 text-sm text-muted-foreground">Клиент не определён</p>
-              )}
-            </section>
-
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Автомобиль</h3>
-              {vehicle ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/vehicles?open=${vehicle.id}`)}
-                  className="mt-1 block w-full rounded-md text-left text-sm hover:underline"
-                >
-                  <div className="font-medium">{vehicleLabel(vehicles, vehicle.id)}</div>
-                  {(vehicle.licensePlate || vehicle.vin) && (
-                    <div className="text-muted-foreground">{[vehicle.licensePlate, vehicle.vin].filter(Boolean).join(' · ')}</div>
-                  )}
-                </button>
-              ) : (
-                <p className="mt-1 text-sm text-muted-foreground">Автомобиль не указан</p>
-              )}
-            </section>
+            {/* Prompt 54 — customer & vehicle intake (operator-controlled). */}
+            <ConversationIdentitySection
+              detail={detail}
+              canManage={canManage}
+              canCreate={canCreateRecords}
+              onChanged={() => {
+                retry()
+                onChanged()
+              }}
+            />
 
             {/* Prompt 49 — Conversation → CustomerRequest bridge. */}
             <ConversationRequestSection

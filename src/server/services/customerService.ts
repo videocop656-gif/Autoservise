@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
@@ -46,14 +47,20 @@ async function assertNoActiveEmailDuplicate(ctx: AuthContext, email: string, exc
   }
 }
 
-export async function createCustomer(ctx: AuthContext, input: CreateCustomerInput) {
+/**
+ * All of createCustomer's rules (role, active-email duplicate) without the
+ * write — Prompt 54 reuses it so a customer created from a conversation is
+ * inserted in the same transaction as the conversation link, under exactly
+ * the same rules as the Clients screen.
+ */
+export async function prepareCustomerCreate(ctx: AuthContext, input: CreateCustomerInput): Promise<Prisma.CustomerUncheckedCreateInput> {
   requireRole(ctx, 'owner', 'admin')
 
   if (input.email) {
     await assertNoActiveEmailDuplicate(ctx, input.email)
   }
 
-  return customerRepository.create({
+  return {
     tenantId: ctx.tenant.id,
     businessId: ctx.business.id,
     firstName: input.firstName,
@@ -61,7 +68,11 @@ export async function createCustomer(ctx: AuthContext, input: CreateCustomerInpu
     phone: input.phone,
     email: input.email ?? null,
     notes: input.notes ?? null,
-  })
+  }
+}
+
+export async function createCustomer(ctx: AuthContext, input: CreateCustomerInput) {
+  return customerRepository.create(await prepareCustomerCreate(ctx, input))
 }
 
 export async function updateCustomer(ctx: AuthContext, id: string, input: UpdateCustomerInput) {

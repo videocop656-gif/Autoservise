@@ -20,6 +20,7 @@ function makeContext(overrides: Partial<AiBusinessContext> = {}): AiBusinessCont
     },
     currentDateTime: { date: '2026-09-15', time: '10:00', dayOfWeek: 'TUESDAY' },
     workingHours: [],
+    customerVehicles: [],
     services: [
       {
         id: 'svc-1',

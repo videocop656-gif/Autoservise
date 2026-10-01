@@ -71,6 +71,7 @@ const CONTEXT = {
   knowledge: [],
   rules: [],
   customer: null,
+  customerVehicles: [],
   vehicle: null,
   upcomingAppointments: [],
   serviceHistory: [],

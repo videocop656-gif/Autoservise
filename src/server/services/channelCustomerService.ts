@@ -3,7 +3,7 @@ import { customerChannelIdentityRepository } from '../repositories/customerChann
 import { customerRepository } from '../repositories/customerRepository'
 
 /** Strips everything but digits — the first half of the "last 10 digits" heuristic; see customerRepository.ts's findActiveByLocalPhoneNumber() for why this exact, deliberately simple approach was chosen over a full phone-parsing library. */
-function localSubscriberNumber(phone: string): string {
+export function localSubscriberNumber(phone: string): string {
   const digits = phone.replace(/\D/g, '')
   return digits.slice(-10)
 }

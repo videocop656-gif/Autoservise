@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../db/prisma'
+import type { DbClient } from '../db/transaction'
 import { withTenant } from '../lib/tenantScope'
 
 interface ListOptions {
@@ -45,8 +46,10 @@ export const customerRepository = {
       }),
     })
   },
-  create(data: Prisma.CustomerUncheckedCreateInput) {
-    return prisma.customer.create({ data })
+  // `db` (Prompt 54): a transaction client, so a customer created from a
+  // conversation commits together with the conversation link.
+  create(data: Prisma.CustomerUncheckedCreateInput, db: DbClient = prisma) {
+    return db.customer.create({ data })
   },
   async updateById(tenantId: string, businessId: string, id: string, data: Prisma.CustomerUpdateInput) {
     const result = await prisma.customer.updateMany({ where: withTenant(tenantId, { businessId, id }), data })

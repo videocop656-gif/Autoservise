@@ -68,12 +68,14 @@ export interface ConversationDto {
   createdAt: string
   updatedAt: string
   channelConnectionId: string | null
-  customer?: { id: string; firstName: string; lastName: string | null } | null
+  // Prompt 54 — phone/email added for the identity section (single-GET only).
+  customer?: { id: string; firstName: string; lastName: string | null; phone?: string; email?: string | null } | null
   // Prompt 49 — richer summary of the linked request (single-GET only).
   customerRequest?: {
     id: string
     subject: string
     status: string
+    customerId?: string
     vehicleId: string | null
     serviceId: string | null
     createdAt: string

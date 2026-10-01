@@ -17,6 +17,9 @@ const MAX_UPCOMING_APPOINTMENTS = 5
 /** Bounded, per spec §"RECOMMENDED CONTEXT" (Prompt 11) — "latest 10 relevant ServiceRecords", never unlimited history. */
 const MAX_SERVICE_HISTORY = 10
 
+/** Prompt 54 — bounded list of the known customer's stored vehicles (context, not a selection). */
+const MAX_CUSTOMER_VEHICLES = 10
+
 interface ConversationRef {
   customerId: string | null
   customerRequestId: string | null
@@ -65,11 +68,21 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
   let vehicle: AiBusinessContext['vehicle'] = null
   let upcomingAppointments: AiBusinessContext['upcomingAppointments'] = []
   let serviceHistory: AiBusinessContext['serviceHistory'] = []
+  let customerVehicles: AiBusinessContext['customerVehicles'] = []
 
   if (conversation.customerId) {
     const found = await customerRepository.findById(ctx.tenant.id, ctx.business.id, conversation.customerId)
     if (found) {
       customer = { id: found.id, firstName: found.firstName, lastName: found.lastName, phone: found.phone, email: found.email }
+      // Prompt 54 — the customer's stored vehicles, scoped to this tenant/
+      // business and this customer; no ids (see AiBusinessContext).
+      const { items: ownVehicles } = await vehicleRepository.list(ctx.tenant.id, ctx.business.id, {
+        activeOnly: true,
+        customerId: found.id,
+        skip: 0,
+        take: MAX_CUSTOMER_VEHICLES,
+      })
+      customerVehicles = ownVehicles.map((v) => ({ make: v.make, model: v.model, year: v.year, licensePlate: v.licensePlate }))
     }
   }
 
@@ -174,6 +187,7 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
     knowledge: knowledge.map((k) => ({ title: k.title, content: k.content, category: k.category })),
     rules: rules.map((r) => ({ name: r.name, description: r.description, category: r.category, priority: r.priority })),
     customer,
+    customerVehicles,
     vehicle,
     upcomingAppointments,
     serviceHistory,

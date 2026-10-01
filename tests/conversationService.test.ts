@@ -180,6 +180,20 @@ describe('updateConversation', () => {
     ).rejects.toMatchObject({ statusCode: 400 })
   })
 
+  // Prompt 54 — the generic PATCH can no longer clear the customer of a
+  // conversation whose request belongs to that customer.
+  it('refuses to clear customerId while a customer request is linked (nothing written)', async () => {
+    convFindByIdMock.mockResolvedValue(makeConversation({ customerId: CUSTOMER_ID, customerRequestId: REQUEST_ID }))
+    await expect(updateConversation(makeAuthContext('owner'), 'conv1', { customerId: null } as never)).rejects.toMatchObject({ statusCode: 400 })
+    expect(convUpdateByIdMock).not.toHaveBeenCalled()
+  })
+
+  it('clearing customerId without a linked request still works as before', async () => {
+    convFindByIdMock.mockResolvedValue(makeConversation({ customerId: CUSTOMER_ID }))
+    await updateConversation(makeAuthContext('owner'), 'conv1', { customerId: null } as never)
+    expect(convUpdateByIdMock.mock.calls[0]![3]).toMatchObject({ customerId: null })
+  })
+
   // Prompt 49.1 — defense in depth behind the schema: even an unvalidated
   // input carrying customerRequestId never reaches the write.
   it('never writes customerRequestId, even if an unvalidated input carries it', async () => {

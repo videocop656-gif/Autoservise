@@ -66,6 +66,7 @@ describe('mock provider after a draft-mode refusal', () => {
     knowledge: [],
     rules: [],
     customer: null,
+    customerVehicles: [],
     vehicle: null,
     upcomingAppointments: [],
     serviceHistory: [],
@@ -97,6 +98,7 @@ describe('mock provider answers working hours from the context (Prompt 53)', () 
     knowledge: [],
     rules: [],
     customer: null,
+    customerVehicles: [],
     vehicle: null,
     upcomingAppointments: [],
     serviceHistory: [],
@@ -171,5 +173,13 @@ describe('composer helpers', () => {
     )
     expect(aiDraftErrorMessage('AI_PROVIDER_UNAVAILABLE', 'whatever')).toBe(AI_DRAFT_FAILED_MESSAGE)
     expect(aiDraftErrorMessage(undefined, undefined)).toBe('Не удалось подготовить ответ AI. Попробуйте ещё раз.')
+  })
+})
+
+describe('system prompt — trusted vs. untrusted identity (Prompt 54)', () => {
+  it('separates stored customer/vehicles from what the customer writes', () => {
+    const prompt = buildSystemPrompt()
+    expect(prompt).toContain('customerVehicles')
+    expect(prompt).toContain('непроверенные слова клиента')
   })
 })

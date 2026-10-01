@@ -224,6 +224,9 @@ export default function ConversationsSettingsPage() {
   function handleDetailChanged() {
     void loadConversations()
     void loadAttention()
+    // Prompt 54 — intake may have created a customer or vehicle the request
+    // form (reference lists) must see right away.
+    void loadReferenceData()
   }
 
   function openCreateForm() {
