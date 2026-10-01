@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { makeAuthContext } from './helpers/fixtures'
+import { makeAuthContext, makeBusiness } from './helpers/fixtures'
 
 const {
   serviceListMock,
@@ -10,6 +10,7 @@ const {
   customerRequestFindByIdMock,
   appointmentListMock,
   serviceRecordListMock,
+  hoursListByBusinessMock,
 } = vi.hoisted(() => ({
   serviceListMock: vi.fn(),
   knowledgeListMock: vi.fn(),
@@ -19,6 +20,7 @@ const {
   customerRequestFindByIdMock: vi.fn(),
   appointmentListMock: vi.fn(),
   serviceRecordListMock: vi.fn(),
+  hoursListByBusinessMock: vi.fn(),
 }))
 
 vi.mock('../src/server/repositories/serviceRepository', () => ({
@@ -45,6 +47,10 @@ vi.mock('../src/server/repositories/appointmentRepository', () => ({
 }))
 vi.mock('../src/server/repositories/serviceRecordRepository', () => ({
   serviceRecordRepository: { list: serviceRecordListMock },
+}))
+// Prompt 53 — working hours are part of the AI context now.
+vi.mock('../src/server/repositories/workingHoursRepository', () => ({
+  workingHoursRepository: { listByBusiness: hoursListByBusinessMock },
 }))
 
 import { buildAiContext } from '../src/server/ai/contextBuilder'
@@ -73,6 +79,7 @@ beforeEach(() => {
   customerRequestFindByIdMock.mockResolvedValue(null)
   appointmentListMock.mockResolvedValue({ items: [], total: 0 })
   serviceRecordListMock.mockResolvedValue({ items: [], total: 0 })
+  hoursListByBusinessMock.mockResolvedValue([])
 })
 
 describe('buildAiContext', () => {
@@ -370,5 +377,59 @@ describe('buildAiContext', () => {
       expect(context.serviceHistory[0]!.workDescription).toBe('Newer visit')
       expect(context.serviceHistory[1]!.workDescription).toBe('Older visit')
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt 53 — current date and working hours in the business's own timezone.
+// ---------------------------------------------------------------------------
+describe('buildAiContext — current business-local date and working hours (Prompt 53)', () => {
+  const conversation = { customerId: null, customerRequestId: null }
+  const instant = new Date('2026-10-04T13:00:00Z') // Sunday 13:00 UTC
+
+  it('gives the date, time and weekday in the business timezone (Moscow, UTC+3)', async () => {
+    const ctx = makeAuthContext('owner', { business: makeBusiness({ timezone: 'Europe/Moscow' }) })
+    const context = await buildAiContext(ctx, conversation, instant)
+    expect(context.currentDateTime).toEqual({ date: '2026-10-04', time: '16:00', dayOfWeek: 'SUNDAY' })
+  })
+
+  it('crosses the day boundary with the business, not the server (Asia/Kamchatka, UTC+12 → already Monday)', async () => {
+    const ctx = makeAuthContext('owner', { business: makeBusiness({ timezone: 'Asia/Kamchatka' }) })
+    const context = await buildAiContext(ctx, conversation, instant)
+    expect(context.currentDateTime).toEqual({ date: '2026-10-05', time: '01:00', dayOfWeek: 'MONDAY' })
+  })
+
+  it('a DST zone gets its summer offset (America/New_York, EDT UTC−4)', async () => {
+    const ctx = makeAuthContext('owner', { business: makeBusiness({ timezone: 'America/New_York' }) })
+    const context = await buildAiContext(ctx, conversation, instant)
+    expect(context.currentDateTime).toEqual({ date: '2026-10-04', time: '09:00', dayOfWeek: 'SUNDAY' })
+  })
+
+  it('defaults to the real clock when no instant is given', async () => {
+    const context = await buildAiContext(makeAuthContext('owner'), conversation)
+    expect(context.currentDateTime.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(context.currentDateTime.time).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it('includes the configured week from the session business only; a closed day carries no times', async () => {
+    hoursListByBusinessMock.mockResolvedValue([
+      { dayOfWeek: 'MONDAY', isOpen: true, openTime: '09:00', closeTime: '18:00' },
+      { dayOfWeek: 'SUNDAY', isOpen: false, openTime: '10:00', closeTime: '12:00' },
+    ])
+    const ctx = makeAuthContext('owner', { business: makeBusiness({ id: 'business-a' }) })
+    const context = await buildAiContext(ctx, conversation, instant)
+
+    expect(hoursListByBusinessMock).toHaveBeenCalledWith('business-a')
+    expect(context.workingHours).toEqual([
+      { dayOfWeek: 'MONDAY', isOpen: true, openTime: '09:00', closeTime: '18:00' },
+      { dayOfWeek: 'SUNDAY', isOpen: false, openTime: null, closeTime: null },
+    ])
+  })
+
+  it('services, knowledge and rules are still included alongside', async () => {
+    const context = await buildAiContext(makeAuthContext('owner'), conversation, instant)
+    expect(context.services).toHaveLength(1)
+    expect(context.knowledge).toHaveLength(1)
+    expect(context.rules).toHaveLength(1)
   })
 })

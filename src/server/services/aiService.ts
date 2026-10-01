@@ -12,7 +12,8 @@ import { getAiProvider } from '../ai/aiProviderFactory'
 import { AiProviderError } from '../ai/provider'
 import type { AiProvider, AiGenerationResult } from '../ai/provider'
 import { TOOL_DEFINITIONS, executeTool } from '../ai/tools/registry'
-import { EMPTY_AI_ENTITIES, type AiResult, type AiToolExchange } from '../ai/types'
+import { isToolAllowed, toolDefinitionsForMode, draftModeToolRefusal, type AiExecutionMode } from '../ai/executionMode'
+import { EMPTY_AI_ENTITIES, type AiResult, type AiToolExchange, type AiBusinessContext, type AiHistoryMessage } from '../ai/types'
 import type { AnalyzeMessageInput } from '../validation/ai.schemas'
 import { createOrReuseActiveEscalation, deriveEscalationReason, deriveEscalationSummary } from './escalationService'
 import { logAiAnalyze, logToolExecution } from './aiLogService'
@@ -124,8 +125,42 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
   ])
   const history = allMessages.slice(-MAX_HISTORY_MESSAGES).map((m) => ({ direction: m.direction, content: m.content }))
 
-  const provider = deps.provider ?? getAiProvider()
-  const systemPrompt = buildSystemPrompt()
+  const { result } = await runAnalysis(ctx, conversation, {
+    context,
+    history,
+    userMessage: input.message,
+    mode: 'interactive',
+    provider: deps.provider ?? getAiProvider(),
+  })
+  return result
+}
+
+interface AnalysisRun {
+  context: AiBusinessContext
+  history: AiHistoryMessage[]
+  /** The one untrusted value — the customer message being answered. */
+  userMessage: string
+  mode: AiExecutionMode
+  provider: AiProvider
+}
+
+/**
+ * The single AI administrator core (Prompt 53 extracted it unchanged from
+ * analyzeMessage): provider loop with whitelisted tools, structural +
+ * safety validation, escalation, audit log. `mode` (executionMode.ts)
+ * narrows what it may do — 'draft' offers and runs read-only tools only and
+ * never opens an escalation; 'interactive' is exactly the previous
+ * behaviour. Returns the AI_ANALYZE outcome alongside the result so a
+ * caller can tell a real answer from the safe fallback placeholder.
+ */
+async function runAnalysis(
+  ctx: AuthContext,
+  conversation: { id: string; customerId: string | null },
+  run: AnalysisRun
+): Promise<{ result: AiAnalyzeResult; outcome: AiLogOutcome }> {
+  const { context, history, mode, provider } = run
+  const systemPrompt = buildSystemPrompt(mode)
+  const tools = toolDefinitionsForMode(TOOL_DEFINITIONS, mode)
 
   // Server-controlled tool-calling loop (spec §"AI TOOL DECISION" /
   // "FUNCTION CALLING / STRUCTURED TOOLS"): the model may only ever
@@ -156,8 +191,8 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
         // system instructions and business context. Also the same value the
         // confirmation gate (confirmation.ts) checks before any mutating
         // tool is allowed to execute.
-        userMessage: input.message,
-        tools: TOOL_DEFINITIONS,
+        userMessage: run.userMessage,
+        tools,
         toolExchanges,
       })
 
@@ -178,7 +213,12 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
       }
 
       for (const call of generation.calls) {
-        const result = await executeTool(ctx, call.name, call.arguments, input.message, allowedEntities)
+        // Draft mode (Prompt 53): a mutating tool is refused before the
+        // registry is reached, even if the provider asks for one it was
+        // never offered — nothing is created, moved or cancelled.
+        const result = isToolAllowed(mode, call.name)
+          ? await executeTool(ctx, call.name, call.arguments, run.userMessage, allowedEntities)
+          : draftModeToolRefusal(call.name)
         toolExchanges.push({ call, result })
 
         // AI_TOOL_EXECUTION logging (Prompt 13) — only for a genuine
@@ -261,7 +301,8 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
     if (parsed.success) {
       finalResult = applySafetyLayer(parsed.data)
       eligibleForEscalation = !finalResult.reason?.startsWith('AI_SAFETY_REJECTION')
-      analyzeOutcome = !eligibleForEscalation ? 'REJECTED' : finalResult.needsHuman ? 'ESCALATED' : 'SUCCESS'
+      // A draft never escalates (see below), so it is never logged as ESCALATED.
+      analyzeOutcome = !eligibleForEscalation ? 'REJECTED' : finalResult.needsHuman && mode === 'interactive' ? 'ESCALATED' : 'SUCCESS'
     } else {
       finalResult = buildFallbackResult('AI_INVALID_RESPONSE: the AI response failed structural validation')
       analyzeOutcome = 'FAILED'
@@ -277,7 +318,9 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
   // createOrReuseActiveEscalation() itself (escalationService.ts) — that
   // is the one place that genuinely knows whether this call created a new
   // row or reused an existing active one; aiService.ts never guesses.
-  const escalation = eligibleForEscalation && finalResult.needsHuman
+  // Draft mode (Prompt 53) opens no escalation: preparing a suggested reply
+  // has no side effects; needsHuman is returned to the operator instead.
+  const escalation = eligibleForEscalation && finalResult.needsHuman && mode === 'interactive'
     ? await (async () => {
         const reason = deriveEscalationReason(finalResult.reason)
         const { escalation: row } = await createOrReuseActiveEscalation(ctx, {
@@ -303,12 +346,89 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
     confidence: finalResult.confidence,
     needsHuman: finalResult.needsHuman,
     reason: finalResult.reason,
-    metadata: { provider: providerName(provider), toolCallCount: toolExchanges.length },
+    metadata: { provider: providerName(provider), toolCallCount: toolExchanges.length, ...(mode === 'draft' ? { mode } : {}) },
   })
 
   return {
-    ...finalResult,
-    toolExecutions: summarizeExchanges(toolExchanges),
-    ...(escalation ? { escalation } : {}),
+    result: {
+      ...finalResult,
+      toolExecutions: summarizeExchanges(toolExchanges),
+      ...(escalation ? { escalation } : {}),
+    },
+    outcome: analyzeOutcome,
   }
+}
+
+// --- Reply draft (Prompt 53) ------------------------------------------------
+//
+// "Предложить ответ AI" in Conversation Detail: the same AI core, run in
+// 'draft' mode against the conversation's OWN latest customer message and
+// its recent history — the operator no longer copies text into the AI
+// console. The result is only returned to the operator as editable text:
+// no Message, no ChannelDelivery, no Telegram call, no appointment change,
+// no escalation. The operator reviews it and sends it (or not) through the
+// existing staff send path.
+
+export interface ConversationReplyDraft {
+  /** The proposed customer-facing reply (AiResult.answer). */
+  draft: string
+  /** The model thinks a person should look at this — shown to the operator as a hint; no escalation is opened. */
+  needsHuman: boolean
+}
+
+const DRAFT_FAILED_MESSAGE = 'Не удалось подготовить ответ AI. Попробуйте ещё раз.'
+
+export async function generateConversationDraft(ctx: AuthContext, conversationId: string, deps: AnalyzeDeps = {}): Promise<ConversationReplyDraft> {
+  requireRole(ctx, 'owner', 'admin', 'manager')
+
+  const conversation = await conversationRepository.findById(ctx.tenant.id, ctx.business.id, conversationId)
+  if (!conversation) {
+    throw new ApiError(404, 'NOT_FOUND', 'Диалог не найден')
+  }
+  if (conversation.status !== 'OPEN') {
+    throw new ApiError(409, 'CONVERSATION_CLOSED', 'Диалог закрыт — откройте его заново, чтобы ответить')
+  }
+
+  // Chronological (listByConversation orders by createdAt asc). A draft
+  // answers the customer's latest message, so the conversation must end
+  // with one: if staff already replied last, there is nothing waiting.
+  const messages = await messageRepository.listByConversation(ctx.tenant.id, ctx.business.id, conversation.id)
+  const latest = messages[messages.length - 1]
+  if (!latest || latest.direction !== 'INBOUND') {
+    throw new ApiError(409, 'NO_CUSTOMER_MESSAGE', 'Нет нового сообщения клиента, на которое нужно ответить')
+  }
+  // The latest customer message is the user message; everything before it
+  // (bounded, oldest first, customer = INBOUND / staff = OUTBOUND) is history.
+  const history = messages
+    .slice(0, -1)
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({ direction: m.direction, content: m.content }))
+
+  const context = await buildAiContext(ctx, conversation)
+
+  let analysis: Awaited<ReturnType<typeof runAnalysis>>
+  try {
+    analysis = await runAnalysis(ctx, conversation, {
+      context,
+      history,
+      userMessage: latest.content,
+      mode: 'draft',
+      provider: deps.provider ?? getAiProvider(),
+    })
+  } catch (err) {
+    // Provider/configuration failure — same codes, operator-facing Russian
+    // text, never the provider's own error.
+    if (err instanceof ApiError && (err.code === 'AI_PROVIDER_UNAVAILABLE' || err.code === 'AI_CONFIGURATION_ERROR')) {
+      throw new ApiError(err.statusCode, err.code, DRAFT_FAILED_MESSAGE)
+    }
+    throw err
+  }
+
+  // FAILED = no trustworthy model output (malformed result / tool-call
+  // limit): its placeholder answer is a note for staff, not a reply to put
+  // in front of a customer — report a failure instead of a fake draft.
+  if (analysis.outcome === 'FAILED') {
+    throw new ApiError(502, 'AI_DRAFT_UNAVAILABLE', DRAFT_FAILED_MESSAGE)
+  }
+  return { draft: analysis.result.answer, needsHuman: analysis.result.needsHuman }
 }

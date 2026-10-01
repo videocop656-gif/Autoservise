@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle, Sparkles } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
@@ -26,6 +26,7 @@ import {
   aiLogSummary,
 } from './shared'
 import { ConversationRequestSection } from './ConversationRequestSection'
+import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1.
@@ -100,6 +101,25 @@ export function ConversationDetailPanel({
   const [statusError, setStatusError] = useState<string | null>(null)
   const [channelSendError, setChannelSendError] = useState<string | null>(null)
   const [channelSendingId, setChannelSendingId] = useState<string | null>(null)
+
+  // Prompt 53 — "Предложить ответ AI": operator-side draft only. The token
+  // ignores a response that arrives after the operator moved to another
+  // conversation (this panel is reused across conversationId changes).
+  const [aiDrafting, setAiDrafting] = useState(false)
+  const [aiDraftError, setAiDraftError] = useState<string | null>(null)
+  const [aiDraftNotice, setAiDraftNotice] = useState<string | null>(null)
+  const aiDraftTokenRef = useRef(0)
+  // Latest composer text, read when a draft arrives (state updaters may run later).
+  const messageContentRef = useRef(messageContent)
+  messageContentRef.current = messageContent
+
+  useEffect(() => {
+    aiDraftTokenRef.current += 1
+    setAiDrafting(false)
+    setAiDraftError(null)
+    setAiDraftNotice(null)
+    setMessageContent('')
+  }, [conversationId])
 
   async function loadAll() {
     setLoading(true)
@@ -187,6 +207,7 @@ export function ConversationDetailPanel({
         body: JSON.stringify({ direction: 'OUTBOUND', senderType: 'STAFF', content: messageContent.trim() }),
       })
       setMessageContent('')
+      setAiDraftNotice(null)
       if (detail.channelConnectionId) {
         try {
           await apiFetch(`/api/channels/${detail.channelConnectionId}/messages/${result.message.id}/send`, { method: 'POST' })
@@ -202,6 +223,40 @@ export function ConversationDetailPanel({
       setSending(false)
     }
   }
+
+  // Prompt 53 — asks the server for a reply draft (read-only AI run, nothing
+  // created or sent) and puts it into the existing composer, only if the
+  // operator hasn't typed anything meanwhile. Sending stays the existing
+  // "Отправить" button above.
+  async function handleAiDraft() {
+    const token = ++aiDraftTokenRef.current
+    setAiDraftError(null)
+    setAiDraftNotice(null)
+    setAiDrafting(true)
+    try {
+      const result = await apiFetch<{ draft: string; needsHuman: boolean }>(`/api/conversations/${conversationId}/ai-draft`, { method: 'POST' })
+      if (token !== aiDraftTokenRef.current) return
+      const next = applyAiDraft(messageContentRef.current, result.draft)
+      if (next.applied) setMessageContent(next.composer)
+      if (!next.applied) {
+        setAiDraftNotice('Черновик AI не вставлен: в поле уже есть ваш текст.')
+      } else if (result.needsHuman) {
+        setAiDraftNotice('AI советует, чтобы этот ответ проверил администратор.')
+      }
+    } catch (err) {
+      if (token !== aiDraftTokenRef.current) return
+      setAiDraftError(err instanceof ApiClientError ? aiDraftErrorMessage(err.code, err.message) : AI_DRAFT_FAILED_MESSAGE)
+    } finally {
+      if (token === aiDraftTokenRef.current) setAiDrafting(false)
+    }
+  }
+
+  const lastMessage = detail?.messages?.[detail.messages.length - 1]
+  const aiDraftState = aiDraftAvailability({
+    composer: messageContent,
+    generating: aiDrafting,
+    lastMessageDirection: lastMessage ? lastMessage.direction : null,
+  })
 
   const customer = detail?.customerId ? customers.find((c) => c.id === detail.customerId) : undefined
   // Prompt 49 — the linked request comes from the conversation's own API
@@ -335,6 +390,27 @@ export function ConversationDetailPanel({
           {/* Composer */}
           <div className="border-t border-border p-4 lg:col-span-2 lg:row-start-2">
             {canManage && detail.status === 'OPEN' && (
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleAiDraft()}
+                  disabled={!aiDraftState.enabled}
+                  aria-busy={aiDrafting}
+                  aria-describedby={aiDraftState.hint ? 'ai-draft-hint' : undefined}
+                >
+                  <Sparkles className="mr-1 h-4 w-4" />
+                  {aiDrafting ? 'AI готовит ответ…' : 'Предложить ответ AI'}
+                </Button>
+                {aiDraftState.hint && (
+                  <span id="ai-draft-hint" className="text-xs text-muted-foreground">
+                    {aiDraftState.hint}
+                  </span>
+                )}
+              </div>
+            )}
+            {canManage && detail.status === 'OPEN' && (
               <form onSubmit={handleSend} className="flex flex-col gap-2 sm:flex-row sm:items-end">
                 <Textarea
                   placeholder="Введите сообщение..."
@@ -353,6 +429,8 @@ export function ConversationDetailPanel({
             )}
             {!canManage && <p className="text-sm text-muted-foreground">У вас нет прав для отправки сообщений.</p>}
             {sendError && <p className="mt-2 text-sm text-destructive">{sendError}</p>}
+            {aiDraftError && <p className="mt-2 text-sm text-destructive">{aiDraftError}</p>}
+            {aiDraftNotice && <p className="mt-2 text-sm text-amber-500">{aiDraftNotice}</p>}
           </div>
 
           {/* Context panel */}

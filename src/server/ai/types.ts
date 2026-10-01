@@ -78,6 +78,29 @@ export interface AiBusinessContext {
     timezone: string
     currency: string
   }
+  /**
+   * Prompt 53 — "now" as a wall clock in the business's own timezone (never
+   * the server's or a browser's), so the model can turn "сегодня / завтра /
+   * в пятницу" into the YYYY-MM-DD date check_availability expects.
+   */
+  currentDateTime: {
+    /** "YYYY-MM-DD" in business.timezone. */
+    date: string
+    /** "HH:mm" in business.timezone. */
+    time: string
+    dayOfWeek: 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY' | 'SUNDAY'
+  }
+  /**
+   * Prompt 53 — the configured weekly schedule (BusinessWorkingHours, the
+   * same rows that gate appointments), Monday first. Times are local
+   * "HH:mm" in business.timezone; a closed day has isOpen=false, no times.
+   */
+  workingHours: {
+    dayOfWeek: string
+    isOpen: boolean
+    openTime: string | null
+    closeTime: string | null
+  }[]
   services: {
     id: string
     name: string

@@ -7,6 +7,7 @@ import { vehicleRepository } from '../repositories/vehicleRepository'
 import { customerRequestRepository } from '../repositories/customerRequestRepository'
 import { appointmentRepository, CONFLICT_BLOCKING_STATUSES } from '../repositories/appointmentRepository'
 import { serviceRecordRepository } from '../repositories/serviceRecordRepository'
+import { workingHoursRepository } from '../repositories/workingHoursRepository'
 import { toBusinessLocalDateTime } from '../lib/timezone'
 import type { AiBusinessContext } from './types'
 
@@ -48,12 +49,17 @@ interface ConversationRef {
  *    never load another tenant's data even if a foreign id somehow reached
  *    this function.
  */
-export async function buildAiContext(ctx: AuthContext, conversation: ConversationRef): Promise<AiBusinessContext> {
-  const [services, knowledge, rules] = await Promise.all([
+// Prompt 53 — `now` is injectable for tests; production always passes the real clock.
+export async function buildAiContext(ctx: AuthContext, conversation: ConversationRef, now: Date = new Date()): Promise<AiBusinessContext> {
+  const [services, knowledge, rules, hours] = await Promise.all([
     serviceRepository.listByBusiness(ctx.tenant.id, ctx.business.id, true),
     knowledgeRepository.listByBusiness(ctx.tenant.id, ctx.business.id, { activeOnly: true }),
     businessRuleRepository.listByBusiness(ctx.tenant.id, ctx.business.id, { activeOnly: true }),
+    // Same rows that gate appointments (assertWithinWorkingHours) — one
+    // schedule, no second copy. Keyed by the session's own business id.
+    workingHoursRepository.listByBusiness(ctx.business.id),
   ])
+  const localNow = toBusinessLocalDateTime(now, ctx.business.timezone)
 
   let customer: AiBusinessContext['customer'] = null
   let vehicle: AiBusinessContext['vehicle'] = null
@@ -149,6 +155,13 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
       timezone: ctx.business.timezone,
       currency: ctx.business.currency,
     },
+    currentDateTime: { date: localNow.dateKey, time: localNow.timeKey, dayOfWeek: localNow.dayOfWeek },
+    workingHours: hours.map((d) => ({
+      dayOfWeek: d.dayOfWeek,
+      isOpen: d.isOpen,
+      openTime: d.isOpen ? d.openTime : null,
+      closeTime: d.isOpen ? d.closeTime : null,
+    })),
     services: services.map((s) => ({
       id: s.id,
       name: s.name,

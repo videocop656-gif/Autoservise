@@ -197,6 +197,15 @@ function buildFinalFromToolResult(exchange: AiToolExchange) {
     if (result.errorCode === 'CONFIRMATION_REQUIRED') {
       return finalResult('BOOKING_REQUEST', 0.8, 'Уточните, пожалуйста: вы подтверждаете это действие?', false, null)
     }
+    // Prompt 53 — reply-draft mode refused a mutating tool: answer like the
+    // draft-mode prompt asks a real model to (the operator does the action).
+    if (result.errorCode === 'NOT_ALLOWED_IN_DRAFT') {
+      const answer =
+        call.name === 'create_appointment'
+          ? 'Спасибо! Администратор оформит запись и подтвердит её в этом чате.'
+          : 'Спасибо! Администратор сервиса внесёт это изменение и подтвердит его в этом чате.'
+      return finalResult('BOOKING_REQUEST', 0.7, answer, false, null)
+    }
     if (result.errorCode === 'APPOINTMENT_CONFLICT') {
       return finalResult(
         'BOOKING_REQUEST',
@@ -331,6 +340,9 @@ function classifyCustomerSupport(request: AiGenerationRequest) {
   if (/мои данные|обо мне|my (info|data|profile)/.test(message)) {
     return customerInformationResult(context)
   }
+  if (/до скольки|во сколько вы|часы работы|график работы|режим работы|работаете|opening hours|open until/.test(message)) {
+    return workingHoursResult(context)
+  }
 
   // Step 6/7/8 (source priority): a general question is answered from
   // Business Rules first (higher priority than Knowledge Base), then
@@ -377,6 +389,42 @@ function classifyCustomerSupport(request: AiGenerationRequest) {
     false,
     null
   )
+}
+
+const DAY_NAMES_RU: Record<string, string> = {
+  MONDAY: 'понедельник',
+  TUESDAY: 'вторник',
+  WEDNESDAY: 'среда',
+  THURSDAY: 'четверг',
+  FRIDAY: 'пятница',
+  SATURDAY: 'суббота',
+  SUNDAY: 'воскресенье',
+}
+
+/**
+ * Prompt 53 — "До скольки вы работаете?" answered from the configured
+ * schedule (context.workingHours) for TODAY in the business timezone
+ * (context.currentDateTime) — never a guessed time; no schedule → honest
+ * hand-off, same as any other missing fact.
+ */
+function workingHoursResult(context: AiBusinessContext) {
+  const today = context.currentDateTime.dayOfWeek
+  const day = context.workingHours.find((d) => d.dayOfWeek === today)
+  if (!day) {
+    return finalResult(
+      'GENERAL_QUESTION',
+      0.4,
+      'Точного графика работы в доступной информации нет — уточните, пожалуйста, у администратора сервиса.',
+      true,
+      'No working hours configured for today.'
+    )
+  }
+  const dayName = DAY_NAMES_RU[today] ?? today
+  const answer =
+    day.isOpen && day.openTime && day.closeTime
+      ? `Сегодня (${dayName}) мы работаем с ${day.openTime} до ${day.closeTime}.`
+      : `Сегодня (${dayName}) у нас выходной.`
+  return finalResult('GENERAL_QUESTION', 0.9, answer, false, null)
 }
 
 // Words are reduced to a short prefix ("stem") rather than compared as

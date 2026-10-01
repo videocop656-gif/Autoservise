@@ -18,6 +18,8 @@ function makeContext(overrides: Partial<AiBusinessContext> = {}): AiBusinessCont
       timezone: 'Europe/Moscow',
       currency: 'RUB',
     },
+    currentDateTime: { date: '2026-09-15', time: '10:00', dayOfWeek: 'TUESDAY' },
+    workingHours: [],
     services: [
       {
         id: 'svc-1',

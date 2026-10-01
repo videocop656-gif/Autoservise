@@ -27,6 +27,8 @@ const ALLOWED_METADATA_KEYS = new Set([
   'statusCode',
   'confirmationRequired',
   'retryable',
+  // Prompt 53 — 'draft' for "Предложить ответ AI" runs (absent for the console).
+  'mode',
 ])
 
 function sanitizeReason(reason: string | null | undefined): string | null {
