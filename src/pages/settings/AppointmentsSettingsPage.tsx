@@ -14,6 +14,8 @@ import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
 import { AppointmentDetailPanel } from '../../components/appointments/AppointmentDetailPanel'
+import { AppointmentTimeField } from '../../components/appointments/AppointmentTimeField'
+import { bookingErrorMessage, isSchedulingConflict, missingTimeMessage } from '../../components/appointments/availability'
 import {
   type AppointmentDto,
   type AppointmentStatus,
@@ -122,6 +124,8 @@ export default function AppointmentsSettingsPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
+  // Prompt 51 — bumped after a 409 on Save so the slot list is re-asked.
+  const [slotReloadKey, setSlotReloadKey] = useState(0)
 
   const [openId, setOpenId] = useState<string | null>(null)
 
@@ -259,6 +263,11 @@ export default function AppointmentsSettingsPage() {
     e.preventDefault()
     setFormError(null)
     setFieldErrors({})
+    const missing = missingTimeMessage(form)
+    if (missing) {
+      setFormError(missing)
+      return
+    }
     setSaving(true)
     try {
       const startAt = zonedTimeToUtc(form.date, form.startTime, timezone).toISOString()
@@ -277,7 +286,11 @@ export default function AppointmentsSettingsPage() {
       closeForm()
       await loadAppointments()
     } catch (err) {
-      if (err instanceof ApiClientError) {
+      if (err instanceof ApiClientError && isSchedulingConflict(err.code)) {
+        // The time was taken meanwhile — re-ask the server; the stale time is dropped.
+        setFormError(bookingErrorMessage(err.code, err.message))
+        setSlotReloadKey((k) => k + 1)
+      } else if (err instanceof ApiClientError) {
         setFormError(err.message || 'Проверьте заполненные поля.')
         setFieldErrors(err.fieldErrors)
       } else {
@@ -549,20 +562,15 @@ export default function AppointmentsSettingsPage() {
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="appt-date">Дата</Label>
-                  <Input id="appt-date" type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="appt-start">Начало</Label>
-                  <Input id="appt-start" type="time" required value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="appt-end">Окончание</Label>
-                  <Input id="appt-end" type="time" required value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
-                </div>
-              </div>
+              <AppointmentTimeField
+                idPrefix="appt"
+                timezone={timezone}
+                serviceId={form.serviceId}
+                vehicleId={form.vehicleId}
+                value={{ date: form.date, startTime: form.startTime, endTime: form.endTime }}
+                onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+                reloadKey={slotReloadKey}
+              />
 
               <div className="space-y-2">
                 <Label htmlFor="appt-notes">Заметки</Label>

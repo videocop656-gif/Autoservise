@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { makeAuthContext, makeTenant, makeBusiness } from './helpers/fixtures'
 import type { AuthContext } from '../src/server/types/auth'
 
@@ -72,7 +72,7 @@ vi.mock('../src/server/repositories/appointmentRepository', () => ({
         fail.create = false
         throw new Error('insert failed')
       }
-      const row = { ...data, id: `apt-${++seq}` }
+      const row = { ...data, id: `bbbbbbbb-bbbb-4bbb-8bbb-${String(++seq).padStart(12, '0')}` }
       db.appointments.push(row)
       return { ...row }
     },
@@ -104,7 +104,13 @@ vi.mock('../src/server/repositories/serviceRepository', () => ({
 vi.mock('../src/server/repositories/workingHoursRepository', () => ({
   workingHoursRepository: { listByBusiness: async () => db.hours },
 }))
-vi.mock('../src/server/middleware/requireAuth', () => ({ requireAuth: async () => auth.ctx }))
+vi.mock('../src/server/middleware/requireAuth', () => ({
+  requireAuth: async () => {
+    if (auth.ctx) return auth.ctx
+    const { ApiError } = await import('../src/server/lib/errors')
+    throw new ApiError(401, 'UNAUTHORIZED', 'Authentication required')
+  },
+}))
 
 import {
   createAppointment,
@@ -146,7 +152,7 @@ const input = (ctx: AuthContext, v: number, from: string, to: string) =>
   ({ customerId: CUSTOMER, vehicleId: vehicle(v), serviceId: SERVICE, startAt: local(ctx, from), endAt: local(ctx, to) }) as never
 
 function seedAppointment(ctx: AuthContext, v: number, from: string, to: string, status = 'SCHEDULED', tenantId = 't1', businessId = 'b1'): Row {
-  const row: Row = { id: `seed-${++seq}`, tenantId, businessId, customerId: CUSTOMER, vehicleId: vehicle(v), serviceId: SERVICE, startAt: local(ctx, from), endAt: local(ctx, to), status, notes: null }
+  const row: Row = { id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(++seq).padStart(12, '0')}`, tenantId, businessId, customerId: CUSTOMER, vehicleId: vehicle(v), serviceId: SERVICE, startAt: local(ctx, from), endAt: local(ctx, to), status, notes: null }
   db.appointments.push(row)
   return row
 }
@@ -539,5 +545,190 @@ describe('GET /api/appointments/availability', () => {
     expect((await getAvailability({ serviceId: 'nope', startAt: '2026-10-05T07:00:00Z' })).statusCode).toBe(400)
     expect((await getAvailability({ serviceId: SERVICE, startAt: '5 октября' })).statusCode).toBe(400)
     expect((await getAvailability({ serviceId: SERVICE, startAt: '2026-10-05T07:00:00Z' }, 'POST')).statusCode).toBe(405)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt 51 — day mode of GET /api/appointments/availability: the slot list
+// the booking forms show. Same in-memory store and real services as above.
+// ---------------------------------------------------------------------------
+
+const SERVICE_90 = '35333333-3333-4333-8333-333333333333' // 90 min
+const startsOf = (res: { body: any }) => (res.body.availability.slots as { localStart: string }[]).map((s) => s.localStart)
+
+describe('GET /api/appointments/availability?date= (Prompt 51 slot list)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T00:00:00Z')) // before DAY, so no slot has "already started"
+    db.services.push({ id: SERVICE_90, tenantId: 't1', businessId: 'b1', isActive: true, durationMinutes: 90 })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('an open working day returns the 30-minute grid in business time, ending with the service before closing', async () => {
+    auth.ctx = contextFor(1)
+    const res = await getAvailability({ date: DAY, serviceId: SERVICE })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body.availability).toMatchObject({ date: DAY, timezone: 'Europe/Moscow' })
+    const starts = startsOf(res)
+    expect(starts[0]).toBe('09:00')
+    expect(starts).toContain('09:30')
+    expect(starts.at(-1)).toBe('17:00') // 17:30 would end 18:30, after closing
+    expect(res.body.availability.slots[0]).toMatchObject({ localStart: '09:00', localEnd: '10:00', startAt: new Date('2026-10-05T06:00:00Z') })
+  })
+
+  it('the service duration decides the last slot (90 min → 16:30) and each slot end', async () => {
+    auth.ctx = contextFor(1)
+    const res = await getAvailability({ date: DAY, serviceId: SERVICE_90 })
+
+    expect(startsOf(res).at(-1)).toBe('16:30')
+    expect(res.body.availability.slots[0]).toMatchObject({ localStart: '09:00', localEnd: '10:30' })
+  })
+
+  it('a closed day returns no slots (not an error)', async () => {
+    auth.ctx = contextFor(1)
+    const res = await getAvailability({ date: '2026-10-04', serviceId: SERVICE }) // Sunday
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body.availability.slots).toEqual([])
+  })
+
+  it('capacity 1: slots overlapping a booking are not offered, adjacent ones are', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    seedAppointment(ctx, 1, '10:00', '11:00')
+
+    const starts = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))
+    expect(starts).toContain('09:00')
+    expect(starts).not.toContain('09:30')
+    expect(starts).not.toContain('10:00')
+    expect(starts).not.toContain('10:30')
+    expect(starts).toContain('11:00')
+  })
+
+  it('capacity 2: one booking leaves the slot open; two running together close only their shared period', async () => {
+    const ctx = contextFor(2)
+    auth.ctx = ctx
+    seedAppointment(ctx, 1, '10:00', '11:00')
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))).toContain('10:00')
+
+    seedAppointment(ctx, 2, '10:30', '11:30')
+    const starts = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))
+    expect(starts).not.toContain('10:00') // 10:30–11:00 has both
+    expect(starts).not.toContain('10:30')
+    expect(starts).toContain('09:00') // 09:00–10:00 is adjacent to both
+    expect(starts).toContain('11:00') // only B runs 11:00–11:30 → one post left
+  })
+
+  it('cancelled / completed / no-show bookings never hide a slot', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    seedAppointment(ctx, 1, '10:00', '11:00', 'CANCELLED')
+    seedAppointment(ctx, 2, '10:00', '11:00', 'COMPLETED')
+    seedAppointment(ctx, 3, '10:00', '11:00', 'NO_SHOW')
+
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))).toContain('10:00')
+  })
+
+  it("with a vehicle, that vehicle's own booking hides its slots even when posts are free", async () => {
+    const ctx = contextFor(3)
+    auth.ctx = ctx
+    seedAppointment(ctx, 1, '14:00', '15:00')
+
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))).toContain('14:00')
+    const forVehicle = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE, vehicleId: vehicle(1) }))
+    expect(forVehicle).not.toContain('14:00')
+    expect(forVehicle).not.toContain('13:30')
+    expect(forVehicle).toContain('15:00')
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE, vehicleId: vehicle(2) }))).toContain('14:00')
+  })
+
+  it('reschedule: the appointment being moved never blocks its own slot (capacity and vehicle)', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    const mine = seedAppointment(ctx, 1, '10:00', '11:00')
+
+    const without = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE, vehicleId: vehicle(1) }))
+    const withExclusion = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE, vehicleId: vehicle(1), excludeAppointmentId: mine.id }))
+    expect(without).not.toContain('10:30')
+    expect(withExclusion).toContain('10:00')
+    expect(withExclusion).toContain('10:30')
+
+    // …and the real reschedule into an offered slot succeeds.
+    await expect(updateAppointment(ctx, mine.id, { startAt: local(ctx, '10:30'), endAt: local(ctx, '11:30') })).resolves.toBeDefined()
+  })
+
+  it('reschedule exclusion only removes that one appointment: other bookings still count', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    const mine = seedAppointment(ctx, 1, '12:00', '13:00')
+    seedAppointment(ctx, 2, '10:00', '11:00')
+
+    const starts = startsOf(await getAvailability({ date: DAY, serviceId: SERVICE, excludeAppointmentId: mine.id }))
+    expect(starts).not.toContain('10:00')
+    expect(starts).toContain('12:00')
+  })
+
+  it('the slot list agrees with create: every offered slot is creatable, a hidden one is refused', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    seedAppointment(ctx, 1, '10:00', '11:00')
+    const slots = (await getAvailability({ date: DAY, serviceId: SERVICE, vehicleId: vehicle(5) })).body.availability.slots as {
+      localStart: string
+      localEnd: string
+    }[]
+
+    for (const slot of slots) {
+      const row = await createAppointment(ctx, input(ctx, 5, slot.localStart, slot.localEnd))
+      db.appointments = db.appointments.filter((r) => r.id !== row.id) // undo, keep each check independent
+    }
+    await expectCapacityExceeded(createAppointment(ctx, input(ctx, 5, '10:30', '11:30')))
+  })
+
+  it('race: a slot offered a moment ago is still refused by create once someone else took it (409, nothing written)', async () => {
+    const ctx = contextFor(1)
+    auth.ctx = ctx
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))).toContain('15:00')
+
+    await createAppointment(ctx, input(ctx, 1, '15:00', '16:00')) // another operator wins
+    await expectCapacityExceeded(createAppointment(ctx, input(ctx, 2, '15:00', '16:00')))
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: SERVICE }))).not.toContain('15:00')
+    expect(db.appointments).toHaveLength(1)
+  })
+
+  it('timezone: the date is the business-local day (Asia/Kamchatka, UTC+12)', async () => {
+    auth.ctx = contextFor(1, 'Asia/Kamchatka')
+    const res = await getAvailability({ date: DAY, serviceId: SERVICE })
+
+    expect(res.body.availability.timezone).toBe('Asia/Kamchatka')
+    expect(res.body.availability.slots[0]).toMatchObject({ localStart: '09:00', startAt: new Date('2026-10-04T21:00:00Z') }) // previous UTC day
+  })
+
+  it('tenant isolation: foreign service / vehicle / appointment ids are 404, and another tenant never sees these bookings', async () => {
+    const ctx = contextFor(1)
+    const mine = seedAppointment(ctx, 1, '10:00', '11:00')
+    auth.ctx = foreignCtx()
+
+    expect((await getAvailability({ date: DAY, serviceId: SERVICE })).statusCode).toBe(404)
+    expect((await getAvailability({ date: DAY, serviceId: FOREIGN_SERVICE, vehicleId: vehicle(1) })).statusCode).toBe(404)
+    expect((await getAvailability({ date: DAY, serviceId: FOREIGN_SERVICE, excludeAppointmentId: mine.id })).statusCode).toBe(404)
+    expect(startsOf(await getAvailability({ date: DAY, serviceId: FOREIGN_SERVICE }))).toContain('10:00')
+  })
+
+  it('an unknown exclusion id is 404 in both modes (never silently ignored)', async () => {
+    auth.ctx = contextFor(1)
+    const unknown = '99999999-9999-4999-8999-000000000999'
+    expect((await getAvailability({ date: DAY, serviceId: SERVICE, excludeAppointmentId: unknown })).statusCode).toBe(404)
+    expect((await getAvailability({ startAt: '2026-10-05T07:00:00Z', serviceId: SERVICE, excludeAppointmentId: unknown })).statusCode).toBe(404)
+  })
+
+  it('validation: malformed date, or date + startAt together → 400; no session → 401', async () => {
+    auth.ctx = contextFor(1)
+    expect((await getAvailability({ date: '05.10.2026', serviceId: SERVICE })).statusCode).toBe(400)
+    expect((await getAvailability({ date: DAY, startAt: '2026-10-05T07:00:00Z', serviceId: SERVICE })).statusCode).toBe(400)
+    auth.ctx = null as unknown as AuthContext
+    expect((await getAvailability({ date: DAY, serviceId: SERVICE })).statusCode).toBe(401)
   })
 })

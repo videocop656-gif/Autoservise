@@ -8,6 +8,8 @@ import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
+import { AppointmentTimeField } from '../appointments/AppointmentTimeField'
+import { bookingErrorMessage, isSchedulingConflict, missingTimeMessage } from '../appointments/availability'
 import {
   type CustomerRequestDto,
   type CustomerRequestStatus,
@@ -147,6 +149,8 @@ export function RequestDetailPanel({
   const [showApptForm, setShowApptForm] = useState(false)
   const [apptForm, setApptForm] = useState({ vehicleId: '', serviceId: '', date: '', startTime: '', endTime: '', notes: '' })
   const [apptFormError, setApptFormError] = useState<string | null>(null)
+  // Prompt 51 — bumped after a 409 on Save so the slot list is re-asked.
+  const [apptSlotReloadKey, setApptSlotReloadKey] = useState(0)
   const [apptFieldErrors, setApptFieldErrors] = useState<Record<string, string[]>>({})
   const [apptSaving, setApptSaving] = useState(false)
 
@@ -322,6 +326,11 @@ export function RequestDetailPanel({
     if (!request || apptSaving) return
     setApptFormError(null)
     setApptFieldErrors({})
+    const missing = missingTimeMessage(apptForm)
+    if (missing) {
+      setApptFormError(missing)
+      return
+    }
     setApptSaving(true)
     try {
       const startAt = zonedTimeToUtc(apptForm.date, apptForm.startTime, timezone).toISOString()
@@ -356,7 +365,11 @@ export function RequestDetailPanel({
       await loadAll()
       onChanged()
     } catch (err) {
-      if (err instanceof ApiClientError) {
+      if (err instanceof ApiClientError && isSchedulingConflict(err.code)) {
+        // The time was taken meanwhile — re-ask the server; the stale time is dropped.
+        setApptFormError(bookingErrorMessage(err.code, err.message))
+        setApptSlotReloadKey((k) => k + 1)
+      } else if (err instanceof ApiClientError) {
         setApptFormError(err.message || 'Проверьте заполненные поля.')
         setApptFieldErrors(err.fieldErrors)
       } else {
@@ -801,29 +814,15 @@ export function RequestDetailPanel({
                           ))}
                         </select>
                       </div>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        <Input
-                          type="date"
-                          required
-                          aria-label="Дата"
-                          value={apptForm.date}
-                          onChange={(e) => setApptForm({ ...apptForm, date: e.target.value })}
-                        />
-                        <Input
-                          type="time"
-                          required
-                          aria-label="Начало"
-                          value={apptForm.startTime}
-                          onChange={(e) => setApptForm({ ...apptForm, startTime: e.target.value })}
-                        />
-                        <Input
-                          type="time"
-                          required
-                          aria-label="Окончание"
-                          value={apptForm.endTime}
-                          onChange={(e) => setApptForm({ ...apptForm, endTime: e.target.value })}
-                        />
-                      </div>
+                      <AppointmentTimeField
+                        idPrefix="request-appt"
+                        timezone={timezone}
+                        serviceId={apptForm.serviceId}
+                        vehicleId={apptForm.vehicleId}
+                        value={{ date: apptForm.date, startTime: apptForm.startTime, endTime: apptForm.endTime }}
+                        onChange={(patch) => setApptForm((f) => ({ ...f, ...patch }))}
+                        reloadKey={apptSlotReloadKey}
+                      />
                       <Textarea
                         placeholder="Заметки (опционально)"
                         value={apptForm.notes}

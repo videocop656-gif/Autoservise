@@ -369,6 +369,12 @@ export interface CheckAvailabilityInput {
   vehicleId?: string | null
   preferredTimeFrom?: string | null
   preferredTimeTo?: string | null
+  /**
+   * Prompt 51 — the appointment being rescheduled: it never blocks its own
+   * new slot (neither its post nor its vehicle). Must belong to the
+   * current tenant + business (404 otherwise).
+   */
+  excludeAppointmentId?: string | null
 }
 
 export interface AvailabilityResult {
@@ -444,6 +450,8 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
     throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid date — expected YYYY-MM-DD')
   }
 
+  const excludeId = await resolveExcludedAppointment(ctx, input.excludeAppointmentId)
+
   // Local noon safely identifies the weekday for this calendar date
   // regardless of DST — unlike midnight, noon is never ambiguous or
   // skipped by a DST transition.
@@ -471,10 +479,11 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
     ctx.tenant.id,
     ctx.business.id,
     businessLocalToUtc(input.date, day.openTime, timezone),
-    businessLocalToUtc(input.date, day.closeTime, timezone)
+    businessLocalToUtc(input.date, day.closeTime, timezone),
+    excludeId
   )
 
-  const slots: AvailabilitySlot[] = []
+  const candidates: AvailabilitySlot[] = []
   for (let start = openMinutes; start + duration <= closeMinutes; start += SLOT_GRANULARITY_MINUTES) {
     const localStart = minutesToTimeKey(start)
     const localEnd = minutesToTimeKey(start + duration)
@@ -492,15 +501,37 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
 
     if (!capacitySnapshot(ctx.business.serviceBayCapacity, dayOccupants, startAt, endAt).available) continue
 
-    if (input.vehicleId) {
-      const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, input.vehicleId, startAt, endAt)
-      if (conflict) continue
-    }
-
-    slots.push({ startAt, endAt, localStart, localEnd })
+    candidates.push({ startAt, endAt, localStart, localEnd })
   }
 
-  return { date: input.date, timezone, slots }
+  // The vehicle check is the same per-slot findConflict as before, now run
+  // side by side (Prompt 51 — the booking form asks on every date change)
+  // instead of one round-trip after another. Order is preserved.
+  const vehicleId = input.vehicleId
+  if (!vehicleId) {
+    return { date: input.date, timezone, slots: candidates }
+  }
+  const conflicts = await Promise.all(
+    candidates.map((slot) => appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, vehicleId, slot.startAt, slot.endAt, excludeId))
+  )
+  return { date: input.date, timezone, slots: candidates.filter((_, i) => !conflicts[i]) }
+}
+
+/**
+ * Prompt 51 — validates an excludeAppointmentId (reschedule: "don't count
+ * the appointment I'm moving") against the current tenant + business. A
+ * foreign or unknown id is 404, never silently ignored, so it can't be used
+ * to probe other tenants; a valid one only ever removes that single
+ * appointment from the count. The final update still runs every check
+ * under the scheduling lock.
+ */
+async function resolveExcludedAppointment(ctx: AuthContext, id: string | null | undefined): Promise<string | undefined> {
+  if (!id) return undefined
+  const appointment = await appointmentRepository.findById(ctx.tenant.id, ctx.business.id, id)
+  if (!appointment) {
+    throw new ApiError(404, 'NOT_FOUND', 'Appointment not found')
+  }
+  return appointment.id
 }
 
 // --- Interval availability (Prompt 50) --------------------------------------
@@ -568,7 +599,7 @@ export async function checkIntervalAvailability(ctx: AuthContext, input: Interva
     reasons.push('OUTSIDE_WORKING_HOURS')
   }
 
-  const excludeId = input.excludeAppointmentId ?? undefined
+  const excludeId = await resolveExcludedAppointment(ctx, input.excludeAppointmentId)
   if (input.vehicleId) {
     const conflict = await appointmentRepository.findConflict(ctx.tenant.id, ctx.business.id, input.vehicleId, startAt, endAt, excludeId)
     if (conflict) reasons.push('VEHICLE_CONFLICT')

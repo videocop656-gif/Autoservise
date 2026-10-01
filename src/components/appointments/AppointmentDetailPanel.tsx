@@ -8,6 +8,8 @@ import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
+import { AppointmentTimeField } from './AppointmentTimeField'
+import { bookingErrorMessage, isSchedulingConflict, missingTimeMessage } from './availability'
 import {
   type AppointmentDto,
   type AppointmentStatus,
@@ -114,6 +116,8 @@ export function AppointmentDetailPanel({
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
+  // Prompt 51 — bumped after a 409 on Save so the slot list is re-asked.
+  const [slotReloadKey, setSlotReloadKey] = useState(0)
 
   async function loadAll() {
     setLoading(true)
@@ -187,6 +191,11 @@ export function AppointmentDetailPanel({
     if (!form) return
     setFormError(null)
     setFieldErrors({})
+    const missing = missingTimeMessage(form)
+    if (missing) {
+      setFormError(missing)
+      return
+    }
     setSaving(true)
     try {
       const startAt = zonedTimeToUtc(form.date, form.startTime, timezone).toISOString()
@@ -207,7 +216,11 @@ export function AppointmentDetailPanel({
       await loadAll()
       onChanged()
     } catch (err) {
-      if (err instanceof ApiClientError) {
+      if (err instanceof ApiClientError && isSchedulingConflict(err.code)) {
+        // The new time was taken meanwhile — re-ask the server; the stale time is dropped.
+        setFormError(bookingErrorMessage(err.code, err.message))
+        setSlotReloadKey((k) => k + 1)
+      } else if (err instanceof ApiClientError) {
         setFormError(err.message || 'Проверьте заполненные поля.')
         setFieldErrors(err.fieldErrors)
       } else {
@@ -335,20 +348,28 @@ export function AppointmentDetailPanel({
               </select>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="appt-date">Дата</Label>
-                <Input id="appt-date" type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="appt-start">Начало</Label>
-                <Input id="appt-start" type="time" required value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="appt-end">Окончание</Label>
-                <Input id="appt-end" type="time" required value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
-              </div>
-            </div>
+            {appointment && isAppointmentTerminal(appointment.status) ? (
+              // A completed/cancelled/no-show appointment can't be moved (server rule) — show its time read-only.
+              <p className="text-sm text-muted-foreground">
+                Время записи:{' '}
+                <span className="font-medium text-foreground tabular-nums">
+                  {form.date} {form.startTime}–{form.endTime}
+                </span>{' '}
+                — перенос недоступен для этого статуса.
+              </p>
+            ) : (
+              <AppointmentTimeField
+                idPrefix="appt"
+                timezone={timezone}
+                serviceId={form.serviceId}
+                vehicleId={form.vehicleId}
+                excludeAppointmentId={appointmentId}
+                value={{ date: form.date, startTime: form.startTime, endTime: form.endTime }}
+                onChange={(patch) => setForm((f) => (f ? { ...f, ...patch } : f))}
+                reloadKey={slotReloadKey}
+                preserveInitialTime
+              />
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="appt-status">Статус</Label>

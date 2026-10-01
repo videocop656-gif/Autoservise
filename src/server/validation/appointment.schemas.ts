@@ -85,6 +85,17 @@ export const intervalAvailabilityQuerySchema = z.object({
   excludeAppointmentId: optionalQueryUuid('Invalid appointment id'),
 })
 
+// Prompt 51 — the same endpoint's day mode: every bookable slot of one
+// Business-local calendar date ("YYYY-MM-DD", never a UTC timestamp) for one
+// service, optionally for one vehicle and excluding the appointment being
+// rescheduled. Served by the existing slot generator (checkAvailability).
+export const dayAvailabilityQuerySchema = z.object({
+  serviceId: z.string().uuid('Invalid service id'),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date — expected YYYY-MM-DD'),
+  vehicleId: optionalQueryUuid('Invalid vehicle id'),
+  excludeAppointmentId: optionalQueryUuid('Invalid appointment id'),
+})
+
 export const appointmentIdParamSchema = z.string().uuid()
 export const appointmentStatusFilterSchema = z.nativeEnum(AppointmentStatus)
 
