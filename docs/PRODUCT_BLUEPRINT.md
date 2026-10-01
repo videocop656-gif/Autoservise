@@ -9,6 +9,68 @@ implemented today. Section 3 (Current Architecture) and Section 5 (Domain
 Model) are the only sections that must match the current codebase exactly;
 everywhere else, "future" language marks intent, not a completed feature.
 
+## 0. Product Direction (updated in Prompt 57 — overrides older framing)
+
+AUTOSERVISE is **not primarily another auto-service CRM**. The primary MVP
+value is:
+
+> **Do not lose a customer because the auto service could not answer the phone fast enough.**
+>
+> «Мастер может не ответить на звонок. AUTOSERVISE не должен оставить клиента без реакции.»
+>
+> «Позвонил → узнал → приехал → остался.»
+
+The product has two layers. **Customer simplicity. Business structure.**
+
+**Customer side** — the customer's only interface is their phone. There is no
+account, app, portal, Telegram requirement or long form.
+
+```
+problem → phone call → nobody answers → missed-call recovery (seconds)
+→ WhatsApp-first conversation (fallback: other compliant channel / human call-back)
+→ useful information: real services, configured prices ("from"/range, final after
+  inspection), hours, address/location
+→ visit / booking (authoritative free time) / human with full context
+```
+
+**Business side** — the structured lifecycle built in Prompts 01–56 stays
+and is fed by the customer side; it is not replaced:
+
+```
+call/contact → Customer → Vehicle → Conversation → CustomerRequest → Service
+→ Appointment → Operations → ServiceRecord → History → Follow-up → Analytics
+```
+
+Principles of the new direction:
+
+- **The first 30–60 seconds after an unanswered call are the product.** The
+  first recovery message is deterministic and template-based (no AI on the
+  critical path). AI enters after the customer replies.
+- **The MVP is not a voice AI receptionist.** No STT/TTS or live call AI;
+  missed call → immediate text recovery → short useful dialogue.
+- **WhatsApp-first, not Telegram-first.** Telegram is an optional secondary
+  channel. All channels stay behind the existing `ChannelAdapter` boundary.
+  Business-initiated WhatsApp rules (templates, consent, windows) must be
+  verified before implementation.
+- **The phone number becomes a first-class identity** (canonical, per
+  business), linking caller ↔ Customer ↔ WhatsApp identity ↔ Conversation ↔
+  CustomerRequest. Unknown callers are never auto-merged.
+- **The AI behaves like a good administrator.**
+  - It is short and useful, and asks only what is missing.
+  - It never invents a price, never diagnoses remotely as fact, and never
+    promises time without authoritative availability.
+  - It hands off to a human with full context when unsure.
+- **The owner works from a phone**: missed and recovered calls, "needs a
+  human" cards, today's visits.
+- **The key metric**: how many customers AUTOSERVISE prevented the business
+  from losing, plus missed-call → recovery-message latency.
+
+Full readiness analysis, gap matrix and the implementation sequence (MCR-1…):
+[`docs/audits/missed-call-recovery-architecture-audit.md`](audits/missed-call-recovery-architecture-audit.md).
+As of Prompt 57 none of the missed-call / telephony / WhatsApp pieces are
+implemented. The WhatsApp adapter is still the Prompt 16 mock, and there is
+no telephony code.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.
@@ -650,3 +712,9 @@ database schema are the source of truth.
 
 For future functionality: this document and `DEVELOPMENT_ROADMAP.md`
 define the intended direction.
+
+Since Prompt 57, Section 0 and
+`docs/audits/missed-call-recovery-architecture-audit.md` take precedence
+over older, CRM-centred direction in this document and in
+`DEVELOPMENT_ROADMAP.md` wherever they disagree; the next phase follows the
+audit's MCR sequence rather than the old prompt numbering.
