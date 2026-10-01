@@ -26,6 +26,7 @@ import {
 } from './shared'
 import { ConversationRequestSection } from './ConversationRequestSection'
 import { ConversationIdentitySection } from './ConversationIdentitySection'
+import { ConversationQualificationSection } from './ConversationQualificationSection'
 import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 
@@ -113,6 +114,9 @@ export function ConversationDetailPanel({
   const [aiDraftError, setAiDraftError] = useState<string | null>(null)
   const [aiDraftNotice, setAiDraftNotice] = useState<string | null>(null)
   const aiDraftTokenRef = useRef(0)
+  // Prompt 55 — confirmation of the last qualification apply; kept here because
+  // the reload that follows remounts the qualification section.
+  const [qualificationNotice, setQualificationNotice] = useState<string | null>(null)
   // Latest composer text, read when a draft arrives (state updaters may run later).
   const messageContentRef = useRef(messageContent)
   messageContentRef.current = messageContent
@@ -123,6 +127,7 @@ export function ConversationDetailPanel({
     setAiDraftError(null)
     setAiDraftNotice(null)
     setMessageContent('')
+    setQualificationNotice(null)
   }, [conversationId])
 
   async function loadAll() {
@@ -439,6 +444,18 @@ export function ConversationDetailPanel({
               canManage={canManage}
               canCreate={canCreateRecords}
               onChanged={() => {
+                retry()
+                onChanged()
+              }}
+            />
+
+            {/* Prompt 55 — AI-assisted request qualification (operator-confirmed). */}
+            <ConversationQualificationSection
+              detail={detail}
+              canManage={canManage}
+              notice={qualificationNotice}
+              onApplied={(notice) => {
+                setQualificationNotice(notice)
                 retry()
                 onChanged()
               }}

@@ -55,6 +55,11 @@ export class MockAiProvider implements AiProvider {
   async generate(request: AiGenerationRequest): Promise<AiGenerationResult> {
     const { userMessage, businessContext, toolExchanges, history } = request
 
+    // Prompt 55 — "Разобрать обращение": structure, never act (no tools).
+    if (request.mode === 'qualify') {
+      return { type: 'final', raw: qualifyResult(request) }
+    }
+
     if (toolExchanges.length > 0) {
       return { type: 'final', raw: buildFinalFromToolResult(toolExchanges[toolExchanges.length - 1]!) }
     }
@@ -389,6 +394,83 @@ function classifyCustomerSupport(request: AiGenerationRequest) {
     false,
     null
   )
+}
+
+// --- Request qualification (Prompt 55) --------------------------------------
+//
+// A deterministic stand-in for what a real model returns in 'qualify' mode,
+// through the SAME validated AiResult contract (no shortcut): names/dates as
+// the customer wrote them, never ids — the server resolves ids itself.
+
+/** Words too generic to identify a service on their own (4-letter stems). */
+const GENERIC_STEMS = new Set(['пров', 'заме', 'нужн', 'можн', 'завт', 'посл', 'добр', 'здра', 'хоте', 'запи', 'услу', 'сдел'])
+
+function stems4(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 4 && /\p{L}/u.test(w))
+      .map((w) => w.slice(0, 4))
+  )
+}
+
+function addDays(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split('-').map(Number)
+  return new Date(Date.UTC(y!, m! - 1, d! + days)).toISOString().slice(0, 10)
+}
+
+function qualifyResult(request: AiGenerationRequest) {
+  const context = request.businessContext
+  const customerTexts = [...request.history.filter((m) => m.direction === 'INBOUND').map((m) => m.content), request.userMessage]
+  const text = customerTexts.join(' \n ')
+  const lower = text.toLowerCase()
+
+  // Service: exactly one configured service shares a meaningful word with what the customer wrote.
+  const words = stems4(text)
+  const candidates = context.services.filter((s) => [...stems4(s.name)].some((stem) => !GENERIC_STEMS.has(stem) && words.has(stem)))
+  const serviceName = candidates.length === 1 ? candidates[0]!.name : null
+
+  // Vehicle as written: Latin make/model words, optionally a year.
+  const vehicleMatch = /\b([A-Z][a-zA-Z-]+)(?:\s+([A-Z][a-zA-Z0-9-]+))?(?:\s+((?:19|20)\d{2}))?\b/.exec(text)
+  let vehicleMake: string | null = null
+  let vehicleModel: string | null = null
+  if (vehicleMatch) {
+    const [, first, second, year] = vehicleMatch
+    if (second) {
+      vehicleMake = first!
+      vehicleModel = [second, year].filter(Boolean).join(' ')
+    } else {
+      vehicleModel = [first, year].filter(Boolean).join(' ')
+    }
+  }
+
+  // Timing relative to the business-local "today" in the context.
+  const today = context.currentDateTime.date
+  const requestedDate = /послезавтра/.test(lower)
+    ? addDays(today, 2)
+    : /завтра/.test(lower)
+      ? addDays(today, 1)
+      : /сегодня/.test(lower)
+        ? today
+        : (DATE_RE.exec(text)?.[1] ?? null)
+  const after = /после\s+(\d{1,2})(?::(\d{2}))?/.exec(lower)
+  const requestedTime = after ? `${after[1]!.padStart(2, '0')}:${after[2] ?? '00'}` : extractTime(text)
+
+  const name = /меня зовут\s+([А-ЯЁA-Z][а-яёa-z]+)/.exec(text)?.[1] ?? null
+  const phone = /(\+?\d[\d\s()-]{8,}\d)/.exec(text)?.[1] ?? null
+
+  // A factual restatement, never a diagnosis.
+  const latest = request.userMessage.trim().replace(/\s+/g, ' ').slice(0, 300)
+  return {
+    intent: (serviceName || requestedDate ? 'BOOKING_REQUEST' : 'GENERAL_QUESTION') as AiIntent,
+    confidence: 0.7,
+    entities: { ...EMPTY_AI_ENTITIES, serviceName, vehicleMake, vehicleModel, requestedDate, requestedTime, customerName: name, phone },
+    answer: `Клиент пишет: «${latest}»`,
+    needsHuman: false,
+    reason: null,
+  }
 }
 
 const DAY_NAMES_RU: Record<string, string> = {

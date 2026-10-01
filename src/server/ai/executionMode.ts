@@ -14,13 +14,18 @@ import type { AiToolDefinition, ToolResult } from './types'
 //    registry is reached (a provider may still ask for an unoffered tool).
 // ---------------------------------------------------------------------------
 
-export type AiExecutionMode = 'interactive' | 'draft'
+// Prompt 55 — 'qualify': "Разобрать обращение". The model only structures
+// the request for the operator (entities + a factual description); no tool
+// at all is offered or executed, nothing is changed, nothing escalated.
+export type AiExecutionMode = 'interactive' | 'draft' | 'qualify'
 
 /** Tools with no side effects — the only ones a draft may run. */
 const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(['check_availability'])
 
 export function isToolAllowed(mode: AiExecutionMode, toolName: string): boolean {
-  return mode === 'interactive' || READ_ONLY_TOOL_NAMES.has(toolName)
+  if (mode === 'interactive') return true
+  if (mode === 'draft') return READ_ONLY_TOOL_NAMES.has(toolName)
+  return false // 'qualify': no tools
 }
 
 /** The tool definitions offered to the provider in this mode. */

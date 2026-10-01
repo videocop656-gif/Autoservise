@@ -52,9 +52,14 @@ const RUSSIAN_MESSAGES: Record<string, string> = {
   'Vehicle does not belong to the specified customer': 'Автомобиль не принадлежит выбранному клиенту',
   'Service not found': 'Услуга не найдена',
   'Service is not active': 'Услуга неактивна — выберите другую',
+  // Prompt 55 — outcomes of updating a linked request from a qualification.
+  'Customer request not found': 'Обращение не найдено',
+  'requestedTimeFrom must be before requestedTimeTo': 'Время «с» должно быть раньше времени «до»',
+  'Appointment is for a different vehicle': 'Обращение уже связано с записью на другой автомобиль',
+  'Appointment is for a different service': 'Обращение уже связано с записью на другую услугу',
 }
 
-async function inRussian<T>(fn: () => Promise<T>): Promise<T> {
+export async function inRussian<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (err) {
@@ -112,6 +117,10 @@ export async function createCustomerRequestFromConversation(
     source: requestSourceForChannel(snapshot.channel),
     subject: input.subject,
     description: input.description ?? null,
+    // Prompt 55 — the request's existing timing fields (optional).
+    requestedDate: input.requestedDate ?? null,
+    requestedTimeFrom: input.requestedTimeFrom ?? null,
+    requestedTimeTo: input.requestedTimeTo ?? null,
   })
   const requestData = await inRussian(() => prepareCustomerRequestCreate(ctx, requestInput))
 

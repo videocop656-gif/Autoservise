@@ -1,4 +1,5 @@
 import type { AiBusinessContext, AiHistoryMessage, AiToolDefinition, AiToolCallRequest, AiToolExchange } from './types'
+import type { AiExecutionMode } from './executionMode'
 
 /**
  * Everything a provider needs to produce a result, kept as separate fields
@@ -24,6 +25,13 @@ export interface AiGenerationRequest {
   userMessage: string
   tools: AiToolDefinition[]
   toolExchanges: AiToolExchange[]
+  /**
+   * Prompt 55 — which task this request serves (executionMode.ts). Purely
+   * informational for a provider: the system prompt already carries the
+   * task's rules (a real model needs nothing else); the deterministic mock
+   * uses it to pick its behaviour. Absent = 'interactive'.
+   */
+  mode?: AiExecutionMode
 }
 
 /**

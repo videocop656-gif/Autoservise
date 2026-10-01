@@ -194,6 +194,7 @@ async function runAnalysis(
         userMessage: run.userMessage,
         tools,
         toolExchanges,
+        mode,
       })
 
       if (generation.type === 'final') {
@@ -346,7 +347,7 @@ async function runAnalysis(
     confidence: finalResult.confidence,
     needsHuman: finalResult.needsHuman,
     reason: finalResult.reason,
-    metadata: { provider: providerName(provider), toolCallCount: toolExchanges.length, ...(mode === 'draft' ? { mode } : {}) },
+    metadata: { provider: providerName(provider), toolCallCount: toolExchanges.length, ...(mode !== 'interactive' ? { mode } : {}) },
   })
 
   return {
@@ -431,4 +432,61 @@ export async function generateConversationDraft(ctx: AuthContext, conversationId
     throw new ApiError(502, 'AI_DRAFT_UNAVAILABLE', DRAFT_FAILED_MESSAGE)
   }
   return { draft: analysis.result.answer, needsHuman: analysis.result.needsHuman }
+}
+
+// --- Request qualification (Prompt 55) --------------------------------------
+//
+// "Разобрать обращение": the same AI core in 'qualify' mode — no tools at all,
+// no escalation, nothing written except the usual AI_ANALYZE audit row. The
+// model returns the existing validated AiResult: `answer` is a factual
+// description for staff and `entities` hold names/dates as the customer
+// wrote them — never ids. Turning that into proposed (tenant-checked) ids is
+// requestQualificationService's job.
+
+export interface QualificationAnalysis {
+  conversation: { id: string; customerId: string | null; customerRequestId: string | null }
+  context: AiBusinessContext
+  result: AiAnalyzeResult
+  outcome: AiLogOutcome
+}
+
+export async function runQualificationAnalysis(ctx: AuthContext, conversationId: string, deps: AnalyzeDeps = {}): Promise<QualificationAnalysis> {
+  requireRole(ctx, 'owner', 'admin', 'manager')
+
+  const conversation = await conversationRepository.findById(ctx.tenant.id, ctx.business.id, conversationId)
+  if (!conversation) {
+    throw new ApiError(404, 'NOT_FOUND', 'Диалог не найден')
+  }
+
+  // The whole recent conversation counts, but there must be something the
+  // customer actually wrote: the latest customer message is the user
+  // message, the (bounded) messages before it are history.
+  const messages = await messageRepository.listByConversation(ctx.tenant.id, ctx.business.id, conversation.id)
+  const lastInboundIndex = messages.map((m) => m.direction).lastIndexOf('INBOUND')
+  if (lastInboundIndex < 0) {
+    throw new ApiError(409, 'NO_CUSTOMER_MESSAGE', 'В диалоге нет сообщений клиента — разбирать нечего')
+  }
+  const latest = messages[lastInboundIndex]!
+  const history = messages
+    .slice(0, lastInboundIndex)
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({ direction: m.direction, content: m.content }))
+
+  const context = await buildAiContext(ctx, conversation)
+
+  try {
+    const { result, outcome } = await runAnalysis(ctx, conversation, {
+      context,
+      history,
+      userMessage: latest.content,
+      mode: 'qualify',
+      provider: deps.provider ?? getAiProvider(),
+    })
+    return { conversation, context, result, outcome }
+  } catch (err) {
+    if (err instanceof ApiError && (err.code === 'AI_PROVIDER_UNAVAILABLE' || err.code === 'AI_CONFIGURATION_ERROR')) {
+      throw new ApiError(err.statusCode, err.code, 'Не удалось разобрать обращение. Попробуйте ещё раз.')
+    }
+    throw err
+  }
 }
