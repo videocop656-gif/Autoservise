@@ -33,6 +33,14 @@ const ALLOWED_TRANSITIONS: Record<CustomerRequestStatus, CustomerRequestStatus[]
   CANCELLED: [],
 }
 
+/** Prompt 56 — the same allow-list, as a question (booking converts a request only where this says yes). */
+export function canTransitionRequest(from: CustomerRequestStatus, to: CustomerRequestStatus): boolean {
+  return from === to || ALLOWED_TRANSITIONS[from].includes(to)
+}
+
+/** Statuses a request never leaves. */
+export const TERMINAL_REQUEST_STATUSES: readonly CustomerRequestStatus[] = ['CONVERTED', 'CLOSED', 'CANCELLED']
+
 function assertValidTransition(from: CustomerRequestStatus, to: CustomerRequestStatus): void {
   if (from === to) return
   if (!ALLOWED_TRANSITIONS[from].includes(to)) {

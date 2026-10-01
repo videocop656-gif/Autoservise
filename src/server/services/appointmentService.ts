@@ -1,4 +1,4 @@
-import type { AppointmentStatus, Prisma } from '@prisma/client'
+import type { Appointment, AppointmentStatus, Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
@@ -56,6 +56,13 @@ function assertDuration(startAt: Date, endAt: Date): void {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Appointment cannot exceed 24 hours')
   }
 }
+
+/** The 400 messages assertWithinWorkingHours throws — lets a caller tell "outside hours" apart from other validation errors. */
+export const WORKING_HOURS_ERROR_MESSAGES: readonly string[] = [
+  'Appointment cannot cross local midnight',
+  'Business is closed on this day',
+  'Appointment must be within business working hours',
+]
 
 /**
  * Validates the interval against BusinessWorkingHours, entirely in the
@@ -181,13 +188,15 @@ export async function getIntervalCapacity(
 async function withSchedulingLock<T>(
   ctx: AuthContext,
   check: { vehicleId: string; startAt: Date; endAt: Date; excludeId?: string; checkCapacity: boolean },
-  write: (tx: Prisma.TransactionClient) => Promise<T>
+  write: (tx: Prisma.TransactionClient) => Promise<T>,
+  afterLock?: (tx: Prisma.TransactionClient) => Promise<void>
 ): Promise<T> {
   return runInTransaction(async (tx) => {
     const locked = await businessRepository.lockForScheduling(ctx.tenant.id, ctx.business.id, tx)
     if (!locked) {
       throw new ApiError(404, 'NOT_FOUND', 'Business not found')
     }
+    if (afterLock) await afterLock(tx)
     await assertNoConflict(ctx, check.vehicleId, check.startAt, check.endAt, check.excludeId, tx)
     if (check.checkCapacity) {
       const snapshot = await getIntervalCapacity(ctx, check.startAt, check.endAt, check.excludeId, tx, locked.serviceBayCapacity)
@@ -228,7 +237,20 @@ export async function getAppointment(ctx: AuthContext, id: string) {
 // unlike the Settings-style entities (Business/Service/Knowledge/Rules)
 // where manager is read-only. Spelled out explicitly (rather than skipped)
 // so the intent is documented and this stays correct if roles ever change.
-export async function createAppointment(ctx: AuthContext, input: CreateAppointmentInput) {
+/**
+ * Prompt 56 — lets a caller make the booking part of a larger atomic step
+ * (a CustomerRequest converted into this appointment) without a second
+ * booking path: both hooks run inside the same scheduling transaction, and
+ * anything they throw rolls the appointment back too.
+ */
+export interface CreateAppointmentHooks {
+  /** Right after the business lock, before the vehicle-conflict/capacity checks. */
+  afterLock?: (tx: Prisma.TransactionClient) => Promise<void>
+  /** Right after the insert. */
+  afterCreate?: (tx: Prisma.TransactionClient, appointment: Appointment) => Promise<void>
+}
+
+export async function createAppointment(ctx: AuthContext, input: CreateAppointmentInput, hooks: CreateAppointmentHooks = {}) {
   requireRole(ctx, 'owner', 'admin', 'manager')
 
   const refs = { customerId: input.customerId, vehicleId: input.vehicleId, serviceId: input.serviceId }
@@ -239,21 +261,28 @@ export async function createAppointment(ctx: AuthContext, input: CreateAppointme
   // Vehicle conflict + capacity are checked under the scheduling lock, so a
   // concurrent booking can't slip in between the check and the insert.
   const check = { vehicleId: input.vehicleId, startAt: input.startAt, endAt: input.endAt, checkCapacity: true }
-  return withSchedulingLock(ctx, check, (tx) =>
-    appointmentRepository.create(
-      {
-        tenantId: ctx.tenant.id,
-        businessId: ctx.business.id,
-        customerId: input.customerId,
-        vehicleId: input.vehicleId,
-        serviceId: input.serviceId,
-        startAt: input.startAt,
-        endAt: input.endAt,
-        status: input.status ?? 'SCHEDULED',
-        notes: input.notes ?? null,
-      },
-      tx
-    )
+  return withSchedulingLock(
+    ctx,
+    check,
+    async (tx) => {
+      const appointment = await appointmentRepository.create(
+        {
+          tenantId: ctx.tenant.id,
+          businessId: ctx.business.id,
+          customerId: input.customerId,
+          vehicleId: input.vehicleId,
+          serviceId: input.serviceId,
+          startAt: input.startAt,
+          endAt: input.endAt,
+          status: input.status ?? 'SCHEDULED',
+          notes: input.notes ?? null,
+        },
+        tx
+      )
+      if (hooks.afterCreate) await hooks.afterCreate(tx, appointment)
+      return appointment
+    },
+    hooks.afterLock
   )
 }
 

@@ -27,6 +27,7 @@ import {
 import { ConversationRequestSection } from './ConversationRequestSection'
 import { ConversationIdentitySection } from './ConversationIdentitySection'
 import { ConversationQualificationSection } from './ConversationQualificationSection'
+import { RequestBookingSection } from '../requests/RequestBookingSection'
 import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 
@@ -117,6 +118,8 @@ export function ConversationDetailPanel({
   // Prompt 55 — confirmation of the last qualification apply; kept here because
   // the reload that follows remounts the qualification section.
   const [qualificationNotice, setQualificationNotice] = useState<string | null>(null)
+  // Prompt 56 — same for the last booking confirmation.
+  const [bookingNotice, setBookingNotice] = useState<string | null>(null)
   // Latest composer text, read when a draft arrives (state updaters may run later).
   const messageContentRef = useRef(messageContent)
   messageContentRef.current = messageContent
@@ -128,6 +131,7 @@ export function ConversationDetailPanel({
     setAiDraftNotice(null)
     setMessageContent('')
     setQualificationNotice(null)
+    setBookingNotice(null)
   }, [conversationId])
 
   async function loadAll() {
@@ -473,6 +477,21 @@ export function ConversationDetailPanel({
                 onChanged()
               }}
             />
+
+            {/* Prompt 56 — booking the linked request (same component as Request Detail). */}
+            {detail.customerRequestId && (
+              <RequestBookingSection
+                requestId={detail.customerRequestId}
+                canManage={canManage}
+                compact
+                notice={bookingNotice}
+                onBooked={(notice) => {
+                  setBookingNotice(notice)
+                  retry()
+                  onChanged()
+                }}
+              />
+            )}
 
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Эскалация</h3>

@@ -52,6 +52,14 @@ export interface AppointmentTimeFieldProps {
    * even if it isn't one of the generated slots (custom duration, past).
    */
   preserveInitialTime?: boolean
+  /** Prompt 56 — false hides «Указать время вручную» (booking from a request offers server slots only). */
+  allowManual?: boolean
+  /** Prompt 56 — slots matching the customer's wish are highlighted (never pre-selected, never the only ones shown). */
+  isPreferred?: (slot: AvailabilitySlotDto) => boolean
+  /** Prompt 56 — one line explaining the highlight. */
+  preferenceHint?: string | null
+  /** Prompt 56 — the field sits in a narrow column (Conversation Detail): size the grid by slot width, not by viewport. */
+  narrow?: boolean
 }
 
 type SlotState = { status: 'idle' } | { status: 'loading' } | { status: 'error' } | { status: 'ready'; slots: AvailabilitySlotDto[] }
@@ -72,6 +80,10 @@ export function AppointmentTimeField({
   onChange,
   reloadKey = 0,
   preserveInitialTime = false,
+  allowManual = true,
+  isPreferred,
+  preferenceHint,
+  narrow = false,
 }: AppointmentTimeFieldProps) {
   const [mode, setMode] = useState<'slots' | 'manual'>('slots')
   const [slotState, setSlotState] = useState<SlotState>({ status: 'idle' })
@@ -201,13 +213,15 @@ export function AppointmentTimeField({
           <span id={labelId} className="text-sm font-medium leading-none">
             Время
           </span>
-          <button
-            type="button"
-            onClick={switchMode}
-            className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {mode === 'slots' ? 'Указать время вручную' : 'Выбрать из свободного времени'}
-          </button>
+          {allowManual && (
+            <button
+              type="button"
+              onClick={switchMode}
+              className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {mode === 'slots' ? 'Указать время вручную' : 'Выбрать из свободного времени'}
+            </button>
+          )}
         </div>
 
         {mode === 'slots' ? (
@@ -230,10 +244,18 @@ export function AppointmentTimeField({
             {slotState.status === 'ready' && slots.length === 0 && (
               <p className="text-sm text-muted-foreground">На выбранную дату свободного времени нет.</p>
             )}
+            {slotState.status === 'ready' && preferenceHint && slots.some((s) => isPreferred?.(s)) && (
+              <p className="text-xs text-muted-foreground">{preferenceHint}</p>
+            )}
             {slotState.status === 'ready' && slots.length > 0 && (
-              <div role="group" aria-labelledby={labelId} className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
+              <div
+                role="group"
+                aria-labelledby={labelId}
+                className={narrow ? 'grid grid-cols-[repeat(auto-fill,minmax(4rem,1fr))] gap-2' : 'grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8'}
+              >
                 {slots.map((slot) => {
                   const selected = selectedSlot?.localStart === slot.localStart
+                  const preferred = !selected && !!isPreferred?.(slot)
                   return (
                     <Button
                       key={slot.localStart}
@@ -243,7 +265,8 @@ export function AppointmentTimeField({
                       aria-pressed={selected}
                       aria-label={`${slot.localStart}–${slot.localEnd}`}
                       title={`${slot.localStart}–${slot.localEnd}`}
-                      className="w-full px-0 tabular-nums"
+                      data-preferred={preferred || undefined}
+                      className={`w-full px-0 tabular-nums${preferred ? ' border-primary text-primary' : ''}`}
                       onClick={() => {
                         pinnedKeyRef.current = null
                         onChange({ startTime: slot.localStart, endTime: slot.localEnd })

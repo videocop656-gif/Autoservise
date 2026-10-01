@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle, ArrowRight, CalendarCheck, Plus } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ArrowLeft, Pencil, RefreshCw, User, Car, Wrench, MessageSquare, AlertTriangle } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -8,8 +8,7 @@ import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { zonedTimeToUtc, utcToZonedParts } from '../../lib/businessTime'
-import { AppointmentTimeField } from '../appointments/AppointmentTimeField'
-import { bookingErrorMessage, isSchedulingConflict, missingTimeMessage } from '../appointments/availability'
+import { RequestBookingSection } from './RequestBookingSection'
 import {
   type CustomerRequestDto,
   type CustomerRequestStatus,
@@ -19,11 +18,9 @@ import {
   type ServiceRefDto,
   type ConversationDto,
   type EscalationDto,
-  type AppointmentSummaryDto,
   type Paginated,
   REQUEST_STATUS_LABELS,
   SOURCE_LABELS,
-  APPOINTMENT_STATUS_LABELS,
   NEXT_STATUSES,
   isTerminalStatus,
   customerName,
@@ -66,10 +63,9 @@ import {
 // built downstream entity (Prompts 05+), not something invented here. The
 // status control below only ever offers the request's REAL allowed next
 // statuses (NEXT_STATUSES, mirroring the backend's own ALLOWED_TRANSITIONS
-// table) instead of all 7 values regardless of validity. When a request
-// has an appointmentId, its real appointment summary
-// (GET /api/appointments/:id — one extra call, only for the one opened
-// request, not per-row) is shown instead of a bare id.
+// table) instead of all 7 values regardless of validity. Since Prompt 56 the
+// linked appointment (or the way to book one) is RequestBookingSection's
+// job, from GET /api/customer-requests/:id/booking.
 // ---------------------------------------------------------------------------
 
 interface EditFormState {
@@ -126,33 +122,18 @@ export function RequestDetailPanel({
   const [conversations, setConversations] = useState<ConversationDto[]>([])
   const [conversationsError, setConversationsError] = useState(false)
   const [escalation, setEscalation] = useState<EscalationDto | null>(null)
-  const [appointment, setAppointment] = useState<AppointmentSummaryDto | null>(null)
-  const [appointmentError, setAppointmentError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusError, setStatusError] = useState<string | null>(null)
+  // Prompt 56 — confirmation of the last booking; kept here because the reload that follows remounts the booking section.
+  const [bookingNotice, setBookingNotice] = useState<string | null>(null)
 
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<EditFormState | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
-
-  // Prompt 31 — Request → Appointment: an inline quick-create mini-form,
-  // same architecture as Client Detail's own vehicle/request quick-create
-  // forms (Prompt 23) — no new form component, no new route. Pre-filled
-  // from the request's own vehicle/service when it already has them; the
-  // customer is fixed (the request's own customerId), matching how
-  // Appointment.customerId/vehicleId/serviceId are validated server-side
-  // (appointmentService.ts requires the vehicle to belong to the customer).
-  const [showApptForm, setShowApptForm] = useState(false)
-  const [apptForm, setApptForm] = useState({ vehicleId: '', serviceId: '', date: '', startTime: '', endTime: '', notes: '' })
-  const [apptFormError, setApptFormError] = useState<string | null>(null)
-  // Prompt 51 — bumped after a 409 on Save so the slot list is re-asked.
-  const [apptSlotReloadKey, setApptSlotReloadKey] = useState(0)
-  const [apptFieldErrors, setApptFieldErrors] = useState<Record<string, string[]>>({})
-  const [apptSaving, setApptSaving] = useState(false)
 
   async function loadAll() {
     setLoading(true)
@@ -165,22 +146,6 @@ export function RequestDetailPanel({
     if (requestResult.status === 'fulfilled') {
       const loadedRequest = requestResult.value.customerRequest
       setRequest(loadedRequest)
-      // Appointment has no bulk reference list anywhere in this app (unlike
-      // customers/vehicles/services) — a single-item lookup for the one
-      // opened request's own linked appointment, not a per-row fetch.
-      if (loadedRequest.appointmentId) {
-        try {
-          const apptResult = await apiFetch<{ appointment: AppointmentSummaryDto }>(`/api/appointments/${loadedRequest.appointmentId}`)
-          setAppointment(apptResult.appointment)
-          setAppointmentError(false)
-        } catch {
-          setAppointment(null)
-          setAppointmentError(true)
-        }
-      } else {
-        setAppointment(null)
-        setAppointmentError(false)
-      }
     } else {
       setError('Не удалось загрузить заявку.')
     }
@@ -210,6 +175,10 @@ export function RequestDetailPanel({
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    setBookingNotice(null)
+  }, [requestId])
 
   useEffect(() => {
     void loadAll()
@@ -292,99 +261,10 @@ export function RequestDetailPanel({
     }
   }
 
-  function openApptForm() {
-    if (!request) return
-    setApptForm({
-      vehicleId: request.vehicleId ?? '',
-      serviceId: request.serviceId ?? '',
-      date: '',
-      startTime: '',
-      endTime: '',
-      notes: '',
-    })
-    setApptFormError(null)
-    setApptFieldErrors({})
-    setShowApptForm(true)
-  }
-
-  // Creates the Appointment through the existing POST /api/appointments
-  // endpoint (the same one AppointmentsSettingsPage's own "Новая запись"
-  // form uses — no new endpoint), then links it to this request through
-  // the existing PATCH /api/customer-requests/:id endpoint (the same call
-  // "Редактировать" already makes to set appointmentId). Two existing
-  // calls, not a new combined one — but a single user action, and the
-  // request never renders as "without an appointment" once step one
-  // succeeds even if step two fails (spec §4/§11): the error is shown and
-  // the newly-created appointment stays discoverable from /appointments.
-  //
-  // Spec §5 — audited customerRequestService.ts directly: setting
-  // appointmentId never auto-transitions status to CONVERTED. No such
-  // automation is invented here; the status control below still offers
-  // CONVERTED as an explicit next step once appointmentId is set.
-  async function handleCreateAppointment(e: FormEvent) {
-    e.preventDefault()
-    if (!request || apptSaving) return
-    setApptFormError(null)
-    setApptFieldErrors({})
-    const missing = missingTimeMessage(apptForm)
-    if (missing) {
-      setApptFormError(missing)
-      return
-    }
-    setApptSaving(true)
-    try {
-      const startAt = zonedTimeToUtc(apptForm.date, apptForm.startTime, timezone).toISOString()
-      const endAt = zonedTimeToUtc(apptForm.date, apptForm.endTime, timezone).toISOString()
-      const created = await apiFetch<{ appointment: AppointmentSummaryDto }>('/api/appointments', {
-        method: 'POST',
-        body: JSON.stringify({
-          customerId: request.customerId,
-          vehicleId: apptForm.vehicleId,
-          serviceId: apptForm.serviceId,
-          startAt,
-          endAt,
-          notes: apptForm.notes.trim() || null,
-        }),
-      })
-      try {
-        await apiFetch(`/api/customer-requests/${requestId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ appointmentId: created.appointment.id }),
-        })
-      } catch (linkErr) {
-        setApptFormError(
-          linkErr instanceof ApiClientError
-            ? `Запись создана, но не удалось связать её с заявкой: ${linkErr.message}`
-            : 'Запись создана, но не удалось связать её с заявкой.'
-        )
-        setApptSaving(false)
-        await loadAll()
-        return
-      }
-      setShowApptForm(false)
-      await loadAll()
-      onChanged()
-    } catch (err) {
-      if (err instanceof ApiClientError && isSchedulingConflict(err.code)) {
-        // The time was taken meanwhile — re-ask the server; the stale time is dropped.
-        setApptFormError(bookingErrorMessage(err.code, err.message))
-        setApptSlotReloadKey((k) => k + 1)
-      } else if (err instanceof ApiClientError) {
-        setApptFormError(err.message || 'Проверьте заполненные поля.')
-        setApptFieldErrors(err.fieldErrors)
-      } else {
-        setApptFormError('Не удалось создать запись.')
-      }
-    } finally {
-      setApptSaving(false)
-    }
-  }
-
   const customer = request ? customers.find((c) => c.id === request.customerId) : undefined
   const vehicle = request?.vehicleId ? vehicles.find((v) => v.id === request.vehicleId) : undefined
   const service = request?.serviceId ? services.find((s) => s.id === request.serviceId) : undefined
   const customerVehicles = form ? vehicles.filter((v) => v.customerId === form.customerId) : []
-  const requestCustomerVehicles = request ? vehicles.filter((v) => v.customerId === request.customerId) : []
   const matchingAppointments = form
     ? appointments.filter(
         (a) =>
@@ -698,158 +578,22 @@ export function RequestDetailPanel({
             )}
           </section>
 
-          {/* "Куда ведёт CONVERTED" (spec §8/§4 of Prompt 24) — Appointment is
-              the real existing downstream entity, audited from
-              customerRequestService.ts's own transition rule (a request can
-              only become CONVERTED once appointmentId is set). Shown once a
-              link exists, or (Prompt 31 §4) whenever the request is still in
-              a non-terminal state, so "Создать запись" stays reachable
-              through the request's whole active lifecycle — never only
-              while QUALIFIED, and never offered once the request is
-              CLOSED/CANCELLED with no appointment (nothing to convert). */}
-          {(request.appointmentId || !isTerminalStatus(request.status)) && (
-            <section className="space-y-2 rounded-md border border-border p-3">
-              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-                <CalendarCheck className="h-4 w-4 text-muted-foreground" />
-                Запись
-              </h3>
-              {request.appointmentId ? (
-                appointmentError ? (
-                  <p className="text-sm text-destructive">Не удалось загрузить запись</p>
-                ) : appointment ? (
-                  // Prompt 31 §4 — deep-links to the specific Appointment via
-                  // the existing ?open= cross-navigation mechanism (the same
-                  // one every other Detail-to-Detail link in this app uses),
-                  // not the bare list. §10: once an appointment is linked,
-                  // this replaces "Create Appointment" outright — reopening
-                  // Request Detail can never offer to create a second one.
-                  <Link
-                    to={`/appointments?open=${appointment.id}`}
-                    className="flex items-center justify-between gap-2 rounded-md border border-border p-2 text-sm hover:bg-muted/40"
-                  >
-                    <span>
-                      {utcToZonedParts(new Date(appointment.startAt), timezone).dateStr}{' '}
-                      {utcToZonedParts(new Date(appointment.startAt), timezone).timeStr}
-                    </span>
-                    <span className="flex items-center gap-2">
-                      <Badge variant="default">{APPOINTMENT_STATUS_LABELS[appointment.status]}</Badge>
-                      <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-                    </span>
-                  </Link>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Загрузка...</p>
-                )
-              ) : canManage ? (
-                <>
-                  {/* Prompt 42 — same class of gap Prompt 34 found for
-                      /appointments' own create button: opening this form
-                      with no vehicle for this customer or no service in
-                      the tenant left both required <select>s with nothing
-                      but a disabled placeholder and no explanation why the
-                      form couldn't be submitted. Now explained up front,
-                      with a targeted link to fix it, instead of a silent
-                      dead end. */}
-                  {(requestCustomerVehicles.length === 0 || services.length === 0) && (
-                    <p className="text-sm text-muted-foreground">
-                      Чтобы создать запись, сначала добавьте{' '}
-                      {requestCustomerVehicles.length === 0 && (
-                        <Link to={`/clients?open=${request.customerId}`} className="underline hover:text-foreground">
-                          автомобиль клиенту
-                        </Link>
-                      )}
-                      {requestCustomerVehicles.length === 0 && services.length === 0 && ' и '}
-                      {services.length === 0 && (
-                        <Link to="/settings/services" className="underline hover:text-foreground">
-                          услугу
-                        </Link>
-                      )}
-                      .
-                    </p>
-                  )}
-                  {!showApptForm && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={openApptForm}
-                      disabled={requestCustomerVehicles.length === 0 || services.length === 0}
-                    >
-                      <Plus className="mr-1 h-3.5 w-3.5" />
-                      Создать запись
-                    </Button>
-                  )}
-                  {showApptForm && (
-                    <form onSubmit={handleCreateAppointment} className="space-y-2 rounded-md border border-border p-2">
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <select
-                          required
-                          aria-label="Автомобиль"
-                          value={apptForm.vehicleId}
-                          onChange={(e) => setApptForm({ ...apptForm, vehicleId: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                        >
-                          <option value="" disabled>
-                            Выберите автомобиль...
-                          </option>
-                          {requestCustomerVehicles.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {vehicleLabel(vehicles, v.id)}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          required
-                          aria-label="Услуга"
-                          value={apptForm.serviceId}
-                          onChange={(e) => setApptForm({ ...apptForm, serviceId: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                        >
-                          <option value="" disabled>
-                            Выберите услугу...
-                          </option>
-                          {services.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <AppointmentTimeField
-                        idPrefix="request-appt"
-                        timezone={timezone}
-                        serviceId={apptForm.serviceId}
-                        vehicleId={apptForm.vehicleId}
-                        value={{ date: apptForm.date, startTime: apptForm.startTime, endTime: apptForm.endTime }}
-                        onChange={(patch) => setApptForm((f) => ({ ...f, ...patch }))}
-                        reloadKey={apptSlotReloadKey}
-                      />
-                      <Textarea
-                        placeholder="Заметки (опционально)"
-                        value={apptForm.notes}
-                        onChange={(e) => setApptForm({ ...apptForm, notes: e.target.value })}
-                      />
-                      {apptFormError && <p className="text-sm text-destructive">{apptFormError}</p>}
-                      {Object.entries(apptFieldErrors).map(([field, messages]) => (
-                        <p key={field} className="text-sm text-destructive">
-                          {field}: {messages[0]}
-                        </p>
-                      ))}
-                      <div className="flex gap-2">
-                        <Button type="submit" size="sm" disabled={apptSaving}>
-                          {apptSaving ? 'Сохранение...' : 'Сохранить'}
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => setShowApptForm(false)} disabled={apptSaving}>
-                          Отмена
-                        </Button>
-                      </div>
-                    </form>
-                  )}
-                </>
-              ) : (
-                <p className="text-sm text-muted-foreground">Запись не связана</p>
-              )}
-            </section>
-          )}
+          {/* Prompt 56 — «Запись»: the request's booking confirmation (readiness →
+              free slots → «Подтвердить запись»), shared with Conversation
+              Detail. Replaces the Prompt 31 quick-create, which created the
+              appointment and linked it in two separate calls and let the
+              operator pick a vehicle/service other than the request's.
+              A linked appointment is shown instead of any create action. */}
+          <RequestBookingSection
+            requestId={request.id}
+            canManage={canManage}
+            notice={bookingNotice}
+            onBooked={(notice) => {
+              setBookingNotice(notice)
+              void loadAll()
+              onChanged()
+            }}
+          />
 
           <section className="space-y-2 rounded-md border border-border p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold">

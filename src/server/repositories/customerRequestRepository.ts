@@ -1,4 +1,4 @@
-import type { Prisma, CustomerRequestStatus, CustomerRequestSource } from '@prisma/client'
+import { Prisma, type CustomerRequestStatus, type CustomerRequestSource } from '@prisma/client'
 import { prisma } from '../db/prisma'
 import { withTenant } from '../lib/tenantScope'
 
@@ -62,6 +62,47 @@ export const customerRequestRepository = {
         },
       },
     })
+  },
+
+  /**
+   * Prompt 56 — locks the request row (SELECT … FOR UPDATE) for the rest of
+   * the caller's transaction and returns its current committed state, or
+   * null if this tenant + business has no such request. Two confirmations
+   * of the same request queue here, so the second sees the first's link.
+   */
+  async findByIdForUpdate(tenantId: string, businessId: string, id: string, tx: Prisma.TransactionClient) {
+    const rows = await tx.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT "id" FROM "customer_requests" WHERE "id" = ${id} AND "tenantId" = ${tenantId} AND "businessId" = ${businessId} FOR UPDATE`
+    )
+    if (!rows[0]) return null
+    return tx.customerRequest.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
+  /**
+   * Prompt 56 — links the appointment a booking just created, only while the
+   * request is still unlinked and in the status the caller checked
+   * (compare-and-set, like Prompt 49.1's conversation link). When `toStatus`
+   * differs, the status moves in the same write and gets its history row.
+   * Returns false when nothing matched — the caller rolls back.
+   */
+  async linkBookedAppointment(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    link: { appointmentId: string; fromStatus: CustomerRequestStatus; toStatus: CustomerRequestStatus; changedByUserId: string },
+    tx: Prisma.TransactionClient
+  ): Promise<boolean> {
+    const result = await tx.customerRequest.updateMany({
+      where: withTenant(tenantId, { businessId, id, appointmentId: null, status: link.fromStatus }),
+      data: { appointmentId: link.appointmentId, status: link.toStatus },
+    })
+    if (result.count === 0) return false
+    if (link.toStatus !== link.fromStatus) {
+      await tx.customerRequestStatusHistory.create({
+        data: { tenantId, businessId, customerRequestId: id, fromStatus: link.fromStatus, toStatus: link.toStatus, changedByUserId: link.changedByUserId },
+      })
+    }
+    return true
   },
 
   async updateById(tenantId: string, businessId: string, id: string, data: Prisma.CustomerRequestUpdateInput) {

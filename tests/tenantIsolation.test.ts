@@ -1980,3 +1980,47 @@ describe('tenant isolation — conversation customer intake', () => {
     expect(result).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Prompt 56 — booking confirmation from a CustomerRequest. The request row
+// lock and the appointment link are scoped by id + tenantId + businessId,
+// so another tenant's request id locks nothing, reads nothing, links nothing.
+// ---------------------------------------------------------------------------
+describe('tenant isolation — request booking confirmation', () => {
+  it('tenant B cannot lock tenant A request: FOR UPDATE is scoped by id + tenantId + businessId', async () => {
+    queryRawMock.mockResolvedValue([])
+    const { prisma } = await import('../src/server/db/prisma')
+    const result = await customerRequestRepository.findByIdForUpdate(
+      'tenant-b',
+      'business-b',
+      'request-owned-by-tenant-a',
+      prisma as unknown as Parameters<typeof customerRequestRepository.findByIdForUpdate>[3]
+    )
+
+    const sql = queryRawMock.mock.calls[0]![0] as { text: string; values: unknown[] }
+    expect(sql.text).toContain('FROM "customer_requests"')
+    expect(sql.text).toContain('FOR UPDATE')
+    expect(sql.text).toContain('"id" = $1 AND "tenantId" = $2 AND "businessId" = $3')
+    expect(sql.values).toEqual(['request-owned-by-tenant-a', 'tenant-b', 'business-b'])
+    expect(customerRequestFindFirstMock).not.toHaveBeenCalled()
+    expect(result).toBeNull()
+  })
+
+  it('the appointment link is a tenant-scoped compare-and-set (unlinked + expected status); a foreign request matches 0 rows', async () => {
+    customerRequestUpdateManyMock.mockResolvedValue({ count: 0 })
+    const { prisma } = await import('../src/server/db/prisma')
+    const linked = await customerRequestRepository.linkBookedAppointment(
+      'tenant-b',
+      'business-b',
+      'request-owned-by-tenant-a',
+      { appointmentId: 'appt-b', fromStatus: 'QUALIFIED', toStatus: 'CONVERTED', changedByUserId: 'user-b' },
+      prisma as unknown as Parameters<typeof customerRequestRepository.linkBookedAppointment>[4]
+    )
+
+    expect(customerRequestUpdateManyMock).toHaveBeenCalledWith({
+      where: { businessId: 'business-b', id: 'request-owned-by-tenant-a', appointmentId: null, status: 'QUALIFIED', tenantId: 'tenant-b' },
+      data: { appointmentId: 'appt-b', status: 'CONVERTED' },
+    })
+    expect(linked).toBe(false)
+  })
+})
