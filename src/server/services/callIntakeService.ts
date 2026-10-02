@@ -122,7 +122,13 @@ export async function ingestCallEvent(event: NormalizedCallEvent, receivedAt: Da
       outcomeDetectedAt: call.outcomeDetectedAt,
     }
     const next = applyCallEvent(current, event, receivedAt)
-    const recovery = recoveryFor(next)
+    // MCR-4 — once the recovery engine owns the call (CLAIMED / SENT / FAILED
+    // / SUPPRESSED) intake never rewrites its recovery state: a late ANSWERED
+    // still updates the call's outcome, and the engine re-checks that outcome
+    // before any send (and on every retry), so it won't message an answered
+    // caller. Only the pre-engine states are recomputed here.
+    const engineOwned = !['PENDING', 'READY', 'NOT_ELIGIBLE'].includes(call.recoveryState)
+    const recovery = engineOwned ? { recoveryState: call.recoveryState, recoveryIneligibleReason: call.recoveryIneligibleReason } : recoveryFor(next)
     const updated = await callInteractionRepository.update(
       call.id,
       {

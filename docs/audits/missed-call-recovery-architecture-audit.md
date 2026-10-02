@@ -838,4 +838,14 @@ It does not wait on any external research.
   - `Business.locationUrl` (safe http(s) only);
   - AI context carries these as explicit facts;
   - AI contract rules forbid invented prices and addresses (Service is authoritative over Knowledge), plus a "useful answer first" rule.
-- MCR-4 and later are not implemented.
+- **MCR-4 — Missed Call Recovery Engine: implemented with a MOCK channel** (`docs/final-reports/final-report-mcr-4.md`).
+  It covers:
+  - atomic READY → CLAIMED claim (row lock) and a late-answer re-check under the lock;
+  - a 15-minute anti-spam window per tenant / business / caller;
+  - a provider-neutral channel router with an adapter capability contract (WhatsApp first; Telegram never);
+  - one deterministic SYSTEM message (`MISSED_CALL_RECOVERY_V1`) delivered through the existing ChannelDelivery pipeline;
+  - a Call ↔ Conversation link and latency timestamps;
+  - a secured processor endpoint.
+
+  Production needs a scheduler or queue to call the processor (R0-D).
+- MCR-5 and later are not implemented.

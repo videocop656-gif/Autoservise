@@ -94,6 +94,13 @@ MCR-3 (pricing & location) is implemented:
 
 See `docs/final-reports/final-report-mcr-3.md` and `AI_BEHAVIOR_CONTRACT.md` §7.
 
+MCR-4 (recovery engine) is implemented with a MOCK WhatsApp channel:
+- a missed call becomes one deterministic automated message («Здравствуйте! Вы только что звонили…»);
+- it is sent through the existing delivery pipeline as a SYSTEM message, never as a staff member;
+- it is protected against duplicates, repeated calls and late answers.
+
+It runs when the processor endpoint is called; a production scheduler, real WhatsApp and real telephony are still pending. See `docs/final-reports/final-report-mcr-4.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

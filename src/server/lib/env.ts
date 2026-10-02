@@ -52,6 +52,19 @@ export const env = {
     const value = process.env.TELEGRAM_WEBHOOK_SECRET
     return value && value.trim() !== '' ? value : undefined
   },
+  /**
+   * MCR-4 — lets the MOCK WhatsApp channel accept business-initiated recovery
+   * messages ("true"). Development/testing only: always false in production,
+   * so a mock can never pose as a real recovery channel there.
+   */
+  get recoveryMockChannelEnabled(): boolean {
+    return !this.isProduction && process.env.RECOVERY_MOCK_CHANNEL_ENABLED === 'true'
+  },
+  /** MCR-4 — bearer secret of POST /api/internal/recovery/process (scheduler/cron trigger). Unset → endpoint disabled. */
+  get recoveryProcessorSecret(): string | undefined {
+    const value = process.env.RECOVERY_PROCESSOR_SECRET
+    return value && value.trim() !== '' ? value : undefined
+  },
   /** MCR-2 — enables the MOCK telephony webhook (development/testing only; ignored in production). */
   get telephonyMockWebhookSecret(): string | undefined {
     const value = process.env.TELEPHONY_MOCK_WEBHOOK_SECRET

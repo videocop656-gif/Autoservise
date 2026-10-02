@@ -222,6 +222,8 @@ describe('sendMessageViaChannel — success / failure lifecycle (spec §5, §24)
       channelType: 'TELEGRAM',
       externalConversationId: 'ext-conv-1',
       content: 'Hello there',
+      // MCR-4 — the ChannelDelivery id doubles as the provider idempotency key.
+      idempotencyKey: expect.any(String),
     })
   })
 

@@ -1,5 +1,6 @@
 import type { ChannelType } from '@prisma/client'
-import type { ChannelAdapter, ChannelSendResult, NormalizedIncomingMessage, NormalizedOutboundMessage } from '../types'
+import type { BusinessInitiatedCapability, ChannelAdapter, ChannelSendResult, NormalizedIncomingMessage, NormalizedOutboundMessage } from '../types'
+import { env } from '../../lib/env'
 
 /**
  * Foundation-only mock adapter (spec §"MOCK ADAPTERS" / §"CHANNEL
@@ -56,7 +57,23 @@ export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
       if (input.content === '__mock_send_failure__') {
         return { success: false, errorMessage: 'Mock adapter simulated a send failure', retryable: true }
       }
+      // MCR-4 — deterministic recovery failure for tests: a mock WhatsApp
+      // destination ending in 0000 is "rejected by the provider".
+      if (channelType === 'WHATSAPP' && input.idempotencyKey && /0000$/.test(input.externalConversationId)) {
+        return { success: false, errorMessage: 'Mock provider rejected the destination', retryable: true, errorCode: 'CHANNEL_PROVIDER_ERROR' }
+      }
+      // With an idempotency key the provider id is deterministic (a retry of
+      // the same delivery gets the same id, as a real provider would dedupe it).
+      if (input.idempotencyKey) return { success: true, externalMessageId: `mock-out-${input.idempotencyKey}` }
       return { success: true, externalMessageId: `mock-out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
+    },
+    // MCR-4 — only the mock WHATSAPP channel may pose as a recovery channel,
+    // and only when RECOVERY_MOCK_CHANNEL_ENABLED=true outside production.
+    businessInitiatedCapability(destinationE164: string): BusinessInitiatedCapability {
+      if (channelType !== 'WHATSAPP') return { eligible: false, reason: 'BUSINESS_INITIATION_NOT_PERMITTED' }
+      if (!env.recoveryMockChannelEnabled) return { eligible: false, reason: 'PROVIDER_UNAVAILABLE' }
+      if (!/^\+[1-9]\d{6,14}$/.test(destinationE164)) return { eligible: false, reason: 'INVALID_DESTINATION' }
+      return { eligible: true }
     },
   }
 }

@@ -346,14 +346,19 @@ export function ConversationDetailPanel({
             {detail.messages?.length === 0 && <p className="text-sm text-muted-foreground">Сообщений пока нет.</p>}
             {detail.messages?.map((m) => {
               const canSendViaChannel = !!detail.channelConnectionId && m.direction === 'OUTBOUND' && m.senderType === 'STAFF'
-              const alignment = m.senderType === 'STAFF' ? 'justify-end' : m.senderType === 'SYSTEM' ? 'justify-center' : 'justify-start'
+              // MCR-4 — an automated outbound message (missed-call recovery) is a real
+              // message to the customer: shown on the outgoing side, labelled as automatic.
+              const automated = m.senderType === 'SYSTEM' && m.direction === 'OUTBOUND'
+              const alignment = m.senderType === 'STAFF' || automated ? 'justify-end' : m.senderType === 'SYSTEM' ? 'justify-center' : 'justify-start'
               const bubble =
                 m.senderType === 'STAFF'
                   ? 'bg-card border border-border'
-                  : m.senderType === 'SYSTEM'
+                  : automated
+                    ? 'border border-dashed border-primary/40 bg-card'
+                    : m.senderType === 'SYSTEM'
                     ? 'border border-dashed border-border bg-transparent text-xs text-muted-foreground'
                     : 'bg-muted'
-              const senderLabel = m.senderType === 'CUSTOMER' ? 'Клиент' : m.senderType === 'STAFF' ? 'Сотрудник' : 'Система'
+              const senderLabel = m.senderType === 'CUSTOMER' ? 'Клиент' : m.senderType === 'STAFF' ? 'Сотрудник' : automated ? 'Автоматическое сообщение' : 'Система'
               return (
                 <div key={m.id} className={`flex ${alignment}`}>
                   <div className={`max-w-[85%] rounded-lg p-3 text-sm ${bubble}`}>
@@ -363,6 +368,13 @@ export function ConversationDetailPanel({
                       <span>{formatActivity(m.createdAt)}</span>
                     </div>
                     <div>{m.content}</div>
+                    {automated && m.delivery && (
+                      <div className="mt-1.5 text-xs">
+                        <Badge variant={m.delivery.status === 'SENT' ? 'success' : m.delivery.status === 'FAILED' ? 'destructive' : 'default'}>
+                          {m.delivery.status === 'SENT' ? 'Отправлено' : m.delivery.status === 'FAILED' ? 'Не отправлено' : 'Отправляется'}
+                        </Badge>
+                      </div>
+                    )}
                     {canSendViaChannel && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
                         {m.delivery && (

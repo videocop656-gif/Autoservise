@@ -48,7 +48,26 @@ export interface NormalizedOutboundMessage {
   content: string
   /** Only present when the target Conversation has a known customer identity on this channel — most adapters (e.g. Website) will never need this, since externalConversationId alone is enough to address the reply. */
   externalCustomerId?: string
+  /**
+   * MCR-4 — a stable key for this delivery (the ChannelDelivery id). A real
+   * provider passes it as its idempotency key so a retried send after an
+   * uncertain result can't produce a second customer message.
+   */
+  idempotencyKey?: string
 }
+
+/**
+ * MCR-4 — can this channel start a conversation with this phone number right
+ * now (business-initiated, e.g. after a missed call)? Distinct from
+ * "configured": a real WhatsApp adapter will answer with its own policy
+ * (template, consent, window). The router never sends without `eligible`.
+ */
+export type BusinessInitiatedCapability =
+  | { eligible: true }
+  | {
+      eligible: false
+      reason: 'NOT_CONFIGURED' | 'INVALID_DESTINATION' | 'BUSINESS_INITIATION_NOT_PERMITTED' | 'TEMPLATE_UNAVAILABLE' | 'PROVIDER_UNAVAILABLE'
+    }
 
 /** The result of a (mock, for this stage) outbound send attempt — never a raw provider/SDK response. */
 export interface ChannelSendResult {
@@ -95,6 +114,11 @@ export interface ChannelAdapter {
   readonly channelType: ChannelType
   parseIncoming(rawPayload: unknown): NormalizedIncomingMessage
   sendMessage(input: NormalizedOutboundMessage): Promise<ChannelSendResult>
+  /**
+   * MCR-4 — optional. An adapter that doesn't implement it can't be used for
+   * business-initiated recovery (e.g. Telegram can't message a phone number).
+   */
+  businessInitiatedCapability?(destinationE164: string): BusinessInitiatedCapability
 }
 
 /**

@@ -768,6 +768,7 @@ model Conversation {
   messages    Message[]
   escalations AiEscalation[]
   aiLogs      AiLog[]
+  recoveredCalls CallInteraction[] @relation("CallRecoveryConversation")
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -820,6 +821,7 @@ model Message {
   // ChannelDelivery's own comment). Present only for an OUTBOUND/STAFF
   // Message that a real channel send was attempted for (Prompt 17).
   channelDelivery ChannelDelivery?
+  recoveryForCall CallInteraction? @relation("CallRecoveryMessage")
 
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
@@ -1303,8 +1305,16 @@ enum CallRecoveryState {
   PENDING
   // A final fact rules recovery out (see recoveryIneligibleReason).
   NOT_ELIGIBLE
-  // Missed inbound call with a usable caller number — ready for future recovery.
+  // Missed inbound call with a usable caller number — ready for recovery.
   READY
+  // MCR-4 — one processor owns this recovery attempt (atomic READY/FAILED → CLAIMED).
+  CLAIMED
+  // MCR-4 — the first recovery message's ChannelDelivery reached SENT (provider accepted it).
+  SENT
+  // MCR-4 — the attempt failed (recoveryFailureCode); retried while fresh and under the attempt cap.
+  FAILED
+  // MCR-4 — deliberately not sent by policy (anti-spam window, too late); reason in recoveryIneligibleReason.
+  SUPPRESSED
 }
 
 enum CallEventType {
@@ -1382,18 +1392,37 @@ model CallInteraction {
   outcomeDetectedAt    DateTime?
 
   recoveryState            CallRecoveryState @default(PENDING)
-  // NO_CALLER_PHONE / ANSWERED / OUTBOUND — set only with NOT_ELIGIBLE.
+  // Why there is no recovery: NO_CALLER_PHONE / ANSWERED / OUTBOUND (with
+  // NOT_ELIGIBLE) or ANTI_SPAM / TOO_LATE (with SUPPRESSED, MCR-4).
   recoveryIneligibleReason String?
+
+  // MCR-4 — recovery engine. Written only by callRecoveryRepository.
+  // Latency chain: outcomeDetectedAt (missed detected) → recoveryClaimedAt
+  // (first claim) → recoverySentAt (ChannelDelivery SENT = provider accepted).
+  recoveryClaimedAt      DateTime?
+  recoverySentAt         DateTime?
+  recoveryAttemptCount   Int       @default(0)
+  // Safe code with FAILED: NO_ELIGIBLE_CHANNEL / CHANNEL_PROVIDER_ERROR / DELIVERY_UNCERTAIN / …
+  recoveryFailureCode    String?
+  // Internal template key of the first message ("MISSED_CALL_RECOVERY_V1");
+  // a real provider maps it to its own approved template later.
+  recoveryTemplateKey    String?
+  // The conversation this missed call started (one per recovered call;
+  // several calls of one phone may share it) and the first message itself.
+  recoveryConversationId String?
+  recoveryMessageId      String?   @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  business            Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business             Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
   // Restrict: call history must survive a number being deactivated (there is no delete path).
-  businessPhoneNumber BusinessPhoneNumber @relation(fields: [businessPhoneNumberId], references: [id], onDelete: Restrict)
-  customer            Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  events              CallEvent[]
+  businessPhoneNumber  BusinessPhoneNumber @relation(fields: [businessPhoneNumberId], references: [id], onDelete: Restrict)
+  customer             Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  events               CallEvent[]
+  recoveryConversation Conversation?       @relation("CallRecoveryConversation", fields: [recoveryConversationId], references: [id], onDelete: Restrict)
+  recoveryMessage      Message?            @relation("CallRecoveryMessage", fields: [recoveryMessageId], references: [id], onDelete: SetNull)
 
   @@unique([provider, providerCallId])
   @@index([tenantId, businessId, createdAt])
@@ -1401,6 +1430,9 @@ model CallInteraction {
   // Future MCR-4 anti-spam window: "same caller, same business, recently".
   @@index([tenantId, businessId, remotePhoneE164, outcomeDetectedAt])
   @@index([customerId])
+  // MCR-4 — the processor's scan (READY / FAILED / stale CLAIMED, oldest first, all tenants).
+  @@index([recoveryState, outcomeDetectedAt])
+  @@index([recoveryConversationId])
   @@map("call_interactions")
 }
 

@@ -242,6 +242,16 @@ describe('C. one CallInteraction per call — lifecycle, out-of-order, duplicate
     expect(c).toMatchObject({ outcome: 'ANSWERED', recoveryState: 'NOT_ELIGIBLE' })
   })
 
+  it.each(['CLAIMED', 'SENT', 'FAILED', 'SUPPRESSED'])(
+    'MCR-4: a late ANSWERED updates the outcome but never rewrites the engine-owned recovery state %s',
+    async (state) => {
+      await run(['MISSED'])
+      call()!.recoveryState = state
+      await ingestCallEvent(event({ eventType: 'ANSWERED' }))
+      expect(call()).toMatchObject({ outcome: 'ANSWERED', recoveryState: state })
+    }
+  )
+
   it('completed without an answered flag claims nothing: stays IN_PROGRESS / PENDING', async () => {
     const c = await run(['RINGING'], ['COMPLETED', null])
     expect(c).toMatchObject({ outcome: 'IN_PROGRESS', recoveryState: 'PENDING' })
