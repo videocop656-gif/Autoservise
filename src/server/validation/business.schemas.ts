@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { SUPPORTED_CURRENCIES } from '../domain/currency'
 import { isValidTimeZone } from '../lib/timezone'
+import { isSupportedPhoneRegion } from '../lib/phone'
 
 /** Lets a cleared form field ("") mean "set to null" instead of failing email/url validation on an empty string. */
 const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.trim() === '' ? null : val)
@@ -32,6 +33,14 @@ export const businessProfileSchema = z
       .int('Количество постов должно быть целым числом.')
       .min(1, SERVICE_BAY_CAPACITY_MESSAGE)
       .max(MAX_SERVICE_BAY_CAPACITY, `Количество постов не может быть больше ${MAX_SERVICE_BAY_CAPACITY}.`)
+      .optional(),
+    // MCR-1 — default region for phone numbers written without "+"
+    // (ISO 3166-1 alpha-2, one libphonenumber supports).
+    phoneRegion: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .refine(isSupportedPhoneRegion, { message: 'Неизвестный код страны (например, KZ или RU).' })
       .optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field must be provided' })

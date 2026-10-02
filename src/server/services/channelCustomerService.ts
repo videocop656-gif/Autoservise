@@ -1,12 +1,8 @@
 import type { AuthContext } from '../types/auth'
 import { customerChannelIdentityRepository } from '../repositories/customerChannelIdentityRepository'
 import { customerRepository } from '../repositories/customerRepository'
+import { normalizePhone } from '../lib/phone'
 
-/** Strips everything but digits — the first half of the "last 10 digits" heuristic; see customerRepository.ts's findActiveByLocalPhoneNumber() for why this exact, deliberately simple approach was chosen over a full phone-parsing library. */
-export function localSubscriberNumber(phone: string): string {
-  const digits = phone.replace(/\D/g, '')
-  return digits.slice(-10)
-}
 
 export interface CustomerResolution {
   customerId: string | null
@@ -25,9 +21,11 @@ const NO_MATCH: CustomerResolution = { customerId: null, newIdentityToLink: null
  *    linked to a Customer, every later message from that same external id
  *    resolves to the SAME Customer, never re-matched by phone.
  * 2. Otherwise, if a phone was provided, look for exactly one active
- *    Customer with a matching local subscriber number. Zero or more than
- *    one match — including because two different active customers happen
- *    to share the same last-10-digits, or because "how many is ambiguous"
+ *    Customer with the same canonical phone (MCR-1: Customer.phoneE164 vs
+ *    normalizePhone(customerPhone, Business.phoneRegion); an empty or
+ *    invalid phone matches nothing).
+ *    Zero or more than one match — including because two different active
+ *    customers share one number, or because "how many is ambiguous"
  *    genuinely can't be resolved safely — leaves the conversation
  *    unlinked, deliberately (spec: "если однозначного customer нет —
  *    Conversation может остаться без customer" / never автоматическое
@@ -56,12 +54,12 @@ export async function resolveCustomerForInbound(
     return NO_MATCH
   }
 
-  const localNumber = localSubscriberNumber(payload.customerPhone)
-  if (localNumber.length === 0) {
+  const phoneE164 = normalizePhone(payload.customerPhone, ctx.business.phoneRegion)
+  if (!phoneE164) {
     return NO_MATCH
   }
 
-  const matches = await customerRepository.findActiveByLocalPhoneNumber(ctx.tenant.id, ctx.business.id, localNumber)
+  const matches = await customerRepository.findActiveByPhoneE164(ctx.tenant.id, ctx.business.id, phoneE164)
   if (matches.length !== 1) {
     // Zero matches (unknown) or more than one (ambiguous) — never guess.
     return NO_MATCH

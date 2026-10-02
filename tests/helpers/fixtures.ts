@@ -25,6 +25,7 @@ export function makeBusiness(overrides: Partial<Business> = {}): Business {
     website: null,
     currency: 'RUB',
     serviceBayCapacity: 1,
+    phoneRegion: 'KZ',
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

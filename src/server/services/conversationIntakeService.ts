@@ -8,7 +8,6 @@ import { customerRequestRepository } from '../repositories/customerRequestReposi
 import { vehicleRepository } from '../repositories/vehicleRepository'
 import { prepareCustomerCreate } from './customerService'
 import { createVehicle } from './vehicleService'
-import { localSubscriberNumber } from './channelCustomerService'
 import type { CreateCustomerInput } from '../validation/customer.schemas'
 import type { ConversationVehicleCreateInput } from '../validation/conversationIntake.schemas'
 
@@ -104,8 +103,8 @@ export interface PhoneMatch {
  * Create a customer (the existing createCustomer rules: owner/admin,
  * active-email duplicate) and link it — only while the conversation has no
  * customer. Before creating, an active customer of THIS business with the
- * same phone (last 10 digits — the channel pipeline's existing
- * normalization) is reported as 409 CUSTOMER_PHONE_EXISTS with the matches,
+ * same canonical phone (MCR-1: Customer.phoneE164) is reported as
+ * 409 CUSTOMER_PHONE_EXISTS with the matches,
  * so the operator links the existing one instead of creating a duplicate.
  * Create + link are one transaction: if the link loses a race, the new
  * customer is rolled back too.
@@ -118,9 +117,9 @@ export async function createCustomerForConversation(ctx: AuthContext, conversati
     throw new ApiError(409, 'CONVERSATION_HAS_CUSTOMER', 'У диалога уже есть клиент. Обновите диалог.')
   }
 
-  const localNumber = localSubscriberNumber(input.phone)
-  if (localNumber.length > 0) {
-    const matches = await customerRepository.findActiveByLocalPhoneNumber(ctx.tenant.id, ctx.business.id, localNumber)
+  const phoneE164 = data.phoneE164
+  if (phoneE164) {
+    const matches = await customerRepository.findActiveByPhoneE164(ctx.tenant.id, ctx.business.id, phoneE164)
     if (matches.length > 0) {
       const found: PhoneMatch[] = []
       for (const { id } of matches.slice(0, MAX_PHONE_MATCHES)) {

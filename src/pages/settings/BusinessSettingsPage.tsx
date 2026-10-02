@@ -9,6 +9,14 @@ import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth, type AuthBusiness } from '../../context/AuthContext'
 
 const CURRENCIES = ['RUB', 'KZT', 'USD', 'EUR'] as const
+// MCR-1 — default country for phone numbers written without "+". The server
+// accepts any ISO code libphonenumber supports; these are the launch markets.
+const PHONE_REGIONS = [
+  { code: 'KZ', label: 'Казахстан (+7)' },
+  { code: 'RU', label: 'Россия (+7)' },
+  { code: 'UZ', label: 'Узбекистан (+998)' },
+  { code: 'KG', label: 'Кыргызстан (+996)' },
+] as const
 
 type FormState = {
   name: string
@@ -20,6 +28,7 @@ type FormState = {
   website: string
   currency: string
   serviceBayCapacity: string
+  phoneRegion: string
 }
 
 function toFormState(business: AuthBusiness): FormState {
@@ -33,6 +42,7 @@ function toFormState(business: AuthBusiness): FormState {
     website: business.website ?? '',
     currency: business.currency,
     serviceBayCapacity: String(business.serviceBayCapacity),
+    phoneRegion: business.phoneRegion,
   }
 }
 
@@ -192,6 +202,29 @@ export default function BusinessSettingsPage() {
                   Сколько автомобилей автосервис может обслуживать одновременно.
                 </p>
                 {fieldErrors.serviceBayCapacity && <p className="text-sm text-destructive">{fieldErrors.serviceBayCapacity[0]}</p>}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="phoneRegion">Страна телефонных номеров</Label>
+                <select
+                  id="phoneRegion"
+                  disabled={!canEdit}
+                  value={form.phoneRegion}
+                  onChange={(e) => update('phoneRegion', e.target.value)}
+                  aria-describedby="phoneRegion-hint"
+                  className="flex h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {!PHONE_REGIONS.some((r) => r.code === form.phoneRegion) && <option value={form.phoneRegion}>{form.phoneRegion}</option>}
+                  {PHONE_REGIONS.map((r) => (
+                    <option key={r.code} value={r.code}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+                <p id="phoneRegion-hint" className="text-sm text-muted-foreground">
+                  Как понимать номера клиентов без «+», например «8 701 123 45 67».
+                </p>
+                {fieldErrors.phoneRegion && <p className="text-sm text-destructive">{fieldErrors.phoneRegion[0]}</p>}
               </div>
 
               <div className="space-y-2">

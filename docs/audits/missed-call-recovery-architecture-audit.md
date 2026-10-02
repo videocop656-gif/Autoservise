@@ -806,3 +806,19 @@ MCR-7 / MCR-8 without changing the slice.
 It is provider-independent and small, and every other step depends on it.
 It fixes a real current weakness: free-text phones matched by regex full scan.
 It does not wait on any external research.
+
+---
+
+## Implementation status
+
+- **MCR-1 — Phone Identity Foundation: implemented**
+  (`docs/final-reports/final-report-mcr-1.md`). It deviates from the
+  sketch in §8 / §21 as the MCR-1 prompt required:
+  - normalization uses `libphonenumber-js` (not a custom +7 parser);
+  - the default region is `Business.phoneRegion` (ISO code, default `KZ`),
+    not a constant;
+  - the backfill is an explicit idempotent application script, not SQL.
+
+  Customer phones are canonical E.164 in `Customer.phoneE164` (indexed, not
+  unique), and the last-10-digits heuristic is gone.
+- Everything from MCR-2 on is not implemented.

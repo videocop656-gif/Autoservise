@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
+import { normalizePhone } from '../lib/phone'
 import { requireRole } from '../middleware/requireRole'
 import { customerRepository } from '../repositories/customerRepository'
 import { vehicleRepository } from '../repositories/vehicleRepository'
@@ -66,6 +67,7 @@ export async function prepareCustomerCreate(ctx: AuthContext, input: CreateCusto
     firstName: input.firstName,
     lastName: input.lastName ?? null,
     phone: input.phone,
+    phoneE164: normalizePhone(input.phone, ctx.business.phoneRegion),
     email: input.email ?? null,
     notes: input.notes ?? null,
   }
@@ -82,7 +84,9 @@ export async function updateCustomer(ctx: AuthContext, id: string, input: Update
     await assertNoActiveEmailDuplicate(ctx, input.email, id)
   }
 
-  const updated = await customerRepository.updateById(ctx.tenant.id, ctx.business.id, id, input)
+  // MCR-1 — the canonical form always follows the entered phone.
+  const data = input.phone !== undefined ? { ...input, phoneE164: normalizePhone(input.phone, ctx.business.phoneRegion) } : input
+  const updated = await customerRepository.updateById(ctx.tenant.id, ctx.business.id, id, data)
   if (!updated) {
     throw new ApiError(404, 'NOT_FOUND', 'Customer not found')
   }

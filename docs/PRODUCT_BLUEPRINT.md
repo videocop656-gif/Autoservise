@@ -71,6 +71,12 @@ As of Prompt 57 none of the missed-call / telephony / WhatsApp pieces are
 implemented. The WhatsApp adapter is still the Prompt 16 mock, and there is
 no telephony code.
 
+MCR-1 (phone identity) is implemented: customer phones have a canonical
+E.164 form (`Customer.phoneE164`, libphonenumber, per-business
+`Business.phoneRegion`) used for all phone-based customer matching —
+see `docs/final-reports/final-report-mcr-1.md`. Telephony, WhatsApp and
+recovery are still not implemented.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

@@ -57,6 +57,7 @@ const {
   serviceFollowUpUpdateManyMock,
   serviceCountMock,
   customerCountMock,
+  customerFindManyMock,
   vehicleCountMock,
   queryRawMock,
   userFindManyMock,
@@ -142,6 +143,7 @@ const {
     serviceFollowUpUpdateManyMock: vi.fn(),
     serviceCountMock: vi.fn(),
     customerCountMock: vi.fn(),
+    customerFindManyMock: vi.fn(),
     vehicleCountMock: vi.fn(),
     queryRawMock: vi.fn(),
     userFindManyMock: vi.fn(),
@@ -194,7 +196,7 @@ vi.mock('../src/server/db/prisma', () => {
     },
     knowledgeItem: { findFirst: knowledgeFindFirstMock, updateMany: knowledgeUpdateManyMock },
     businessRule: { findFirst: ruleFindFirstMock, updateMany: ruleUpdateManyMock },
-    customer: { findFirst: customerFindFirstMock, updateMany: customerUpdateManyMock, count: customerCountMock },
+    customer: { findFirst: customerFindFirstMock, findMany: customerFindManyMock, updateMany: customerUpdateManyMock, count: customerCountMock },
     vehicle: { findFirst: vehicleFindFirstMock, updateMany: vehicleUpdateManyMock, count: vehicleCountMock },
     appointment: {
       findFirst: appointmentFindFirstMock,
@@ -381,6 +383,7 @@ beforeEach(() => {
   serviceRecordGroupByMock.mockResolvedValue([])
   serviceCountMock.mockResolvedValue(0)
   customerCountMock.mockResolvedValue(0)
+  customerFindManyMock.mockResolvedValue([])
   vehicleCountMock.mockResolvedValue(0)
   queryRawMock.mockResolvedValue([])
   userFindManyMock.mockResolvedValue([])
@@ -1528,10 +1531,13 @@ describe('tenant isolation — Channel Integration (Prompt 16)', () => {
     })
   })
 
-  it('repository: normalized-phone customer matching is scoped by tenantId + businessId (bound parameters, never string-interpolated)', async () => {
-    await customerRepository.findActiveByLocalPhoneNumber('tenant-a', 'business-a', '9001112233')
-    const [, ...values] = queryRawMock.mock.calls[queryRawMock.mock.calls.length - 1]! as [TemplateStringsArray, ...unknown[]]
-    expect(values).toEqual(expect.arrayContaining(['tenant-a', 'business-a', '9001112233']))
+  it('repository: canonical-phone customer matching (MCR-1) is scoped by tenantId + businessId and active customers only', async () => {
+    await customerRepository.findActiveByPhoneE164('tenant-a', 'business-a', '+79001112233')
+    expect(customerFindManyMock).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', businessId: 'business-a', isActive: true, phoneE164: '+79001112233' },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    })
   })
 
   describe('recordInboundMessage — the atomic inbound transaction (spec §"TRANSACTION TESTS"/§"INBOUND MESSAGE SERVICE")', () => {

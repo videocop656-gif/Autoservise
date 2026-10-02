@@ -30,6 +30,7 @@ export interface AuthBusiness {
   currency: string
   /** Prompt 50 — simultaneous service bays / posts. */
   serviceBayCapacity: number
+  phoneRegion: string
 }
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'

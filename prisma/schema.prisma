@@ -285,6 +285,13 @@ model Business {
   // business.schemas.ts). Enforced on appointment create/reschedule by
   // appointmentService under a per-business row lock.
   serviceBayCapacity Int @default(1)
+  // MCR-1 — default region for reading phone numbers written WITHOUT "+"
+  // ("8 701 123 45 67"), as an ISO 3166-1 alpha-2 code ("KZ", "RU"). Never
+  // used for "+…" numbers, never derived from timezone. "KZ" is the explicit
+  // product default at creation (launch market); KZ and RU share +7 and the
+  // 10-digit national number, so for +7 numbers the result is identical.
+  // See src/server/lib/phone.ts.
+  phoneRegion String @default("KZ")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -416,7 +423,16 @@ model Customer {
   businessId String
   firstName  String
   lastName   String?
+  // Exactly as entered (display).
   phone      String
+  // MCR-1 — canonical E.164 form of `phone` ("+77011234567"), written by
+  // customerService on every create/phone change via src/server/lib/phone.ts
+  // normalizePhone(); null when it can't be determined. The lookup key for
+  // phone-based identity (inbound channels, duplicate checks, future missed
+  // calls). Indexed, deliberately NOT unique: family members may share a
+  // number and legacy/inactive duplicates exist — callers keep the
+  // "exactly one active match" rule.
+  phoneE164  String?
   // Normalized lowercase. Duplicate active-customer emails within a
   // Business are rejected at the service layer (not a DB unique
   // constraint, since email is optional and multiple inactive/legacy
@@ -441,6 +457,7 @@ model Customer {
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
   @@index([tenantId, businessId, email])
+  @@index([tenantId, businessId, phoneE164])
   @@map("customers")
 }
 

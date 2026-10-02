@@ -41,6 +41,8 @@ export interface BusinessDto {
   currency: string
   /** Prompt 50 — simultaneous service bays / posts (>= 1). */
   serviceBayCapacity: number
+  /** MCR-1 — default region for phones written without "+" (ISO 3166-1 alpha-2). */
+  phoneRegion: string
   createdAt: Date
   updatedAt: Date
 }
@@ -57,6 +59,7 @@ export function toBusinessDto(business: Business): BusinessDto {
     website: business.website,
     currency: business.currency,
     serviceBayCapacity: business.serviceBayCapacity,
+    phoneRegion: business.phoneRegion,
     createdAt: business.createdAt,
     updatedAt: business.updatedAt,
   }

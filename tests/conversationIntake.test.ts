@@ -21,7 +21,6 @@ const { db, auth } = vi.hoisted(() => ({
 let seq = 0
 const uuid = (prefix: string) => `${prefix}-0000-4000-8000-${String(++seq).padStart(12, '0')}`
 const scoped = (rows: Row[], t: string, b: string) => rows.filter((r) => r.tenantId === t && r.businessId === b)
-const digits10 = (phone: string) => phone.replace(/\D/g, '').slice(-10)
 
 let chain: Promise<unknown> = Promise.resolve()
 vi.mock('../src/server/db/transaction', () => ({
@@ -59,8 +58,13 @@ vi.mock('../src/server/repositories/customerRepository', () => ({
   customerRepository: {
     findById: async (t: string, b: string, id: string) => scoped(db.customers, t, b).find((r) => r.id === id) ?? null,
     findActiveByEmail: async (t: string, b: string, email: string) => scoped(db.customers, t, b).find((r) => r.isActive && r.email === email) ?? null,
-    findActiveByLocalPhoneNumber: async (t: string, b: string, local: string) =>
-      scoped(db.customers, t, b).filter((r) => r.isActive && digits10(r.phone) === local).map((r) => ({ id: r.id })),
+    // MCR-1 — the canonical-phone lookup; seeded rows get phoneE164 the way the migration backfill would.
+    findActiveByPhoneE164: async (t: string, b: string, e164: string) => {
+      const { normalizePhone } = await import('../src/server/lib/phone')
+      return scoped(db.customers, t, b)
+        .filter((r) => r.isActive && (r.phoneE164 ?? normalizePhone(r.phone, 'KZ')) === e164)
+        .map((r) => ({ id: r.id }))
+    },
     create: async (data: Row) => {
       const row = { ...data, id: uuid('cccccccc-cccc'), isActive: true, createdAt: new Date(), updatedAt: new Date() }
       db.customers.push(row)
@@ -178,6 +182,20 @@ describe('create a customer from a conversation', () => {
     expect(res.body.error.details.matches).toEqual([{ id: ALICE, firstName: 'Алиса', lastName: null, phone: '8 900 111-22-33' }])
     expect(db.customers.filter((c) => c.tenantId === 't1')).toHaveLength(3)
     expect(conv().customerId).toBeNull()
+  })
+
+  it.each(['9001112233', '8 (900) 111 22 33', '+79001112233'])(
+    'MCR-1: %j is the same canonical number as Alice’s "8 900 111-22-33" → the same duplicate',
+    async (phone) => {
+      const res = await customerAction(newCustomer({ phone }))
+      expect(res.statusCode).toBe(409)
+      expect(res.body.error.details.matches.map((m: { id: string }) => m.id)).toEqual([ALICE])
+    }
+  )
+
+  it('MCR-1: a different number that shares only the last digits is not a duplicate (no last-10-digits heuristic)', async () => {
+    // A valid German number ending in Alice's 10 digits: the old tail heuristic called it a duplicate.
+    expect((await customerAction(newCustomer({ phone: '+49 900 1112233' }))).statusCode).toBe(201)
   })
 
   it("another tenant's customer with the same phone is never revealed or matched", async () => {
