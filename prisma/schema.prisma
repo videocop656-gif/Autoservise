@@ -235,6 +235,9 @@ model Tenant {
   customerChannelIdentities      CustomerChannelIdentity[]
   channelDeliveries              ChannelDelivery[]
   serviceFollowUps               ServiceFollowUp[]
+  businessPhoneNumbers           BusinessPhoneNumber[]
+  callInteractions               CallInteraction[]
+  callEvents                     CallEvent[]
 
   @@map("tenants")
 }
@@ -315,6 +318,9 @@ model Business {
   customerChannelIdentities      CustomerChannelIdentity[]
   channelDeliveries              ChannelDelivery[]
   serviceFollowUps               ServiceFollowUp[]
+  businessPhoneNumbers           BusinessPhoneNumber[]
+  callInteractions               CallInteraction[]
+  callEvents                     CallEvent[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -453,6 +459,7 @@ model Customer {
   escalations      AiEscalation[]
   channelIdentities CustomerChannelIdentity[]
   serviceFollowUps  ServiceFollowUp[]
+  callInteractions  CallInteraction[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, isActive])
@@ -1259,4 +1266,153 @@ model ServiceFollowUp {
   // CustomerRequest CONVERTED -> mark the linked follow-up BOOKED.
   @@index([customerRequestId])
   @@map("service_follow_ups")
+}
+
+// ============================================================================
+// MCR-2 — Missed Call Intake Foundation.
+// ============================================================================
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// Monotonic: IN_PROGRESS < MISSED < ANSWERED. Answer evidence is the
+// strongest fact and is never overwritten; see src/server/telephony/callStateMachine.ts.
+enum CallOutcome {
+  IN_PROGRESS
+  MISSED
+  ANSWERED
+}
+
+// Only states MCR-2 can truthfully produce. MCR-4 (recovery orchestration)
+// adds the claim/send states on top of READY.
+enum CallRecoveryState {
+  // Final outcome not known yet.
+  PENDING
+  // A final fact rules recovery out (see recoveryIneligibleReason).
+  NOT_ELIGIBLE
+  // Missed inbound call with a usable caller number — ready for future recovery.
+  READY
+}
+
+enum CallEventType {
+  RINGING
+  ANSWERED
+  COMPLETED
+  MISSED
+}
+
+// A public phone number a Business receives calls on — the ONLY source of
+// tenant routing for telephony webhooks ("called number → business").
+// Business.phone stays display/contact text.
+model BusinessPhoneNumber {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  // Canonical E.164 (src/server/lib/phone.ts normalizePhone).
+  phoneE164 String
+  label     String?
+  isActive  Boolean @default(true)
+
+  // Mirrors phoneE164 while isActive, NULL otherwise. With @unique this is a
+  // database-enforced "at most one ACTIVE owner of a number, across ALL
+  // tenants" — the same nullable-column technique as
+  // AiEscalation.activeConversationId (Postgres treats NULLs as distinct, so
+  // any number of inactive rows coexist). Only businessPhoneNumberRepository
+  // writes it, always in lockstep with isActive.
+  activePhoneE164 String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  callInteractions CallInteraction[]
+
+  @@index([tenantId, businessId])
+  @@map("business_phone_numbers")
+}
+
+// ONE durable record per real phone call (never per webhook event).
+model CallInteraction {
+  id                    String @id @default(uuid())
+  tenantId              String
+  businessId            String
+  businessPhoneNumberId String
+
+  // Telephony provider key ("mock" today) + the provider's own call id:
+  // unique together — one provider call can only ever be one interaction.
+  provider       String
+  providerCallId String
+
+  direction CallDirection
+
+  // The non-business party (the caller for INBOUND), canonical E.164, or
+  // NULL when hidden / anonymous / invalid. Never used for tenant routing.
+  remotePhoneE164 String?
+  // Linked only on an unambiguous active match (MCR-1 rule); never created.
+  customerId      String?
+
+  outcome CallOutcome @default(IN_PROGRESS)
+
+  // Provider-reported times (NULL when the provider didn't say).
+  startedAt  DateTime?
+  answeredAt DateTime?
+  endedAt    DateTime?
+
+  // AUTOSERVISE receipt times — the authoritative clock for latency.
+  firstEventReceivedAt DateTime
+  lastEventReceivedAt  DateTime
+  // When the final outcome (MISSED/ANSWERED) was first known here; for a
+  // missed call this is "missed call detected" — the start of the future
+  // missed → recovery-sent latency.
+  outcomeDetectedAt    DateTime?
+
+  recoveryState            CallRecoveryState @default(PENDING)
+  // NO_CALLER_PHONE / ANSWERED / OUTBOUND — set only with NOT_ELIGIBLE.
+  recoveryIneligibleReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business            Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Restrict: call history must survive a number being deactivated (there is no delete path).
+  businessPhoneNumber BusinessPhoneNumber @relation(fields: [businessPhoneNumberId], references: [id], onDelete: Restrict)
+  customer            Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  events              CallEvent[]
+
+  @@unique([provider, providerCallId])
+  @@index([tenantId, businessId, createdAt])
+  @@index([tenantId, businessId, recoveryState])
+  // Future MCR-4 anti-spam window: "same caller, same business, recently".
+  @@index([tenantId, businessId, remotePhoneE164, outcomeDetectedAt])
+  @@index([customerId])
+  @@map("call_interactions")
+}
+
+// Provider-event idempotency ledger: one row per distinct provider event
+// (never the raw payload — only the normalized, non-PII essentials).
+model CallEvent {
+  id                String @id @default(uuid())
+  tenantId          String
+  businessId        String
+  callInteractionId String
+
+  provider        String
+  providerEventId String
+  eventType       CallEventType
+  occurredAt      DateTime?
+  receivedAt      DateTime
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business        Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  callInteraction CallInteraction @relation(fields: [callInteractionId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerEventId])
+  @@index([callInteractionId, receivedAt])
+  @@index([tenantId, businessId])
+  @@map("call_events")
 }

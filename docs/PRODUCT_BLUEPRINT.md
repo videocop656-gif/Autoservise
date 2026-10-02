@@ -77,6 +77,15 @@ E.164 form (`Customer.phoneE164`, libphonenumber, per-business
 see `docs/final-reports/final-report-mcr-1.md`. Telephony, WhatsApp and
 recovery are still not implemented.
 
+MCR-2 (missed call intake) is implemented with a MOCK telephony provider only:
+- a call to a registered business number (`BusinessPhoneNumber`) becomes one
+  durable `CallInteraction`, routed by the called number;
+- each call is marked answered or missed, linked to an existing customer when
+  the match is unambiguous, and flagged `READY` for future recovery;
+- nothing is sent to the customer or the owner.
+
+See `docs/final-reports/final-report-mcr-2.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

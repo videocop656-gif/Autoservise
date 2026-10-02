@@ -821,4 +821,14 @@ It does not wait on any external research.
 
   Customer phones are canonical E.164 in `Customer.phoneE164` (indexed, not
   unique), and the last-10-digits heuristic is gone.
-- Everything from MCR-2 on is not implemented.
+- **MCR-2 — Missed Call Intake Foundation: implemented** (`docs/final-reports/final-report-mcr-2.md`).
+  It covers:
+  - `BusinessPhoneNumber`: called-number routing, at most one ACTIVE owner of a number across tenants;
+  - a provider-neutral `TelephonyAdapter` with a mock provider and a secured mock webhook;
+  - `CallInteraction`, one per call, with a monotonic outcome state machine;
+  - `CallEvent` as the provider-event idempotency ledger;
+  - customer linking via MCR-1;
+  - `recoveryState` (PENDING / NOT_ELIGIBLE / READY) and latency timestamps.
+
+  Nothing is sent to anyone. The design follows §9, with one refinement: routing is by called number (not per-connection URL).
+- MCR-3 and later are not implemented.

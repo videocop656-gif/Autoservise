@@ -18,6 +18,7 @@ import type {
   User,
   ChannelConnection,
   ChannelDelivery,
+  BusinessPhoneNumber,
 } from '@prisma/client'
 
 /**
@@ -691,4 +692,17 @@ export function toServiceFollowUpDto(followUp: ServiceFollowUp): ServiceFollowUp
     createdAt: followUp.createdAt,
     updatedAt: followUp.updatedAt,
   }
+}
+
+/** MCR-2 — a business's own public number (telephony routing identity). */
+export interface BusinessPhoneNumberDto {
+  id: string
+  phoneE164: string
+  label: string | null
+  isActive: boolean
+  createdAt: Date
+}
+
+export function toBusinessPhoneNumberDto(n: BusinessPhoneNumber): BusinessPhoneNumberDto {
+  return { id: n.id, phoneE164: n.phoneE164, label: n.label, isActive: n.isActive, createdAt: n.createdAt }
 }

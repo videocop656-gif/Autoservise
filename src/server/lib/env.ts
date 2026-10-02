@@ -52,6 +52,11 @@ export const env = {
     const value = process.env.TELEGRAM_WEBHOOK_SECRET
     return value && value.trim() !== '' ? value : undefined
   },
+  /** MCR-2 — enables the MOCK telephony webhook (development/testing only; ignored in production). */
+  get telephonyMockWebhookSecret(): string | undefined {
+    const value = process.env.TELEPHONY_MOCK_WEBHOOK_SECRET
+    return value && value.trim() !== '' ? value : undefined
+  },
 }
 
 export const SESSION_COOKIE_NAME = 'session_token'
