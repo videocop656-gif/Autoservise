@@ -831,4 +831,11 @@ It does not wait on any external research.
   - `recoveryState` (PENDING / NOT_ELIGIBLE / READY) and latency timestamps.
 
   Nothing is sent to anyone. The design follows §9, with one refinement: routing is by called number (not per-connection URL).
-- MCR-3 and later are not implemented.
+- **MCR-3 — Pricing & Business Location Foundation: implemented** (`docs/final-reports/final-report-mcr-3.md`).
+  It covers:
+  - one canonical price interpretation (`src/server/domain/pricing.ts`: FIXED / FROM / RANGE / UNAVAILABLE) with a customer-facing formatter;
+  - `Service.priceNote` and an explicit `Service.requiresInspection`;
+  - `Business.locationUrl` (safe http(s) only);
+  - AI context carries these as explicit facts;
+  - AI contract rules forbid invented prices and addresses (Service is authoritative over Knowledge), plus a "useful answer first" rule.
+- MCR-4 and later are not implemented.

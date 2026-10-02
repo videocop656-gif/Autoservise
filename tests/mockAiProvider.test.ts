@@ -3,6 +3,13 @@ import { MockAiProvider } from '../src/server/ai/providers/mockAiProvider'
 import { aiResultSchema } from '../src/server/ai/aiResult.schema'
 import type { AiGenerationRequest } from '../src/server/ai/provider'
 import type { AiBusinessContext, AiToolExchange } from '../src/server/ai/types'
+import { describeServicePricing } from '../src/server/domain/pricing'
+
+// MCR-3 — a service's pricing facts, built by the same canonical function the context builder uses.
+function svcPricing(priceFrom: string | null, priceTo: string | null, extra: { priceNote?: string | null; requiresInspection?: boolean } = {}) {
+  const { type, formatted, min, max } = describeServicePricing({ priceFrom, priceTo, currency: 'RUB' })
+  return { pricing: { type, formatted, min, max }, priceNote: extra.priceNote ?? null, requiresInspection: extra.requiresInspection ?? false }
+}
 
 // This is the "no OPENAI_API_KEY required" test target: every test here
 // runs with zero network access and zero environment configuration.
@@ -15,6 +22,7 @@ function makeContext(overrides: Partial<AiBusinessContext> = {}): AiBusinessCont
       phone: null,
       email: null,
       address: null,
+      locationUrl: null,
       timezone: 'Europe/Moscow',
       currency: 'RUB',
     },
@@ -26,8 +34,7 @@ function makeContext(overrides: Partial<AiBusinessContext> = {}): AiBusinessCont
         id: 'svc-1',
         name: 'Замена масла',
         description: null,
-        priceFrom: '1500.00',
-        priceTo: '2500.00',
+        ...svcPricing('1500.00', '2500.00'),
         currency: 'RUB',
         durationMinutes: 60,
       },
@@ -360,7 +367,7 @@ describe('MockAiProvider — AI Customer Support (Prompt 11)', () => {
   it('1. service question is answered from real Service data (name, description, duration)', async () => {
     const parsed = await analyze('Что входит в услугу Замена масла?', {
       services: [
-        { id: 'svc-1', name: 'Замена масла', description: 'Полная замена масла и фильтра', priceFrom: '1500.00', priceTo: '2500.00', currency: 'RUB', durationMinutes: 45 },
+        { id: 'svc-1', name: 'Замена масла', description: 'Полная замена масла и фильтра', ...svcPricing('1500.00', '2500.00'), currency: 'RUB', durationMinutes: 45 },
       ],
     })
     expect(parsed.intent).toBe('SERVICE_INQUIRY')
@@ -372,23 +379,23 @@ describe('MockAiProvider — AI Customer Support (Prompt 11)', () => {
   it('2. price question uses the exact stored price, never an invented figure', async () => {
     const parsed = await analyze('Сколько стоит замена масла?')
     expect(parsed.intent).toBe('PRICE_INQUIRY')
-    expect(parsed.answer).toContain('1500.00')
-    expect(parsed.answer).toContain('2500.00')
+    // MCR-3 — the canonical formatted RANGE, never re-derived by the provider.
+    expect(parsed.answer.replace(/[  ]/g, ' ')).toContain('1 500–2 500 ₽')
   })
 
   it('3. a missing price is never invented — the AI says so honestly instead of estimating', async () => {
     const parsed = await analyze('Сколько стоит замена масла?', {
-      services: [{ id: 'svc-1', name: 'Замена масла', description: null, priceFrom: null, priceTo: null, currency: 'RUB', durationMinutes: 60 }],
+      services: [{ id: 'svc-1', name: 'Замена масла', description: null, ...svcPricing(null, null), currency: 'RUB', durationMinutes: 60 }],
     })
-    expect(parsed.answer).toContain('нет точной цены')
+    expect(parsed.answer).toContain('нет цены')
     expect(parsed.answer).not.toMatch(/\d/) // no invented number anywhere
   })
 
   it('a priceFrom-only service is quoted as a lower bound, never given an invented upper bound', async () => {
     const parsed = await analyze('Сколько стоит замена масла?', {
-      services: [{ id: 'svc-1', name: 'Замена масла', description: null, priceFrom: '1500.00', priceTo: null, currency: 'RUB', durationMinutes: 60 }],
+      services: [{ id: 'svc-1', name: 'Замена масла', description: null, ...svcPricing('1500.00', null), currency: 'RUB', durationMinutes: 60 }],
     })
-    expect(parsed.answer).toContain('от 1500.00')
+    expect(parsed.answer.replace(/[  ]/g, ' ')).toContain('от 1 500 ₽')
   })
 
   it('4. a Knowledge Base question is answered from real KnowledgeItem content', async () => {
@@ -410,7 +417,7 @@ describe('MockAiProvider — AI Customer Support (Prompt 11)', () => {
 
   it('6. a service history question is answered from a real ServiceRecord, with date and mileage', async () => {
     const parsed = await analyze('Когда мне последний раз меняли масло?', {
-      services: [{ id: 'svc-1', name: 'Замена масла', description: null, priceFrom: null, priceTo: null, currency: 'RUB', durationMinutes: 60 }],
+      services: [{ id: 'svc-1', name: 'Замена масла', description: null, ...svcPricing(null, null), currency: 'RUB', durationMinutes: 60 }],
       serviceHistory: [
         {
           performedAtLocal: '2026-08-15',

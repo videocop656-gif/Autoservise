@@ -1,3 +1,4 @@
+import type { PricingType } from '../domain/pricing'
 // AI Core domain types (Prompt 09). Deliberately plain TypeScript/Zod, not
 // Prisma — nothing here is persisted (see spec: "0 новых database models").
 
@@ -75,6 +76,8 @@ export interface AiBusinessContext {
     phone: string | null
     email: string | null
     address: string | null
+    /** MCR-3 — the business's own map/location link, or null (never invent one). */
+    locationUrl: string | null
     timezone: string
     currency: string
   }
@@ -105,8 +108,16 @@ export interface AiBusinessContext {
     id: string
     name: string
     description: string | null
-    priceFrom: string | null
-    priceTo: string | null
+    /**
+     * MCR-3 — the price as explicit facts (src/server/domain/pricing.ts):
+     * FIXED / FROM / RANGE / UNAVAILABLE, the customer-facing text, and the
+     * bounds. The model never has to guess what nullable numbers mean.
+     */
+    pricing: { type: PricingType; formatted: string | null; min: string | null; max: string | null }
+    /** The business's own condition for the price; not a price source. */
+    priceNote: string | null
+    /** Explicitly configured: the final price is confirmed after inspection. */
+    requiresInspection: boolean
     currency: string
     durationMinutes: number
   }[]

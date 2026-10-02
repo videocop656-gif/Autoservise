@@ -20,6 +20,7 @@ import type {
   ChannelDelivery,
   BusinessPhoneNumber,
 } from '@prisma/client'
+import { describeServicePricing, type PricingType } from '../domain/pricing'
 
 /**
  * Never return raw Prisma objects to the client. These DTOs are the single
@@ -37,6 +38,8 @@ export interface BusinessDto {
   phone: string | null
   email: string | null
   address: string | null
+  /** MCR-3 — the business's own map/location link (http/https), or null. */
+  locationUrl: string | null
   timezone: string
   website: string | null
   currency: string
@@ -56,6 +59,7 @@ export function toBusinessDto(business: Business): BusinessDto {
     phone: business.phone,
     email: business.email,
     address: business.address,
+    locationUrl: business.locationUrl,
     timezone: business.timezone,
     website: business.website,
     currency: business.currency,
@@ -92,6 +96,12 @@ export interface ServiceDto {
   durationMinutes: number
   /** Prompt 48 — repeat-service interval in days; null = not set. */
   repeatIntervalDays: number | null
+  /** MCR-3 — the business's condition for the price; null = none. */
+  priceNote: string | null
+  /** MCR-3 — final price is confirmed after inspection (explicitly configured). */
+  requiresInspection: boolean
+  /** MCR-3 — the canonical interpretation (src/server/domain/pricing.ts), for display. */
+  pricing: { type: PricingType; formatted: string | null }
   isActive: boolean
   createdAt: Date
   updatedAt: Date
@@ -107,6 +117,9 @@ export function toServiceDto(service: Service): ServiceDto {
     currency: service.currency,
     durationMinutes: service.durationMinutes,
     repeatIntervalDays: service.repeatIntervalDays,
+    priceNote: service.priceNote,
+    requiresInspection: service.requiresInspection,
+    pricing: (({ type, formatted }) => ({ type, formatted }))(describeServicePricing(service)),
     isActive: service.isActive,
     createdAt: service.createdAt,
     updatedAt: service.updatedAt,

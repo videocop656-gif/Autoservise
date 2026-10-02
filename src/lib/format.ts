@@ -35,19 +35,6 @@ export function formatMoney(value: string | number, currency: string): string {
 }
 
 /**
- * A service price range: "3 000–5 000 ₽", a single price "4 800 ₽" (when
- * only one bound is set, or both are equal), or null when neither is set —
- * the caller decides the wording for "no price" (e.g. «По запросу»).
- */
-export function formatPriceRange(from: string | null, to: string | null, currency: string): string | null {
-  if (from && to && Number(from) !== Number(to)) {
-    return `${formatAmount(from)}–${formatAmount(to)}\u00A0${currencySymbol(currency)}`
-  }
-  const single = from ?? to
-  return single ? formatMoney(single, currency) : null
-}
-
-/**
  * Russian plural form for a whole number: pluralRu(n, ['день', 'дня', 'дней']).
  * 1, 21, 101 → first; 2–4, 22–24 → second; 0, 5–20, 25–30, 111–114 → third.
  */

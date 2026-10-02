@@ -1,5 +1,6 @@
 import type { AuthContext } from '../types/auth'
 import { serviceRepository } from '../repositories/serviceRepository'
+import { describeServicePricing } from '../domain/pricing'
 import { knowledgeRepository } from '../repositories/knowledgeRepository'
 import { businessRuleRepository } from '../repositories/businessRuleRepository'
 import { customerRepository } from '../repositories/customerRepository'
@@ -165,6 +166,7 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
       phone: ctx.business.phone,
       email: ctx.business.email,
       address: ctx.business.address,
+      locationUrl: ctx.business.locationUrl,
       timezone: ctx.business.timezone,
       currency: ctx.business.currency,
     },
@@ -179,8 +181,9 @@ export async function buildAiContext(ctx: AuthContext, conversation: Conversatio
       id: s.id,
       name: s.name,
       description: s.description,
-      priceFrom: s.priceFrom ? s.priceFrom.toFixed(2) : null,
-      priceTo: s.priceTo ? s.priceTo.toFixed(2) : null,
+      pricing: (({ type, formatted, min, max }) => ({ type, formatted, min, max }))(describeServicePricing(s)),
+      priceNote: s.priceNote,
+      requiresInspection: s.requiresInspection,
       currency: s.currency,
       durationMinutes: s.durationMinutes,
     })),

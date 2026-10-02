@@ -153,6 +153,67 @@ just `priceFrom` exists (never an invented upper bound), and an honest "no
 price on file — please confirm with staff" when neither exists — never an
 estimate ("this usually costs around...").
 
+**As of MCR-3**, the AI no longer reads raw `priceFrom`/`priceTo` at all.
+
+The price meaning is decided once, server-side, by
+`src/server/domain/pricing.ts`. Each service in the AI context carries:
+
+- `pricing.type`: `FIXED` / `FROM` / `RANGE` / `UNAVAILABLE`;
+- `pricing.formatted`: e.g. "от 40 000 ₸";
+- `pricing.min` / `pricing.max`;
+- `priceNote`: the business's own condition, e.g. "за одну деталь";
+- `requiresInspection`: explicitly configured; never inferred from the price type.
+
+Rules (system prompt rules 6, 17, 24):
+
+- **The only price source is `services[].pricing`.** Never a price from the
+  Knowledge Base, rules or general knowledge.
+- **If Knowledge disagrees with the Service price, the Service price wins.**
+- **Each type is used as-is:**
+  - `FIXED` is stated exactly;
+  - `FROM` is said as «от …», never with an invented upper bound and never
+    as a final price;
+  - `RANGE` is stated as the range;
+  - `UNAVAILABLE` means "the technician/administrator will confirm the price",
+    with no number at all.
+- **A from/range price is a guide, not a guaranteed final price.**
+- **`requiresInspection = true`:** always say the final price is confirmed
+  after inspection.
+- **`requiresInspection = false`:** never claim an inspection is required.
+- **`priceNote`** keeps its meaning.
+- **No discounts.**
+
+**Responsibility split:**
+
+| Source | Owns |
+|---|---|
+| Structured Service | name, active state, numeric price, price type, duration, price condition, inspection flag |
+| Structured Business | name, address, map link (`locationUrl`), working hours, phone/email |
+| Knowledge | explanations only: warranty, payment methods, preparation, FAQ, limitations not modelled structurally — never a competing numeric price |
+
+### 7.1 Location (MCR-3)
+
+- **Sources:** only `business.address` and `business.locationUrl`, an http(s)
+  link the business configured itself; it is never fetched or generated.
+- **A configured link may be shared.**
+- **Missing data:** if the address or link is missing, say the administrator
+  will confirm it. Never invent an address, a map link, landmarks or a route.
+  This is rule 23.
+
+### 7.2 Useful answer first (MCR-3, for the future customer-facing flow)
+
+- **Answer first, then ask.** When the configured data already answers the
+  question, give that answer first:
+  - whether the service exists;
+  - its price, with the type;
+  - the inspection note;
+  - the address;
+  - the hours.
+- **Then at most one or two genuinely needed clarifying questions** — never a
+  questionnaire. This is rule 25.
+- Example: «Покраска капота — от 40 000 ₸. Точная стоимость после осмотра.
+  Подскажите год автомобиля…».
+
 ## 8. Vehicle Diagnosis
 
 The AI may help structure a customer's complaint into something staff can

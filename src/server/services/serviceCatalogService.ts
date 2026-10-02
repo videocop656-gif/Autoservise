@@ -2,7 +2,7 @@ import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { serviceRepository } from '../repositories/serviceRepository'
-import type { CreateServiceInput, UpdateServiceInput } from '../validation/service.schemas'
+import { PRICE_TO_WITHOUT_FROM, type CreateServiceInput, type UpdateServiceInput } from '../validation/service.schemas'
 
 export function listServices(ctx: AuthContext, activeOnly: boolean) {
   return serviceRepository.listByBusiness(ctx.tenant.id, ctx.business.id, activeOnly)
@@ -33,6 +33,8 @@ export async function createService(ctx: AuthContext, input: CreateServiceInput)
     currency: input.currency ?? ctx.business.currency,
     durationMinutes: input.durationMinutes,
     repeatIntervalDays: input.repeatIntervalDays ?? null,
+    priceNote: input.priceNote ?? null,
+    requiresInspection: input.requiresInspection ?? false,
   })
 }
 
@@ -49,6 +51,10 @@ export async function updateService(ctx: AuthContext, id: string, input: UpdateS
   // is being changed, validate it against the side that isn't changing.
   const effectiveFrom = input.priceFrom !== undefined ? input.priceFrom : existing.priceFrom?.toNumber() ?? null
   const effectiveTo = input.priceTo !== undefined ? input.priceTo : existing.priceTo?.toNumber() ?? null
+  // MCR-3 — only FIXED / FROM / RANGE / no-price shapes (src/server/domain/pricing.ts).
+  if (effectiveTo != null && effectiveFrom == null) {
+    throw new ApiError(400, 'VALIDATION_ERROR', PRICE_TO_WITHOUT_FROM)
+  }
   if (effectiveFrom != null && effectiveTo != null && effectiveTo < effectiveFrom) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'priceTo must be greater than or equal to priceFrom')
   }

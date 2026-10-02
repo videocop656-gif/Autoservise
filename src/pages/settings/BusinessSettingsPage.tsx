@@ -24,6 +24,7 @@ type FormState = {
   phone: string
   email: string
   address: string
+  locationUrl: string
   timezone: string
   website: string
   currency: string
@@ -38,6 +39,7 @@ function toFormState(business: AuthBusiness): FormState {
     phone: business.phone ?? '',
     email: business.email ?? '',
     address: business.address ?? '',
+    locationUrl: business.locationUrl ?? '',
     timezone: business.timezone,
     website: business.website ?? '',
     currency: business.currency,
@@ -156,6 +158,24 @@ export default function BusinessSettingsPage() {
                 {fieldErrors.address && <p className="text-sm text-destructive">{fieldErrors.address[0]}</p>}
               </div>
 
+              <div className="space-y-2">
+                <Label htmlFor="locationUrl">Ссылка на карту / геолокацию</Label>
+                <Input
+                  id="locationUrl"
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://2gis.kz/… или https://maps.google.com/…"
+                  disabled={!canEdit}
+                  value={form.locationUrl}
+                  onChange={(e) => update('locationUrl', e.target.value)}
+                  aria-describedby="locationUrl-hint"
+                />
+                <p id="locationUrl-hint" className="text-sm text-muted-foreground">
+                  Ссылка, которую можно отправить клиенту: 2ГИС, Яндекс Карты, Google Maps. Необязательно.
+                </p>
+                {fieldErrors.locationUrl && <p className="text-sm text-destructive">{fieldErrors.locationUrl[0]}</p>}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="timezone">Часовой пояс (IANA)</Label>
@@ -244,7 +264,7 @@ export default function BusinessSettingsPage() {
 
               {canEdit && (
                 <Button type="submit" disabled={saving}>
-                  {saving ? 'Сохранение...' : 'Save changes'}
+                  {saving ? 'Сохранение...' : 'Сохранить изменения'}
                 </Button>
               )}
             </form>

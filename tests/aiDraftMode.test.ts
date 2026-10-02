@@ -59,7 +59,7 @@ describe('execution mode', () => {
 
 describe('mock provider after a draft-mode refusal', () => {
   const context = {
-    business: { name: 'T', description: null, phone: null, email: null, address: null, timezone: 'Europe/Moscow', currency: 'RUB' },
+    business: { name: 'T', description: null, phone: null, email: null, address: null, locationUrl: null, timezone: 'Europe/Moscow', currency: 'RUB' },
     currentDateTime: { date: '2026-10-05', time: '10:00', dayOfWeek: 'MONDAY' as const },
     workingHours: [],
     services: [],
@@ -93,7 +93,7 @@ describe('mock provider after a draft-mode refusal', () => {
 
 describe('mock provider answers working hours from the context (Prompt 53)', () => {
   const base = {
-    business: { name: 'T', description: null, phone: null, email: null, address: null, timezone: 'Europe/Moscow', currency: 'RUB' },
+    business: { name: 'T', description: null, phone: null, email: null, address: null, locationUrl: null, timezone: 'Europe/Moscow', currency: 'RUB' },
     services: [],
     knowledge: [],
     rules: [],

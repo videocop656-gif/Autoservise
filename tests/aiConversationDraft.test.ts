@@ -120,7 +120,7 @@ beforeEach(() => {
   m.convFindById.mockResolvedValue(conversation())
   m.listByConversation.mockResolvedValue([msg('INBOUND', 'Сколько стоит замена масла?')])
   m.serviceList.mockResolvedValue([
-    { id: SERVICE, name: 'Замена масла', description: null, priceFrom: { toFixed: () => '5000.00' }, priceTo: null, currency: 'RUB', durationMinutes: 60 },
+    { id: SERVICE, name: 'Замена масла', description: null, priceFrom: { toFixed: () => '5000.00', toString: () => '5000' }, priceTo: null, priceNote: null, requiresInspection: false, currency: 'RUB', durationMinutes: 60 },
   ])
   m.knowledgeList.mockResolvedValue([{ title: 'Парковка', content: 'Есть парковка', category: 'FAQ' }])
   m.ruleList.mockResolvedValue([{ name: 'Предоплата', description: 'Без предоплаты', category: 'GENERAL', priority: 10 }])
@@ -379,7 +379,7 @@ describe('POST /api/conversations/:id/ai-draft', () => {
 
     expect(res.statusCode).toBe(200)
     expect(Object.keys(res.body).sort()).toEqual(['draft', 'needsHuman'])
-    expect(res.body.draft).toContain('5000')
+    expect(res.body.draft.replace(/[  ]/g, ' ')).toContain('от 5 000 ₽')
     expectNoSideEffects()
   })
 

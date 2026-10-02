@@ -330,8 +330,12 @@ function classifyCustomerSupport(request: AiGenerationRequest) {
   const message = request.userMessage.toLowerCase()
   const matchedService = context.services.find((s) => message.includes(s.name.toLowerCase()))
 
+  const wantsLocation = LOCATION_QUESTION.test(message)
   if (/сколько стоит|стоимость|цена|price|cost|how much/.test(message)) {
-    return priceInquiryResult(matchedService)
+    return priceInquiryResult(context, matchedService, wantsLocation)
+  }
+  if (wantsLocation) {
+    return locationResult(context)
   }
   if (/гаранти|warranty/.test(message)) {
     return warrantyInquiryResult(context)
@@ -542,56 +546,86 @@ function findMatchingKnowledge(knowledge: AiBusinessContext['knowledge'], words:
   )
 }
 
-function formatPriceRange(service: AiBusinessContext['services'][number]): string | null {
-  if (service.priceFrom && service.priceTo && service.priceFrom !== service.priceTo) {
-    return `${service.priceFrom}–${service.priceTo} ${service.currency}`
-  }
-  if (service.priceFrom) {
-    return `от ${service.priceFrom} ${service.currency}`
-  }
-  return null
+// MCR-3 — prices come ONLY from the structured pricing facts
+// (src/server/domain/pricing.ts via the context): the configured text, the
+// configured condition and the configured inspection flag — nothing added.
+/** Ends the business's own text with exactly one sentence mark (never "детали.."). */
+function asSentence(text: string): string {
+  const t = text.trim()
+  return /[.!?…]$/.test(t) ? t : `${t}.`
 }
 
-// Step 10 (Price safety): a range when both bounds exist, "from X" when
-// only priceFrom exists, and an honest "no price on file" when neither
-// does — never an invented or estimated figure.
-function priceInquiryResult(matchedService: AiBusinessContext['services'][number] | undefined) {
+function priceFacts(service: AiBusinessContext['services'][number]): string | null {
+  if (!service.pricing.formatted) return null
+  const parts = [`«${service.name}» — ${service.pricing.formatted}.`]
+  if (service.priceNote) parts.push(`Условия: ${asSentence(service.priceNote)}`)
+  if (service.requiresInspection) parts.push('Точная стоимость подтверждается после осмотра.')
+  return parts.join(' ')
+}
+
+const LOCATION_QUESTION = /где вы|ваш адрес|адрес|как (к вам )?(добраться|проехать|доехать)|геолокац|локаци|на карте|карту/
+
+/** "Где вы?" — only the configured address / map link; never invented directions. */
+function locationFacts(context: AiBusinessContext): string | null {
+  const { address, locationUrl } = context.business
+  if (!address && !locationUrl) return null
+  const parts: string[] = []
+  if (address) parts.push(`Мы находимся по адресу: ${address}.`)
+  if (locationUrl) parts.push(`Ссылка на карту: ${locationUrl}`)
+  return parts.join(' ')
+}
+
+function locationResult(context: AiBusinessContext) {
+  const facts = locationFacts(context)
+  if (!facts) {
+    return finalResult(
+      'GENERAL_QUESTION',
+      0.45,
+      'Точного адреса в доступной информации нет — уточните, пожалуйста, у администратора сервиса.',
+      true,
+      'No business address or location link configured.'
+    )
+  }
+  return finalResult('GENERAL_QUESTION', 0.9, facts, false, null)
+}
+
+// Step 10 (Price safety) + MCR-3: useful facts first — the configured price
+// with its type, condition and inspection flag; an honest "no price on file"
+// when none is configured — never an invented or estimated figure. A
+// location question in the same message is answered in the same reply.
+function priceInquiryResult(context: AiBusinessContext, matchedService: AiBusinessContext['services'][number] | undefined, wantsLocation = false) {
+  const location = wantsLocation ? locationFacts(context) : null
+  const withLocation = (text: string) => (location ? `${text} ${location}` : text)
   if (!matchedService) {
     return finalResult(
       'PRICE_INQUIRY',
       0.75,
-      'Стоимость зависит от выбранной услуги и состояния автомобиля — уточните, пожалуйста, какая именно услуга вас интересует.',
+      withLocation('Стоимость зависит от выбранной услуги — уточните, пожалуйста, какая именно работа вас интересует.'),
       false,
       null
     )
   }
-  const price = formatPriceRange(matchedService)
+  const price = priceFacts(matchedService)
   if (!price) {
     return finalResult(
       'PRICE_INQUIRY',
       0.7,
-      'В базе сервиса сейчас нет точной цены на эту работу. Лучше уточнить стоимость у администратора.',
+      withLocation('В базе сервиса сейчас нет цены на эту работу — стоимость уточнит мастер или администратор.'),
       false,
       null,
       matchedService.name
     )
   }
-  return finalResult(
-    'PRICE_INQUIRY',
-    0.92,
-    `Услуга «${matchedService.name}» стоит ${price}. Точная стоимость может зависеть от состояния автомобиля.`,
-    false,
-    null,
-    matchedService.name
-  )
+  return finalResult('PRICE_INQUIRY', 0.92, withLocation(price), false, null, matchedService.name)
 }
 
-// Step 9: name/description/priceFrom/priceTo/currency/durationMinutes — never an invented discount, warranty, or parts guarantee.
+// Step 9: name/description/pricing/durationMinutes — never an invented discount, warranty, or parts guarantee.
 function serviceInquiryResult(service: AiBusinessContext['services'][number]) {
   const parts = [`Да, у нас есть услуга «${service.name}».`]
   if (service.description) parts.push(service.description)
-  const price = formatPriceRange(service)
-  if (price) parts.push(`Ориентировочная стоимость: ${price}.`)
+  if (service.pricing.formatted) parts.push(`Стоимость: ${service.pricing.formatted}.`)
+  if (service.priceNote) parts.push(`Условия: ${asSentence(service.priceNote)}`)
+  if (service.requiresInspection) parts.push('Точная стоимость подтверждается после осмотра.')
   parts.push(`Продолжительность: около ${service.durationMinutes} мин.`)
   return finalResult('SERVICE_INQUIRY', 0.85, parts.join(' '), false, null, service.name)
 }

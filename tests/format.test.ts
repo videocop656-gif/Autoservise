@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDays, formatMoney, formatPriceRange, pluralRu } from '../src/lib/format'
+import { formatDays, formatMoney, pluralRu } from '../src/lib/format'
 
 // Prompt 48.2 — display-only formatters for the Russian UI. Intl's ru-RU
 // grouping separator and our symbol separator are no-break spaces, so the
@@ -31,22 +31,6 @@ describe('formatMoney', () => {
   it('accepts numbers and leaves unparseable input visible instead of printing NaN', () => {
     expect(plain(formatMoney(3000, 'RUB'))).toBe('3 000 ₽')
     expect(plain(formatMoney('abc', 'RUB'))).toBe('abc ₽')
-  })
-})
-
-describe('formatPriceRange', () => {
-  it('formats a range as "3 000–5 000 ₽"', () => {
-    expect(plain(formatPriceRange('3000.00', '5000.00', 'RUB'))).toBe('3 000–5 000 ₽')
-  })
-
-  it('collapses equal bounds and single bounds to one price', () => {
-    expect(plain(formatPriceRange('4800.00', '4800.00', 'RUB'))).toBe('4 800 ₽')
-    expect(plain(formatPriceRange('4800.00', null, 'RUB'))).toBe('4 800 ₽')
-    expect(plain(formatPriceRange(null, '5000.00', 'RUB'))).toBe('5 000 ₽')
-  })
-
-  it('returns null when no price is set, so the caller chooses the wording', () => {
-    expect(formatPriceRange(null, null, 'RUB')).toBeNull()
   })
 })
 

@@ -86,6 +86,14 @@ MCR-2 (missed call intake) is implemented with a MOCK telephony provider only:
 
 See `docs/final-reports/final-report-mcr-2.md`.
 
+MCR-3 (pricing & location) is implemented:
+- each service price has one server-side meaning: fixed / «от» / range / no price;
+- a service can carry a price condition and an explicit "inspection required" flag;
+- the business can store a map link next to its address;
+- the AI receives these as explicit facts and must not invent prices, addresses or routes.
+
+See `docs/final-reports/final-report-mcr-3.md` and `AI_BEHAVIOR_CONTRACT.md` §7.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

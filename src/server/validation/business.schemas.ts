@@ -6,6 +6,21 @@ import { isSupportedPhoneRegion } from '../lib/phone'
 /** Lets a cleared form field ("") mean "set to null" instead of failing email/url validation on an empty string. */
 const emptyToNull = (val: unknown): unknown => (typeof val === 'string' && val.trim() === '' ? null : val)
 
+export const LOCATION_URL_MESSAGE = 'Укажите ссылку на карту, начинающуюся с https:// или http://'
+
+/** An absolute http(s) URL with a host and no whitespace, ≤ 2000 chars. */
+export function isSafeLocationUrl(value: string): boolean {
+  if (value.length > 2000 || /\s/.test(value)) return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+const locationUrlSchema = z.string().trim().max(2000, LOCATION_URL_MESSAGE).refine(isSafeLocationUrl, { message: LOCATION_URL_MESSAGE })
+
 const SERVICE_BAY_CAPACITY_MESSAGE = 'Количество постов должно быть не менее 1.'
 export const MAX_SERVICE_BAY_CAPACITY = 1000
 
@@ -16,6 +31,9 @@ export const businessProfileSchema = z
     phone: z.preprocess(emptyToNull, z.string().trim().max(50).nullable()).optional(),
     email: z.preprocess(emptyToNull, z.string().trim().toLowerCase().email('Invalid email').max(255).nullable()).optional(),
     address: z.preprocess(emptyToNull, z.string().trim().max(500).nullable()).optional(),
+    // MCR-3 — the business's own map/location link. http(s) only (no
+    // javascript:/data:/…); never fetched, previewed or rendered as HTML.
+    locationUrl: z.preprocess(emptyToNull, locationUrlSchema.nullable()).optional(),
     timezone: z
       .string()
       .trim()

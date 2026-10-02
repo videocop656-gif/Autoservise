@@ -58,7 +58,7 @@ vi.mock('../src/server/repositories/workingHoursRepository', () => ({
 import { buildAiContext } from '../src/server/ai/contextBuilder'
 
 function makeDecimal(value: string) {
-  return { toFixed: () => value }
+  return { toFixed: () => value, toString: () => value }
 }
 
 beforeEach(() => {
@@ -70,6 +70,8 @@ beforeEach(() => {
       description: 'desc',
       priceFrom: makeDecimal('1500.00'),
       priceTo: makeDecimal('2500.00'),
+      priceNote: null,
+      requiresInspection: false,
       currency: 'RUB',
       durationMinutes: 60,
     },
@@ -95,6 +97,7 @@ describe('buildAiContext', () => {
       phone: ctx.business.phone,
       email: ctx.business.email,
       address: ctx.business.address,
+      locationUrl: ctx.business.locationUrl,
       timezone: ctx.business.timezone,
       currency: ctx.business.currency,
     })
@@ -114,7 +117,17 @@ describe('buildAiContext', () => {
     const ctx = makeAuthContext('owner')
     const context = await buildAiContext(ctx, { customerId: null, customerRequestId: null })
     expect(context.services).toEqual([
-      { id: 'svc1', name: 'Замена масла', description: 'desc', priceFrom: '1500.00', priceTo: '2500.00', currency: 'RUB', durationMinutes: 60 },
+      {
+        id: 'svc1',
+        name: 'Замена масла',
+        description: 'desc',
+        // MCR-3 — explicit pricing facts instead of raw nullable bounds.
+        pricing: { type: 'RANGE', formatted: '1 500–2 500 ₽', min: '1500.00', max: '2500.00' },
+        priceNote: null,
+        requiresInspection: false,
+        currency: 'RUB',
+        durationMinutes: 60,
+      },
     ])
   })
 

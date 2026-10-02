@@ -8,7 +8,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
-import { formatDays, formatPriceRange } from '../../lib/format'
+import { formatDays } from '../../lib/format'
 
 interface ServiceDto {
   id: string
@@ -20,6 +20,11 @@ interface ServiceDto {
   durationMinutes: number
   // Prompt 48 — repeat-service interval in days; null = not set.
   repeatIntervalDays: number | null
+  // MCR-3 — price condition, inspection flag and the server's canonical
+  // reading of the price (FIXED / FROM / RANGE / UNAVAILABLE).
+  priceNote: string | null
+  requiresInspection: boolean
+  pricing: { type: 'FIXED' | 'FROM' | 'RANGE' | 'UNAVAILABLE'; formatted: string | null }
   isActive: boolean
 }
 
@@ -31,6 +36,8 @@ interface ServiceFormState {
   durationMinutes: string
   // '' = "Не задан" (sent as null).
   repeatIntervalDays: string
+  priceNote: string
+  requiresInspection: boolean
 }
 
 const EMPTY_FORM: ServiceFormState = {
@@ -40,12 +47,15 @@ const EMPTY_FORM: ServiceFormState = {
   priceTo: '',
   durationMinutes: '30',
   repeatIntervalDays: '',
+  priceNote: '',
+  requiresInspection: false,
 }
 
-// Prompt 48.2 — human-readable Russian price ("3 000–5 000 ₽"); the API
-// values themselves stay fixed-point strings.
+// MCR-3 — the price exactly as customers and the AI get it: the server's one
+// interpretation ("15 000 ₸" / "от 40 000 ₸" / "10 000–20 000 ₸"), never re-derived here.
 function formatPrice(service: ServiceDto): string {
-  return formatPriceRange(service.priceFrom, service.priceTo, service.currency) ?? 'По запросу'
+  const price = service.pricing.formatted ?? 'Цена не указана'
+  return service.requiresInspection ? `${price} · точная цена после осмотра` : price
 }
 
 function formatRepeatInterval(service: ServiceDto): string {
@@ -105,6 +115,8 @@ export default function ServicesSettingsPage() {
       priceTo: service.priceTo ?? '',
       durationMinutes: String(service.durationMinutes),
       repeatIntervalDays: service.repeatIntervalDays != null ? String(service.repeatIntervalDays) : '',
+      priceNote: service.priceNote ?? '',
+      requiresInspection: service.requiresInspection,
     })
     setFormError(null)
     setFieldErrors({})
@@ -132,6 +144,8 @@ export default function ServicesSettingsPage() {
       // Sent as a number, never parsed/rounded here: the server rejects 0,
       // negatives and fractions with a field error shown under the input.
       repeatIntervalDays: form.repeatIntervalDays.trim() === '' ? null : Number(form.repeatIntervalDays),
+      priceNote: form.priceNote.trim() === '' ? null : form.priceNote,
+      requiresInspection: form.requiresInspection,
     }
 
     try {
@@ -201,6 +215,7 @@ export default function ServicesSettingsPage() {
                     )}
                   </div>
                   {service.description && <p className="text-sm text-muted-foreground">{service.description}</p>}
+                  {service.priceNote && <p className="text-sm text-muted-foreground">Условия цены: {service.priceNote}</p>}
                   <p className="text-sm text-muted-foreground">
                     {formatPrice(service)} · {service.durationMinutes} мин · {formatRepeatInterval(service)}
                   </p>
@@ -249,7 +264,7 @@ export default function ServicesSettingsPage() {
                   />
                 </div>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <div className="space-y-2">
                     <Label htmlFor="svc-price-from">Цена от</Label>
                     <Input
@@ -290,6 +305,36 @@ export default function ServicesSettingsPage() {
                     )}
                   </div>
                 </div>
+
+                <p className="-mt-2 text-xs text-muted-foreground">
+                  Одинаковые «от» и «до» — фиксированная цена; только «от» — цена от; обе разные — диапазон; пусто — цену уточнит мастер.
+                </p>
+
+                <div className="space-y-2">
+                  <Label htmlFor="svc-price-note">Условия цены</Label>
+                  <Input
+                    id="svc-price-note"
+                    maxLength={300}
+                    placeholder="Например: цена за одну деталь, без стоимости запчастей"
+                    value={form.priceNote}
+                    onChange={(e) => setForm({ ...form, priceNote: e.target.value })}
+                  />
+                  {fieldErrors.priceNote && <p className="text-sm text-destructive">{fieldErrors.priceNote[0]}</p>}
+                </div>
+
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    id="svc-requires-inspection"
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={form.requiresInspection}
+                    onChange={(e) => setForm({ ...form, requiresInspection: e.target.checked })}
+                  />
+                  <span>
+                    Требуется осмотр для точной стоимости
+                    <span className="block text-xs text-muted-foreground">Клиенту будет сказано, что окончательная цена подтверждается после осмотра.</span>
+                  </span>
+                </label>
 
                 <div className="space-y-2">
                   <Label htmlFor="svc-repeat-interval">Интервал повторного обслуживания</Label>

@@ -64,7 +64,7 @@ import { ApiError } from '../src/server/lib/errors'
 import type { AiProvider, AiGenerationResult } from '../src/server/ai/provider'
 
 const CONTEXT = {
-  business: { name: 'Test Auto Service', description: null, phone: null, email: null, address: null, timezone: 'UTC', currency: 'RUB' },
+  business: { name: 'Test Auto Service', description: null, phone: null, email: null, address: null, locationUrl: null, timezone: 'UTC', currency: 'RUB' },
   currentDateTime: { date: '2026-09-15', time: '10:00', dayOfWeek: 'TUESDAY' as const },
   workingHours: [],
   services: [],

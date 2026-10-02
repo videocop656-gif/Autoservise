@@ -25,6 +25,7 @@ export interface AuthBusiness {
   phone: string | null
   email: string | null
   address: string | null
+  locationUrl: string | null
   timezone: string
   website: string | null
   currency: string
