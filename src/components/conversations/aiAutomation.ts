@@ -18,6 +18,7 @@ export const AI_PAUSE_REASON_LABELS: Record<string, string> = {
   UNSAFE_REPLY: 'ответ AI не прошёл проверку',
   TURN_LIMIT: 'достигнут лимит автоответов подряд',
   AI_FAILURE: 'AI не смог ответить',
+  UNSUPPORTED_MESSAGE: 'клиент прислал вложение или геолокацию',
 }
 
 export type AiAutomationView =

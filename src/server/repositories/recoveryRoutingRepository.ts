@@ -82,3 +82,28 @@ export const bridgeLinkRepository = {
     await prisma.recoveryBridgeLink.updateMany({ where: withTenant(tenantId, { businessId, callInteractionId, revokedAt: null }), data: { revokedAt: at } })
   },
 }
+
+/**
+ * MCR-7B1 — attribute a GENUINE inbound WhatsApp message to the SMS bridge
+ * that most likely produced it: same business, same canonical caller, link
+ * still valid (not expired / revoked) and not yet attributed. Exactly one
+ * candidate → whatsappInboundAt is set (compare-and-set); none or several →
+ * nothing (never a guess). Never blocks the inbound message itself.
+ */
+export async function attributeWhatsAppInbound(tenantId: string, businessId: string, callerE164: string, at: Date): Promise<'ATTRIBUTED' | 'NONE' | 'AMBIGUOUS'> {
+  const candidates = await prisma.recoveryBridgeLink.findMany({
+    where: withTenant(tenantId, {
+      businessId,
+      revokedAt: null,
+      whatsappInboundAt: null,
+      expiresAt: { gt: at },
+      callInteraction: { remotePhoneE164: callerE164 },
+    }),
+    select: { id: true },
+    take: 2,
+  })
+  if (candidates.length === 0) return 'NONE'
+  if (candidates.length > 1) return 'AMBIGUOUS'
+  const result = await prisma.recoveryBridgeLink.updateMany({ where: { id: candidates[0]!.id, whatsappInboundAt: null }, data: { whatsappInboundAt: at } })
+  return result.count === 1 ? 'ATTRIBUTED' : 'NONE'
+}

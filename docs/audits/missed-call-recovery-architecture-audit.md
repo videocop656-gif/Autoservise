@@ -879,4 +879,12 @@ It does not wait on any external research.
   - outcomes ACCEPTED / REJECTED / TRANSIENT / PERMANENT / UNCERTAIN. UNCERTAIN keeps the delivery SENDING and becomes DELIVERY_UNCERTAIN, never resent; Mobizon has no idempotency key;
   - `POST /api/webhooks/channels/mobizon`: SHA1 signature verified before any write, an `eventId` ledger, routing by the stored provider message id, a destination cross-check, the status re-read through `Message.GetSMSStatus` (the signature does not cover `data`), and a monotonic `providerDeliveryState`;
   - an optional first-party short link origin, and an SMS template that keeps the business name and picks the fewest segments.
-- MCR-7B (real WhatsApp) and later are not implemented.
+- **MCR-7B1 — production WhatsApp transport (Twilio pilot): implemented, verified against mocked HTTP only** (`docs/final-reports/final-report-mcr-7b1.md`). It covers:
+  - `TwilioWhatsAppAdapter` behind `ChannelAdapter`, chosen per connection (`ChannelConnection.provider = twilio`); without credentials it is unavailable, and in production a provider-less WhatsApp connection is unavailable (no mock);
+  - Messages API `POST /2010-04-01/Accounts/{SID}/Messages.json`, Basic auth, `whatsapp:+E164`, `Body` or `ContentSid` + `ContentVariables`, `StatusCallback`; no provider idempotency key, so a lost answer is `DELIVERY_UNCERTAIN`;
+  - `POST /api/webhooks/channels/twilio/inbound` and `/status`: `X-Twilio-Signature` over the canonical `APP_URL` verified before any write, AccountSid check, routing only by `To` → unique `routingKey` → one ACTIVE connection, `MessageSid` idempotency, the existing `receiveIncoming` → MCR-5 turn + `ai-conversation-reply` job;
+  - one central 24 h customer-service window (`customerServiceWindow.ts`) opened only by a genuine inbound and enforced in the delivery core for free-form sends;
+  - safe bridge attribution (`RecoveryBridgeLink.whatsappInboundAt`, exactly one candidate or nothing);
+  - `ProviderDeliveryState.READ` and monotonic transitions; media / location → operator handoff;
+  - sender ownership via the server allowlist `TWILIO_WHATSAPP_SENDERS` and owner/admin connect.
+- MCR-7B2 (Embedded Signup) and later are not implemented.

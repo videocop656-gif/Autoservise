@@ -54,6 +54,14 @@ export interface NormalizedOutboundMessage {
    * uncertain result can't produce a second customer message.
    */
   idempotencyKey?: string
+  /**
+   * MCR-7B1 — set ONLY for a business-initiated templated message (the
+   * missed-call recovery outside a session): the internal template key and
+   * its variables. A provider maps the key to its own approved template
+   * (Twilio ContentSid). Absent = free-form text (`content`), which a
+   * session-bound channel (WhatsApp) may only send inside the window.
+   */
+  template?: { key: string; variables: Record<string, string> }
 }
 
 /**
@@ -125,6 +133,12 @@ export interface ChannelAdapter {
   readonly channelType: ChannelType
   /** MCR-7A — the transport behind this adapter ("mobizon", "mock", …), stored on ChannelDelivery for delivery-report matching. */
   readonly provider?: string
+  /**
+   * MCR-7B1 — free-form text is only allowed inside the customer-service
+   * window (WhatsApp). The delivery core checks the window BEFORE calling
+   * sendMessage for any non-template message and fails closed.
+   */
+  readonly freeFormRequiresOpenSession?: boolean
   parseIncoming(rawPayload: unknown): NormalizedIncomingMessage
   sendMessage(input: NormalizedOutboundMessage): Promise<ChannelSendResult>
   /**

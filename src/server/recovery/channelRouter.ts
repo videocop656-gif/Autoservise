@@ -1,9 +1,9 @@
 import type { ChannelConnection, ChannelType } from '@prisma/client'
 import { channelConnectionRepository } from '../repositories/channelConnectionRepository'
-import { channelConsentRepository, customerServiceWindowRepository } from '../repositories/recoveryRoutingRepository'
+import { channelConsentRepository } from '../repositories/recoveryRoutingRepository'
+import { isWhatsAppSessionOpen } from '../channels/customerServiceWindow'
 import { getChannelAdapter } from '../channels/channelAdapterRegistry'
 import type { BusinessInitiatedCapability } from '../channels/types'
-import { WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS, recoveryThreadKey } from './policy'
 import { MISSED_CALL_RECOVERY_V1 } from './templates'
 import { publicBridgeBaseUrl, whatsappEntryPhone } from './bridge'
 
@@ -82,7 +82,7 @@ function capableConnection(connections: ChannelConnection[], type: ChannelType, 
   if (candidates.length === 0) return { reason: 'NOT_CONFIGURED' }
   let firstReason: CapabilityReason | null = null
   for (const connection of candidates) {
-    const capability = getChannelAdapter(connection.type).businessInitiatedCapability?.(destinationE164) ?? { eligible: false as const, reason: 'BUSINESS_INITIATION_NOT_PERMITTED' as const }
+    const capability = getChannelAdapter(connection.type, connection).businessInitiatedCapability?.(destinationE164) ?? { eligible: false as const, reason: 'BUSINESS_INITIATION_NOT_PERMITTED' as const }
     if (capability.eligible) return { connection }
     firstReason ??= capability.reason
   }
@@ -99,11 +99,8 @@ async function consentOf(scope: Scope, channel: ChannelType, destinationE164: st
   return row?.status ?? 'UNKNOWN'
 }
 
-/** isCustomerServiceWindowOpen(business, destination, WHATSAPP, now) — derived from authoritative inbound messages. */
-export async function isWhatsAppSessionOpen(scope: Scope, destinationE164: string, now: Date): Promise<boolean> {
-  const last = await customerServiceWindowRepository.latestInboundAt(scope.tenantId, scope.businessId, 'WHATSAPP', recoveryThreadKey(destinationE164))
-  return !!last && last.getTime() > now.getTime() - WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS * 3_600_000
-}
+/** isCustomerServiceWindowOpen(business, destination, WHATSAPP, now) — channels/customerServiceWindow.ts. */
+export { isWhatsAppSessionOpen }
 
 export async function evaluateWhatsApp(scope: Scope, connections: ChannelConnection[], destinationE164: string, now: Date): Promise<WhatsAppEligibility> {
   const base = { channel: 'WHATSAPP' as const, sessionOpen: false, approvedRecoveryTemplateAvailable: false, initiationPermitted: false }
@@ -112,7 +109,7 @@ export async function evaluateWhatsApp(scope: Scope, connections: ChannelConnect
   if (!('connection' in capable)) return { ...base, technicallyAvailable: false, consent, connection: null, reason: technicalReason(capable.reason) }
   const { connection } = capable
   const sessionOpen = await isWhatsAppSessionOpen(scope, destinationE164, now)
-  const approvedRecoveryTemplateAvailable = getChannelAdapter('WHATSAPP').recoveryTemplateAvailable?.(connection, MISSED_CALL_RECOVERY_V1) ?? false
+  const approvedRecoveryTemplateAvailable = getChannelAdapter('WHATSAPP', connection).recoveryTemplateAvailable?.(connection, MISSED_CALL_RECOVERY_V1) ?? false
   const facts = { ...base, technicallyAvailable: true, consent, connection, sessionOpen, approvedRecoveryTemplateAvailable }
   if (consent === 'OPTED_OUT') return { ...facts, reason: 'OPTED_OUT' }
   if (sessionOpen) return { ...facts, initiationPermitted: true, reason: 'SESSION_OPEN' }

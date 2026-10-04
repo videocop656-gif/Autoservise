@@ -8,7 +8,7 @@ import { Label } from '../../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
-import { recoverySetupView, smsTransportView, type SmsTransportStatusLike } from '../../components/channels/recoverySetup'
+import { recoverySetupView, smsTransportView, whatsappTransportView, type SmsTransportStatusLike, type WhatsAppTransportStatusLike } from '../../components/channels/recoverySetup'
 
 type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE' | 'SMS'
 type ChannelStatus = 'ACTIVE' | 'INACTIVE'
@@ -20,6 +20,10 @@ interface ChannelConnectionDto {
   displayName: string
   externalAccountId: string
   config: Record<string, unknown> | null
+  // MCR-7B1 — real transport and masked sender (never credentials).
+  provider?: string | null
+  senderMasked?: string | null
+  routingActive?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -48,6 +52,7 @@ export default function ChannelsSettingsPage() {
   const [connections, setConnections] = useState<ChannelConnectionDto[]>([])
   // MCR-7A — server-wide SMS transport (provider, mode, sender); secrets never reach the client.
   const [smsTransport, setSmsTransport] = useState<SmsTransportStatusLike | null>(null)
+  const [whatsappTransport, setWhatsappTransport] = useState<WhatsAppTransportStatusLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -90,6 +95,9 @@ export default function ChannelsSettingsPage() {
     apiFetch<{ sms: SmsTransportStatusLike }>('/api/channels/sms-transport')
       .then((data) => setSmsTransport(data.sms))
       .catch(() => setSmsTransport(null))
+    apiFetch<{ whatsapp: WhatsAppTransportStatusLike }>('/api/channels/whatsapp-transport')
+      .then((data) => setWhatsappTransport(data.whatsapp))
+      .catch(() => setWhatsappTransport(null))
   }, [])
 
   function openCreateForm() {
@@ -176,6 +184,17 @@ export default function ChannelsSettingsPage() {
     }
   }
 
+  // MCR-7B1 — attach / detach the Twilio sender assigned to this business by the server.
+  async function handleTwilio(connection: ChannelConnectionDto, connect: boolean) {
+    setActionError(null)
+    try {
+      await apiFetch(`/api/channels/${connection.id}/twilio/connect`, { method: connect ? 'POST' : 'DELETE' })
+      await loadConnections()
+    } catch (err) {
+      setActionError(err instanceof ApiClientError ? err.message : 'Не удалось изменить подключение Twilio.')
+    }
+  }
+
   async function handleTelegramSetup(connection: ChannelConnectionDto) {
     setActionError(null)
     setSettingUpId(connection.id)
@@ -208,6 +227,19 @@ export default function ChannelsSettingsPage() {
                 <div>
                   SMS для восстановления: <span className={view.sms.configured ? 'text-success' : 'text-muted-foreground'}>{view.sms.label}</span>
                 </div>
+                {whatsappTransport && (() => {
+                  const wa = whatsappTransportView(whatsappTransport)
+                  return (
+                    <div className="mt-2 space-y-0.5 border-t border-border pt-2 text-xs text-muted-foreground">
+                      <div>
+                        WhatsApp-провайдер: <span className="text-foreground">{wa.provider}</span> · режим: {wa.mode} ·{' '}
+                        <span className={wa.ok ? 'text-success' : 'text-muted-foreground'}>{wa.status}</span>
+                      </div>
+                      <div className="break-words">Номер WhatsApp: {wa.sender}</div>
+                      <div>{wa.template}</div>
+                    </div>
+                  )
+                })()}
                 {smsTransport && (() => {
                   const sms = smsTransportView(smsTransport)
                   return (
@@ -271,6 +303,13 @@ export default function ChannelsSettingsPage() {
                           <td className="py-2 pr-3">
                             {connection.displayName}
                             {isTelegram && username && <div className="text-xs text-muted-foreground">Bot: @{username}</div>}
+                            {connection.type === 'WHATSAPP' && (
+                              <div className="text-xs text-muted-foreground">
+                                {connection.provider === 'twilio'
+                                  ? `Twilio · ${connection.senderMasked ?? 'номер не задан'}${connection.routingActive ? ' · сообщения клиентов принимаются' : ''}`
+                                  : 'Тестовый (mock)'}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 pr-3 text-muted-foreground">{connection.externalAccountId}</td>
                           <td className="py-2 pr-3">
@@ -294,6 +333,11 @@ export default function ChannelsSettingsPage() {
                                 <Button variant="ghost" size="sm" onClick={() => openEditForm(connection)}>
                                   <Pencil className="h-4 w-4" />
                                 </Button>
+                                {connection.type === 'WHATSAPP' && (
+                                  <Button variant="outline" size="sm" onClick={() => void handleTwilio(connection, connection.provider !== 'twilio')}>
+                                    {connection.provider === 'twilio' ? 'Отключить Twilio' : 'Подключить Twilio'}
+                                  </Button>
+                                )}
                                 {connection.status === 'ACTIVE' ? (
                                   <Button variant="outline" size="sm" onClick={() => handleDeactivate(connection)}>
                                     Deactivate

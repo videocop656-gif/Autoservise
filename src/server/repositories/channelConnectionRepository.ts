@@ -22,9 +22,33 @@ export const channelConnectionRepository = {
   },
 
   async setStatus(tenantId: string, businessId: string, id: string, status: 'ACTIVE' | 'INACTIVE') {
-    const result = await prisma.channelConnection.updateMany({ where: withTenant(tenantId, { businessId, id }), data: { status } })
+    // MCR-7B1 — the unique routingKey exists exactly while ACTIVE with a
+    // provider sender: activating a sender another business already routes
+    // fails with P2002 (the caller reports SENDER_ALREADY_CONNECTED).
+    const current = await prisma.channelConnection.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+    if (!current) return null
+    const routingKey = status === 'ACTIVE' ? channelRoutingKey(current) : null
+    const result = await prisma.channelConnection.updateMany({ where: withTenant(tenantId, { businessId, id }), data: { status, routingKey } })
     if (result.count === 0) return null
     return prisma.channelConnection.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
+  /** MCR-7B1 — set / clear the provider sender of a connection (routingKey follows ACTIVE). */
+  async setProviderSender(tenantId: string, businessId: string, id: string, data: { provider: string | null; senderE164: string | null }) {
+    const current = await prisma.channelConnection.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+    if (!current) return null
+    const routingKey = current.status === 'ACTIVE' ? channelRoutingKey({ ...current, ...data }) : null
+    await prisma.channelConnection.updateMany({ where: withTenant(tenantId, { businessId, id }), data: { ...data, routingKey } })
+    return prisma.channelConnection.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
+  /**
+   * MCR-7B1 — the ONE inbound routing lookup for provider webhooks: the
+   * ACTIVE connection holding this sender. Deliberately not tenant-scoped (a
+   * webhook has no tenant); the unique routingKey guarantees at most one.
+   */
+  findActiveByRoutingKey(routingKey: string) {
+    return prisma.channelConnection.findFirst({ where: { routingKey, status: 'ACTIVE' } })
   },
 
   /**
@@ -61,4 +85,9 @@ export const channelConnectionRepository = {
       select: { id: true },
     })
   },
+}
+
+/** "WHATSAPP:twilio:+E164" — or null when the connection has no provider sender. */
+export function channelRoutingKey(c: { type: string; provider: string | null; senderE164: string | null }): string | null {
+  return c.provider && c.senderE164 ? `${c.type}:${c.provider}:${c.senderE164}` : null
 }

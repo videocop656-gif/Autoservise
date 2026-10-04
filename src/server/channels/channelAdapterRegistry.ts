@@ -5,6 +5,8 @@ import type { ChannelAdapter } from './types'
 import { createMockAdapter } from './adapters/mockAdapter'
 import { createTelegramAdapter } from './adapters/telegramAdapter'
 import { smsAdapter } from './smsTransport'
+import { whatsappAdapterFor } from './whatsappTransport'
+import type { ChannelConnection } from '@prisma/client'
 
 /**
  * Selects an adapter by `ChannelType` (spec §"CHANNEL REGISTRY"). WEBSITE
@@ -12,7 +14,6 @@ import { smsAdapter } from './smsTransport'
  * scope for Prompt 18 (spec's own critical constraint: "без WhatsApp").
  */
 const MOCK_ADAPTERS: Partial<Record<ChannelType, ChannelAdapter>> = {
-  WHATSAPP: createMockAdapter('WHATSAPP'),
   WEBSITE: createMockAdapter('WEBSITE'),
 }
 
@@ -35,7 +36,16 @@ const MOCK_ADAPTERS: Partial<Record<ChannelType, ChannelAdapter>> = {
  * token configured/rotated at runtime is picked up immediately, with
  * nothing cached at module-load time.
  */
-export function getChannelAdapter(type: ChannelType): ChannelAdapter {
+/**
+ * MCR-7B1 — pass the connection when you have it: a WhatsApp adapter is
+ * per connection (its provider and its own sender). Without it, WhatsApp
+ * resolves to the mock (dev/test) or unavailable (production).
+ */
+export function getChannelAdapter(
+  type: ChannelType,
+  connection?: (Pick<ChannelConnection, 'type'> & Partial<Pick<ChannelConnection, 'provider' | 'senderE164'>>) | null
+): ChannelAdapter {
+  if (type === 'WHATSAPP') return whatsappAdapterFor(connection)
   // MCR-7A — SMS: Mobizon in production when explicitly configured, the mock
   // in dev/test, otherwise an unavailable transport (fail closed).
   if (type === 'SMS') return smsAdapter()

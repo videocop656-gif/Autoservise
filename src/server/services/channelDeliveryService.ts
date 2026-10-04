@@ -8,6 +8,8 @@ import { channelDeliveryRepository } from '../repositories/channelDeliveryReposi
 import { channelConnectionRepository } from '../repositories/channelConnectionRepository'
 import { resolveActiveConnection } from './channelMessageService'
 import { getChannelAdapter } from '../channels/channelAdapterRegistry'
+import { isWhatsAppSessionOpen } from '../channels/customerServiceWindow'
+import type { NormalizedOutboundMessage } from '../channels/types'
 import { channelTypeToConversationChannel } from '../channels/types'
 import { toChannelDeliveryDto, type ChannelDeliveryDto } from '../lib/dto'
 
@@ -127,21 +129,31 @@ export type DeliveryAttempt =
 async function attemptDelivery(
   tenantId: string,
   businessId: string,
-  connection: Pick<ChannelConnection, 'id' | 'type'>,
+  connection: Pick<ChannelConnection, 'id' | 'type'> & Partial<Pick<ChannelConnection, 'provider' | 'senderE164'>>,
   externalConversationId: string,
-  message: Pick<Message, 'id' | 'content'>
+  message: Pick<Message, 'id' | 'content'>,
+  template?: NormalizedOutboundMessage['template']
 ): Promise<DeliveryAttempt> {
   const claim = await channelDeliveryRepository.claimForSending(tenantId, businessId, connection.id, message.id)
   if (claim.outcome === 'ALREADY_SENT') return { status: 'SENT', delivery: claim.delivery }
   if (claim.outcome === 'IN_PROGRESS') return { status: 'IN_PROGRESS', delivery: claim.delivery }
 
   const delivery = claim.delivery
-  const adapter = getChannelAdapter(connection.type)
+  const adapter = getChannelAdapter(connection.type, connection)
+  // MCR-7B1 — free-form text on a session-bound channel (WhatsApp) only inside
+  // the customer-service window; otherwise fail closed BEFORE any provider
+  // call. Never silently turned into a template.
+  if (adapter.freeFormRequiresOpenSession && !template && !(await isWhatsAppSessionOpen({ tenantId, businessId }, `+${externalConversationId.replace(/^\+/, '')}`, new Date()))) {
+    const errorMessage = 'Outside the WhatsApp customer-service window (a template is required)'
+    const failed = await channelDeliveryRepository.markFailed(delivery.id, 'WHATSAPP_SESSION_CLOSED', errorMessage)
+    return { status: 'FAILED', delivery: failed, errorCode: 'WHATSAPP_SESSION_CLOSED', errorMessage }
+  }
   try {
     const result = await adapter.sendMessage({
       channelType: connection.type,
       externalConversationId,
       content: message.content,
+      ...(template ? { template } : {}),
       idempotencyKey: delivery.id,
     })
     if (result.success) {
@@ -174,7 +186,11 @@ async function attemptDelivery(
  * ownership and channel checks as the staff path; only automated messages
  * pass: SYSTEM (MCR-4 recovery template) and AI (MCR-5 automatic replies).
  */
-export async function deliverSystemMessage(scope: { tenantId: string; businessId: string }, messageId: string): Promise<DeliveryAttempt> {
+export async function deliverSystemMessage(
+  scope: { tenantId: string; businessId: string },
+  messageId: string,
+  options: { template?: NormalizedOutboundMessage['template'] } = {}
+): Promise<DeliveryAttempt> {
   const message = await messageRepository.findById(scope.tenantId, scope.businessId, messageId)
   if (!message || message.direction !== 'OUTBOUND' || (message.senderType !== 'SYSTEM' && message.senderType !== 'AI')) {
     throw new ApiError(404, 'MESSAGE_NOT_FOUND', 'Message not found')
@@ -189,5 +205,5 @@ export async function deliverSystemMessage(scope: { tenantId: string; businessId
   if (channelTypeToConversationChannel(connection.type) !== conversation.channel) {
     throw new ApiError(409, 'CHANNEL_TYPE_MISMATCH', 'This conversation belongs to a different channel type')
   }
-  return attemptDelivery(scope.tenantId, scope.businessId, connection, conversation.externalConversationId, message)
+  return attemptDelivery(scope.tenantId, scope.businessId, connection, conversation.externalConversationId, message, options.template)
 }

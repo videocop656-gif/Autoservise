@@ -8,6 +8,8 @@ export interface RecoveryChannelLike {
   type: string
   status: string
   config: Record<string, unknown> | null
+  /** MCR-7B1 — a connected Twilio sender (masked) is itself the customer entry. */
+  senderMasked?: string | null
 }
 
 export interface RecoverySetupView {
@@ -18,7 +20,7 @@ export interface RecoverySetupView {
 
 export function recoverySetupView(connections: RecoveryChannelLike[]): RecoverySetupView {
   const activeWhatsApp = connections.filter((c) => c.type === 'WHATSAPP' && c.status === 'ACTIVE')
-  const entry = activeWhatsApp.some((c) => typeof c.config?.customerEntryPhone === 'string' && c.config.customerEntryPhone !== '')
+  const entry = activeWhatsApp.some((c) => (typeof c.config?.customerEntryPhone === 'string' && c.config.customerEntryPhone !== '') || !!c.senderMasked)
   const sms = connections.some((c) => c.type === 'SMS' && c.status === 'ACTIVE')
   return {
     whatsapp: {
@@ -67,5 +69,27 @@ export function smsTransportView(s: SmsTransportStatusLike): SmsTransportView {
     ok: s.configured,
     sender,
     webhook: s.provider === 'mobizon' ? (s.webhookConfigured ? 'отчёты о доставке подключены' : 'отчёты о доставке не подключены') : null,
+  }
+}
+
+// --- MCR-7B1: WhatsApp transport (per business) -----------------------------
+
+export interface WhatsAppTransportStatusLike {
+  provider: 'twilio' | 'mock' | 'none'
+  mode: 'production' | 'mock' | 'off'
+  credentialsConfigured: boolean
+  assignedSender: string | null
+  recoveryTemplateConfigured: boolean
+  webhooksConfigured: boolean
+}
+
+export function whatsappTransportView(s: WhatsAppTransportStatusLike) {
+  return {
+    provider: s.provider === 'twilio' ? 'Twilio' : s.provider === 'mock' ? 'Тестовый (mock)' : 'не выбран',
+    mode: s.mode === 'production' ? 'рабочий' : s.mode === 'mock' ? 'тестовый, сообщения не отправляются' : 'выключен',
+    status: s.provider === 'twilio' ? (s.credentialsConfigured ? 'подключён' : 'не настроен') : s.provider === 'mock' ? 'тестовый' : 'не настроен',
+    ok: s.provider === 'twilio' && s.credentialsConfigured,
+    sender: s.assignedSender ?? 'номер для вашего автосервиса не назначен',
+    template: s.recoveryTemplateConfigured ? 'шаблон восстановления настроен' : 'шаблон восстановления не настроен — первое сообщение уходит SMS',
   }
 }

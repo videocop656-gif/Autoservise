@@ -95,11 +95,17 @@ async function loadDuplicateResult(ctx: AuthContext, channelConnectionId: string
  * pass a raw, differently-shaped Telegram Update straight through to this
  * same, otherwise-unmodified function.
  */
-export async function receiveIncoming(ctx: AuthContext, channelConnectionId: string, rawPayload: unknown): Promise<ReceiveIncomingResult> {
+export async function receiveIncoming(
+  ctx: AuthContext,
+  channelConnectionId: string,
+  rawPayload: unknown,
+  // MCR-7B1 — e.g. a media-only WhatsApp message: stored, but no AI turn (an operator handles it).
+  options: { suppressAiTurn?: boolean } = {}
+): Promise<ReceiveIncomingResult> {
   requireRole(ctx, ...ANY_STAFF_ROLE)
 
   const connection = await resolveActiveConnection(ctx, channelConnectionId)
-  const adapter = getChannelAdapter(connection.type)
+  const adapter = getChannelAdapter(connection.type, connection)
   const normalized = adapter.parseIncoming(rawPayload)
 
   if (!normalized.externalMessageId || !normalized.externalConversationId || !normalized.text) {
@@ -111,7 +117,7 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
   // MCR-5 — AI auto-replies apply only when the business switched them on AND
   // the channel is an auto-reply channel (WhatsApp; never Telegram). The
   // authoritative re-check happens again when the turn is claimed.
-  const aiAutoReply = ctx.business.aiAutoReplyEnabled === true && isAutoReplyChannel(channelTypeToConversationChannel(connection.type))
+  const aiAutoReply = !options.suppressAiTurn && ctx.business.aiAutoReplyEnabled === true && isAutoReplyChannel(channelTypeToConversationChannel(connection.type))
 
   const existingDuplicate = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
   if (existingDuplicate) {

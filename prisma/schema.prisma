@@ -1051,6 +1051,18 @@ model ChannelConnection {
   // which is the only code path allowed to write this column.
   config Json?
 
+  // MCR-7B1 — the real transport behind this connection ("twilio"; null =
+  // the mock). Set only by the controlled connect flow (twilioConnectionService):
+  // the sender must be assigned to THIS business in server configuration.
+  provider   String?
+  // The provider sender this connection sends from / receives on (canonical
+  // E.164 of the WhatsApp number). Metadata, not a secret.
+  senderE164 String?
+  // "WHATSAPP:twilio:+E164" while ACTIVE with a sender, null otherwise. Unique:
+  // one live sender can never route inbound messages to two businesses.
+  // Maintained by connect / activate / deactivate.
+  routingKey String?   @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1640,6 +1652,9 @@ model RecoveryBridgeLink {
   firstOpenedAt     DateTime?
   lastOpenedAt      DateTime?
   openCount         Int       @default(0)
+  // MCR-7B1 — the first genuine inbound WhatsApp message from this caller to
+  // this business that could be attributed to this (single, unexpired) link.
+  whatsappInboundAt DateTime?
   createdAt         DateTime  @default(now())
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1663,6 +1678,8 @@ enum ProviderDeliveryState {
   UNDELIVERED
   EXPIRED
   REJECTED
+  // MCR-7B1 — WhatsApp read receipt (Twilio "read"): stronger than DELIVERED.
+  READ
 }
 
 // Idempotency ledger of provider webhook events: one row per (provider,

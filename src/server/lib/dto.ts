@@ -21,6 +21,7 @@ import type {
   BusinessPhoneNumber,
   CallInteraction,
 } from '@prisma/client'
+import { maskPhone } from './phone'
 import { describeServicePricing, type PricingType } from '../domain/pricing'
 
 /**
@@ -651,6 +652,9 @@ export interface ChannelConnectionDto {
   displayName: string
   externalAccountId: string
   config: Record<string, unknown> | null
+  provider: string | null
+  senderMasked: string | null
+  routingActive: boolean
   createdAt: Date
   updatedAt: Date
 }
@@ -663,6 +667,10 @@ export function toChannelConnectionDto(connection: ChannelConnection): ChannelCo
     displayName: connection.displayName,
     externalAccountId: connection.externalAccountId,
     config: (connection.config as Record<string, unknown> | null) ?? null,
+    // MCR-7B1 — the real transport and its (masked) sender; never credentials.
+    provider: connection.provider ?? null,
+    senderMasked: connection.senderE164 ? maskPhone(connection.senderE164) : null,
+    routingActive: !!connection.routingKey,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
   }

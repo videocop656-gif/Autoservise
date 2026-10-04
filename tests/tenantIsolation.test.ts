@@ -1465,10 +1465,15 @@ describe('tenant isolation — Channel Integration (Prompt 16)', () => {
     )
     channelConnectionUpdateManyMock.mockClear()
 
+    // MCR-7B1 — setStatus reads the row first (to maintain the routing key),
+    // tenant-scoped; a foreign-tenant id is not found → no write at all.
     await channelConnectionRepository.setStatus('tenant-a', 'business-a', CHANNEL_OWNED_BY_B, 'ACTIVE')
-    expect(channelConnectionUpdateManyMock).toHaveBeenCalledWith(
+    expect(channelConnectionFindFirstMock).toHaveBeenCalledWith(
       expect.objectContaining({ where: { tenantId: 'tenant-a', businessId: 'business-a', id: CHANNEL_OWNED_BY_B } })
     )
+    for (const [args] of channelConnectionUpdateManyMock.mock.calls) {
+      expect(args).toMatchObject({ where: { tenantId: 'tenant-a', businessId: 'business-a', id: CHANNEL_OWNED_BY_B } })
+    }
   })
 
   it('Prompt 18: repository: findByIdUnscoped is deliberately NOT tenant-scoped — the ONE lookup the Telegram webhook route uses to resolve a connection before it has any tenant context of its own, by id alone', async () => {

@@ -76,6 +76,8 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
   // Retry of an attempt that already created its message: deliver that same
   // message again (idempotent per ChannelDelivery), never a second one.
   let messageId = call.recoveryMessageId
+  // The pinned route: from the claimed row on a retry, or from the decision below.
+  let pinned: { recoveryChannel: string | null; recoveryRouteReason: string | null } = { recoveryChannel: call.recoveryChannel, recoveryRouteReason: call.recoveryRouteReason }
   if (!messageId) {
     const route = await selectRecoveryChannel(scope, destination, now)
     if (!route.ok) {
@@ -116,6 +118,7 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
       )
       messageId = message.id
     })
+    pinned = { recoveryChannel: route.route, recoveryRouteReason: route.reason }
     logger.info('call_recovery_routed', { route: route.route, routeReason: route.reason, caller: maskPhone(destination) })
     if (created === 'ANSWERED') return 'NOT_ELIGIBLE'
     if (created === 'LOST_CLAIM') return 'SKIPPED'
@@ -127,7 +130,14 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
   }
 
   try {
-    const attempt = await deliverSystemMessage(scope, messageId!)
+    // MCR-7B1 — a WhatsApp recovery chosen because consent + an approved
+    // template exist is sent AS that template (never free text outside a
+    // session). Decided by the route pinned on the call, so retries agree.
+    const template =
+      pinned?.recoveryChannel === 'WHATSAPP' && pinned.recoveryRouteReason === 'WHATSAPP_TEMPLATE_AVAILABLE'
+        ? { key: MISSED_CALL_RECOVERY_V1, variables: { '1': await businessNameFor(scope) } }
+        : undefined
+    const attempt = await deliverSystemMessage(scope, messageId!, { template })
     if (attempt.status === 'SENT') {
       await callRecoveryRepository.transitionFromClaimed(call.id, { recoveryState: 'SENT', recoverySentAt: attempt.delivery.deliveredAt ?? now })
       return 'SENT'
@@ -143,6 +153,12 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
     logger.warn('call_recovery_send_failed', { code })
     return 'FAILED'
   }
+}
+
+/** The name the WhatsApp recovery template greets with ({{1}}); a neutral word when the business has none. */
+async function businessNameFor(scope: { tenantId: string; businessId: string }): Promise<string> {
+  const business = await businessRepository.findFirstByTenant(scope.tenantId)
+  return business?.id === scope.businessId && business.name.trim() ? business.name.trim() : 'автосервис'
 }
 
 export interface RecoveryBatchSummary {

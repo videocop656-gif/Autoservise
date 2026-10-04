@@ -117,6 +117,39 @@ export const env = {
     const value = process.env.RECOVERY_LINK_BASE_URL
     return value && value.trim() !== '' ? value.trim() : undefined
   },
+  /** MCR-7B1 — Twilio Account SID (identifier, not a secret; still never logged in full). */
+  get twilioAccountSid(): string | undefined {
+    const value = process.env.TWILIO_ACCOUNT_SID?.trim()
+    return value && /^AC[0-9a-fA-F]{32}$/.test(value) ? value : undefined
+  },
+  /** MCR-7B1 — Twilio Auth Token (secret): Basic auth for the API and the key of X-Twilio-Signature. Never logged, never sent to a client. */
+  get twilioAuthToken(): string | undefined {
+    const value = process.env.TWILIO_AUTH_TOKEN
+    return value && value.trim() !== '' ? value.trim() : undefined
+  },
+  /**
+   * MCR-7B1 — which provisioned Twilio WhatsApp senders belong to which
+   * business (pilot: one AUTOSERVISE-controlled Twilio account). Format:
+   * "+77272500100=<businessId>,+77172500200=<businessId>". Server-side
+   * configuration is the authority: an owner can only connect the sender
+   * assigned to their own business.
+   */
+  get twilioWhatsAppSenders(): { senderE164: string; businessId: string }[] {
+    return (process.env.TWILIO_WHATSAPP_SENDERS ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [sender, businessId] = entry.split('=').map((part) => part?.trim() ?? '')
+        return { senderE164: sender ?? '', businessId: businessId ?? '' }
+      })
+      .filter((s) => /^\+[1-9]\d{6,14}$/.test(s.senderE164) && /^[0-9a-f-]{36}$/i.test(s.businessId))
+  },
+  /** MCR-7B1 — the approved Twilio Content Template (ContentSid "HX…") for MISSED_CALL_RECOVERY_V1. Unset → no business-initiated WhatsApp recovery. */
+  get twilioRecoveryTemplateSid(): string | undefined {
+    const value = process.env.TWILIO_TEMPLATE_MISSED_CALL_RECOVERY_V1?.trim()
+    return value && /^HX[0-9a-fA-F]{32}$/.test(value) ? value : undefined
+  },
   /** MCR-2 — enables the MOCK telephony webhook (development/testing only; ignored in production). */
   get telephonyMockWebhookSecret(): string | undefined {
     const value = process.env.TELEPHONY_MOCK_WEBHOOK_SECRET

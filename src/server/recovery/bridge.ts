@@ -67,7 +67,9 @@ export function buildBridgeUrl(baseUrl: string, token: string): string {
  * its ACTIVE WhatsApp connection (oldest first), canonical E.164 only. Never a
  * global number; absent → no bridge.
  */
-export function whatsappEntryPhone(connections: Pick<ChannelConnection, 'type' | 'status' | 'config' | 'createdAt'>[]): string | null {
+export function whatsappEntryPhone(
+  connections: (Pick<ChannelConnection, 'type' | 'status' | 'config' | 'createdAt'> & Partial<Pick<ChannelConnection, 'senderE164'>>)[]
+): string | null {
   const candidates = connections
     .filter((c) => c.type === 'WHATSAPP' && c.status === 'ACTIVE')
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
@@ -75,6 +77,8 @@ export function whatsappEntryPhone(connections: Pick<ChannelConnection, 'type' |
     const raw = (c.config as Record<string, unknown> | null)?.customerEntryPhone
     const e164 = typeof raw === 'string' ? normalizePhone(raw, null) : null
     if (e164) return e164
+    // MCR-7B1 — a real (Twilio) sender is itself the number customers write to.
+    if (c.senderE164) return c.senderE164
   }
   return null
 }

@@ -122,7 +122,16 @@ export async function activateChannelConnection(ctx: AuthContext, id: string) {
   if (connection.type === 'TELEGRAM' && env.telegramBotToken) {
     throw new ApiError(409, 'TELEGRAM_SETUP_REQUIRED', 'Use the Telegram setup flow to activate this connection')
   }
-  const updated = await channelConnectionRepository.setStatus(ctx.tenant.id, ctx.business.id, id, 'ACTIVE')
+  let updated
+  try {
+    updated = await channelConnectionRepository.setStatus(ctx.tenant.id, ctx.business.id, id, 'ACTIVE')
+  } catch (err) {
+    // MCR-7B1 — another ACTIVE connection already routes this provider sender.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new ApiError(409, 'SENDER_ALREADY_CONNECTED', 'Этот номер WhatsApp уже подключён к другому каналу')
+    }
+    throw err
+  }
   if (!updated) {
     throw new ApiError(404, 'CHANNEL_NOT_FOUND', 'Channel connection not found')
   }

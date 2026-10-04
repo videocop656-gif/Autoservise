@@ -131,6 +131,15 @@ MCR-7A (production SMS transport) is implemented: the recovery SMS can be sent t
 
 The pilot sender is AUTOSERVISE's shared Mobizon sender, not the workshop's own. No real SMS has been sent yet: the account and keys are a deployment step. See `docs/final-reports/final-report-mcr-7a.md`.
 
+MCR-7B1 (production WhatsApp transport, Twilio pilot) is implemented: real WhatsApp conversations can run through Twilio.
+- The customer writes to the workshop's WhatsApp (usually after the SMS link); the message lands in «Диалоги» of exactly the business that owns the receiving number, and the AI answers through Twilio.
+- Only a real customer message opens the 24-hour WhatsApp window; a call, the SMS or the link click never do. Outside the window no free-form message is sent — neither by the AI nor by staff.
+- Staff replies from the same composer go through the same Twilio sender; the operator sees «Доставлено / Прочитано».
+- Photos, files and locations go to a person; the AI does not read them.
+- If Twilio's answer is lost, the message is never sent twice.
+
+The pilot uses one AUTOSERVISE Twilio account and senders assigned to businesses by server configuration; self-service onboarding (Embedded Signup) is MCR-7B2. No real WhatsApp message has been sent yet: the Twilio account and sender are a deployment step. See `docs/final-reports/final-report-mcr-7b1.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.
