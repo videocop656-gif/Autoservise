@@ -29,3 +29,43 @@ export function recoverySetupView(connections: RecoveryChannelLike[]): RecoveryS
     fallback: 'Первое сообщение уходит в WhatsApp, когда это разрешено (клиент недавно писал сам или дал согласие). Иначе — SMS со ссылкой, которая открывает WhatsApp автосервиса.',
   }
 }
+
+// --- MCR-7A: SMS transport (server-wide) -----------------------------------
+
+export interface SmsTransportStatusLike {
+  provider: 'mobizon' | 'mock' | 'none'
+  mode: 'production' | 'mock' | 'off'
+  configured: boolean
+  sender: string | null
+  senderScope: 'SHARED_ACCOUNT'
+  webhookConfigured: boolean
+}
+
+export interface SmsTransportView {
+  provider: string
+  mode: string
+  status: string
+  ok: boolean
+  sender: string
+  webhook: string | null
+}
+
+/** Never shows a key or secret (the API never returns them); never claims a workshop-branded sender. */
+export function smsTransportView(s: SmsTransportStatusLike): SmsTransportView {
+  const provider = s.provider === 'mobizon' ? 'Mobizon' : s.provider === 'mock' ? 'Тестовый (mock)' : 'не выбран'
+  const mode = s.mode === 'production' ? 'рабочий' : s.mode === 'mock' ? 'тестовый, SMS не отправляются' : 'выключен'
+  const sender =
+    s.provider !== 'mobizon'
+      ? '—'
+      : s.sender
+        ? `${s.sender} — общий отправитель AUTOSERVISE, не собственное имя вашего автосервиса`
+        : 'отправитель по умолчанию аккаунта Mobizon (общий)'
+  return {
+    provider,
+    mode,
+    status: s.configured ? 'настроен' : 'не настроен',
+    ok: s.configured,
+    sender,
+    webhook: s.provider === 'mobizon' ? (s.webhookConfigured ? 'отчёты о доставке подключены' : 'отчёты о доставке не подключены') : null,
+  }
+}

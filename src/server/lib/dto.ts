@@ -692,6 +692,13 @@ export interface ChannelDeliveryDto {
   sentAt: Date | null
   errorCode: string | null
   errorMessage: string | null
+  // MCR-7A — carrier delivery after acceptance (null until a provider report).
+  provider: string | null
+  providerDeliveryState: ChannelDelivery['providerDeliveryState']
+  /** The provider's raw code — technical detail only; the UI shows a Russian label. */
+  providerStatus: string | null
+  providerStatusAt: Date | null
+  providerSegments: number | null
   createdAt: Date
   updatedAt: Date
 }
@@ -708,6 +715,11 @@ export function toChannelDeliveryDto(delivery: ChannelDelivery): ChannelDelivery
     sentAt: delivery.deliveredAt,
     errorCode: delivery.errorCode,
     errorMessage: delivery.errorMessage,
+    provider: delivery.provider ?? null,
+    providerDeliveryState: delivery.providerDeliveryState ?? null,
+    providerStatus: delivery.providerStatus ?? null,
+    providerStatusAt: delivery.providerStatusAt ?? null,
+    providerSegments: delivery.providerSegments ?? null,
     createdAt: delivery.createdAt,
     updatedAt: delivery.updatedAt,
   }

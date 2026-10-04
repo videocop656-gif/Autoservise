@@ -205,7 +205,7 @@ describe('sendMessageViaChannel — success / failure lifecycle (spec §5, §24)
 
     const dto = await sendMessageViaChannel(makeAuthContext('owner'), 'conn-1', 'msg-1')
 
-    expect(mocks.markSent).toHaveBeenCalledWith('del-1', 'mock-out-42')
+    expect(mocks.markSent).toHaveBeenCalledWith('del-1', 'mock-out-42', null) // MCR-7A: + the adapter's provider
     expect(dto).toMatchObject({ status: 'SENT', attemptCount: 1, externalMessageId: 'mock-out-42' })
     expect(dto).not.toHaveProperty('tenantId')
     expect(dto).not.toHaveProperty('businessId')

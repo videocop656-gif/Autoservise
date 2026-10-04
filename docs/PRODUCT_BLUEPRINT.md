@@ -124,6 +124,13 @@ MCR-6 (recovery channel routing) is implemented with mock WhatsApp and mock SMS:
 
 Real SMS / WhatsApp providers are MCR-7. See `docs/final-reports/final-report-mcr-6.md`.
 
+MCR-7A (production SMS transport) is implemented: the recovery SMS can be sent through the real Mobizon Kazakhstan API.
+- Turned on only by explicit server configuration (`SMS_PROVIDER=mobizon` + API key); otherwise SMS is off, never a silent mock.
+- The operator sees «Принято оператором / Доставлено / Не доставлено» from signed Mobizon delivery reports, each re-checked with Mobizon's API.
+- If the provider answer is lost, the SMS is never sent twice and never followed by a WhatsApp message.
+
+The pilot sender is AUTOSERVISE's shared Mobizon sender, not the workshop's own. No real SMS has been sent yet: the account and keys are a deployment step. See `docs/final-reports/final-report-mcr-7a.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

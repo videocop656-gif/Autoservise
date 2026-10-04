@@ -174,7 +174,7 @@ async function deliver(scope: BusinessScope, turn: AiConversationTurn, messageId
       return success
     }
     // IN_PROGRESS: an earlier attempt may already have reached the provider — never resend blindly.
-    const code = attempt.status === 'IN_PROGRESS' ? 'DELIVERY_UNCERTAIN' : 'DELIVERY_FAILED'
+    const code = attempt.status === 'IN_PROGRESS' || attempt.status === 'UNCERTAIN' ? 'DELIVERY_UNCERTAIN' : 'DELIVERY_FAILED'
     await aiTurnRepository.transition(turn.id, turn.attemptCount, { state: 'FAILED', reasonCode: code })
     return 'FAILED'
   } catch (err) {

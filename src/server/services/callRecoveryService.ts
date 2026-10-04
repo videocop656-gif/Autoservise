@@ -134,7 +134,7 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
     }
     // IN_PROGRESS = a previous attempt is (or crashed while) talking to the
     // provider: the message may already be out — never send it again blindly.
-    const code = attempt.status === 'IN_PROGRESS' ? 'DELIVERY_UNCERTAIN' : attempt.errorCode
+    const code = attempt.status === 'IN_PROGRESS' || attempt.status === 'UNCERTAIN' ? 'DELIVERY_UNCERTAIN' : attempt.errorCode
     await callRecoveryRepository.transitionFromClaimed(call.id, { recoveryState: 'FAILED', recoveryFailureCode: code })
     return 'FAILED'
   } catch (err) {

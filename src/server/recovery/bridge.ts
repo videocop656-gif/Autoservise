@@ -41,13 +41,15 @@ export function bridgeLinkExpiry(now: Date): Date {
 }
 
 /**
- * The public origin bridge links are built on: APP_URL (the same setting the
- * Telegram webhook uses). Production requires https and a real host — a
+ * The public origin bridge links are built on: RECOVERY_LINK_BASE_URL (an
+ * optional short first-party domain pointing at this deployment) or APP_URL
+ * (the same setting the Telegram webhook uses). Production requires https and a real host — a
  * localhost / http value means "not configured" (SMS bridge not offered).
  */
 export function publicBridgeBaseUrl(): string | null {
   try {
-    const url = new URL(env.appUrl)
+    // MCR-7A — a dedicated short first-party origin (same deployment) wins over APP_URL.
+    const url = new URL(env.recoveryLinkBaseUrl ?? env.appUrl)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
     if (env.isProduction && (url.protocol !== 'https:' || ['localhost', '127.0.0.1'].includes(url.hostname))) return null
     return `${url.origin}${url.pathname.replace(/\/+$/, '')}`

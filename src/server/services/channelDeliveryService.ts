@@ -98,7 +98,7 @@ export async function sendMessageViaChannel(ctx: AuthContext, channelConnectionI
   }
 
   const attempt = await attemptDelivery(ctx.tenant.id, ctx.business.id, connection, conversation.externalConversationId, message)
-  if (attempt.status === 'IN_PROGRESS') {
+  if (attempt.status === 'IN_PROGRESS' || attempt.status === 'UNCERTAIN') {
     throw new ApiError(409, 'DELIVERY_IN_PROGRESS', 'This message is already being sent')
   }
   if (attempt.status === 'FAILED') {
@@ -121,6 +121,8 @@ export type DeliveryAttempt =
   | { status: 'SENT'; delivery: ChannelDelivery }
   | { status: 'FAILED'; delivery: ChannelDelivery; errorCode: string; errorMessage: string }
   | { status: 'IN_PROGRESS'; delivery: ChannelDelivery }
+  /** MCR-7A — the provider may have the message: never resent automatically (callers treat it like IN_PROGRESS → DELIVERY_UNCERTAIN). */
+  | { status: 'UNCERTAIN'; delivery: ChannelDelivery; errorCode: string }
 
 async function attemptDelivery(
   tenantId: string,
@@ -143,7 +145,11 @@ async function attemptDelivery(
       idempotencyKey: delivery.id,
     })
     if (result.success) {
-      return { status: 'SENT', delivery: await channelDeliveryRepository.markSent(delivery.id, result.externalMessageId ?? null) }
+      return { status: 'SENT', delivery: await channelDeliveryRepository.markSent(delivery.id, result.externalMessageId ?? null, adapter.provider ?? null) }
+    }
+    if (result.uncertain) {
+      const errorMessage = safeErrorMessage(result.errorMessage, 'The channel provider outcome is unknown')
+      return { status: 'UNCERTAIN', delivery: await channelDeliveryRepository.markUncertain(delivery.id, 'DELIVERY_UNCERTAIN', errorMessage, adapter.provider ?? null), errorCode: 'DELIVERY_UNCERTAIN' }
     }
     // Prompt 18: an adapter may classify its own failure (e.g. Telegram's
     // TELEGRAM_AUTH_ERROR/TELEGRAM_RATE_LIMITED/etc. — see

@@ -8,7 +8,7 @@ import { Label } from '../../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
-import { recoverySetupView } from '../../components/channels/recoverySetup'
+import { recoverySetupView, smsTransportView, type SmsTransportStatusLike } from '../../components/channels/recoverySetup'
 
 type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE' | 'SMS'
 type ChannelStatus = 'ACTIVE' | 'INACTIVE'
@@ -46,6 +46,8 @@ export default function ChannelsSettingsPage() {
   const canManage = user?.role === 'owner' || user?.role === 'admin'
 
   const [connections, setConnections] = useState<ChannelConnectionDto[]>([])
+  // MCR-7A — server-wide SMS transport (provider, mode, sender); secrets never reach the client.
+  const [smsTransport, setSmsTransport] = useState<SmsTransportStatusLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -85,6 +87,9 @@ export default function ChannelsSettingsPage() {
 
   useEffect(() => {
     void loadConnections()
+    apiFetch<{ sms: SmsTransportStatusLike }>('/api/channels/sms-transport')
+      .then((data) => setSmsTransport(data.sms))
+      .catch(() => setSmsTransport(null))
   }, [])
 
   function openCreateForm() {
@@ -203,6 +208,19 @@ export default function ChannelsSettingsPage() {
                 <div>
                   SMS для восстановления: <span className={view.sms.configured ? 'text-success' : 'text-muted-foreground'}>{view.sms.label}</span>
                 </div>
+                {smsTransport && (() => {
+                  const sms = smsTransportView(smsTransport)
+                  return (
+                    <div className="mt-2 space-y-0.5 border-t border-border pt-2 text-xs text-muted-foreground">
+                      <div>
+                        SMS-провайдер: <span className="text-foreground">{sms.provider}</span> · режим: {sms.mode} ·{' '}
+                        <span className={sms.ok ? 'text-success' : 'text-destructive'}>{sms.status}</span>
+                      </div>
+                      <div className="break-words">Отправитель: {sms.sender}</div>
+                      {sms.webhook && <div>{sms.webhook}</div>}
+                    </div>
+                  )
+                })()}
               </CardContent>
             </Card>
           )

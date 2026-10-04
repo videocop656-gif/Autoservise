@@ -66,6 +66,57 @@ export const env = {
     const value = process.env.RECOVERY_PROCESSOR_SECRET
     return value && value.trim() !== '' ? value : undefined
   },
+  /**
+   * MCR-7A — which SMS transport the SMS channel uses: "mobizon" (real
+   * Mobizon Kazakhstan API) or "mock". Unset = "mock" outside production and
+   * NONE in production (fail closed: production never sends through a mock,
+   * and never silently falls back to one).
+   */
+  get smsProvider(): 'mobizon' | 'mock' | 'none' {
+    const value = process.env.SMS_PROVIDER?.trim().toLowerCase()
+    if (value === 'mobizon') return 'mobizon'
+    if (value === 'mock' || (!value && !this.isProduction)) return this.isProduction ? 'none' : 'mock'
+    return 'none'
+  },
+  /** MCR-7A — Mobizon API key (secret; query parameter `apiKey` per Mobizon docs). Never logged, never returned to a client. */
+  get mobizonApiKey(): string | undefined {
+    const value = process.env.MOBIZON_API_KEY
+    return value && value.trim() !== '' ? value.trim() : undefined
+  },
+  /**
+   * MCR-7A — Mobizon API origin. Default: the official Kazakhstan endpoint.
+   * Only https://api.mobizon.<tld> hosts are accepted (no arbitrary provider
+   * URL, no SSRF); anything else → undefined → SMS channel unavailable.
+   */
+  get mobizonApiBaseUrl(): string | undefined {
+    const raw = process.env.MOBIZON_API_BASE_URL?.trim() || 'https://api.mobizon.kz'
+    try {
+      const url = new URL(raw)
+      if (url.protocol !== 'https:' || !/^api\.mobizon\.[a-z]{2,3}(\.[a-z]{2})?$/.test(url.hostname) || url.port || url.pathname !== '/') return undefined
+      return url.origin
+    } catch {
+      return undefined
+    }
+  },
+  /** MCR-7A — Mobizon sender ("from"): a shared or registered alphaname. Optional: unset = the account's default sender. */
+  get mobizonSender(): string | undefined {
+    const value = process.env.MOBIZON_SENDER
+    return value && value.trim() !== '' ? value.trim() : undefined
+  },
+  /** MCR-7A — the secret key of the Mobizon "Статусы SMS" webhook (signature SHA1(eventId|attempt|eventCreateTs|secret)). Unset → webhook rejects everything. */
+  get mobizonWebhookSecret(): string | undefined {
+    const value = process.env.MOBIZON_WEBHOOK_SECRET
+    return value && value.trim() !== '' ? value : undefined
+  },
+  /**
+   * MCR-7A — optional dedicated short FIRST-PARTY origin for SMS bridge links
+   * (e.g. https://as.kz), pointing at this same deployment. Shorter links =
+   * fewer SMS segments. Unset → APP_URL. Never a third-party shortener.
+   */
+  get recoveryLinkBaseUrl(): string | undefined {
+    const value = process.env.RECOVERY_LINK_BASE_URL
+    return value && value.trim() !== '' ? value.trim() : undefined
+  },
   /** MCR-2 — enables the MOCK telephony webhook (development/testing only; ignored in production). */
   get telephonyMockWebhookSecret(): string | undefined {
     const value = process.env.TELEPHONY_MOCK_WEBHOOK_SECRET

@@ -27,7 +27,9 @@ export const RECOVERY_MAX_ATTEMPTS = 3
 export const RECOVERY_STALE_CLAIM_SECONDS = 120
 
 /** Failure codes that must never be retried automatically (a person decides). */
-export const NON_RETRYABLE_FAILURE_CODES: readonly string[] = ['DELIVERY_UNCERTAIN']
+// MCR-7A — SMS_REJECTED / INVALID_DESTINATION: the provider refused this number
+// or content; resending the same SMS cannot succeed.
+export const NON_RETRYABLE_FAILURE_CODES: readonly string[] = ['DELIVERY_UNCERTAIN', 'SMS_REJECTED', 'INVALID_DESTINATION']
 
 /**
  * MCR-6 — the recovery routes, best first: a business-initiated WhatsApp

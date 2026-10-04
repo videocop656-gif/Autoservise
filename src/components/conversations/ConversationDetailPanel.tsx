@@ -32,6 +32,7 @@ import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 import { aiAutomationView } from './aiAutomation'
 import { RECOVERY_ROUTE_LABELS, recoveryReasonText } from './recoveryRoute'
+import { deliveryLabel } from './deliveryLabel'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1.
@@ -405,8 +406,9 @@ export function ConversationDetailPanel({
                     <div>{m.content}</div>
                     {automated && m.delivery && (
                       <div className="mt-1.5 text-xs">
-                        <Badge variant={m.delivery.status === 'SENT' ? 'success' : m.delivery.status === 'FAILED' ? 'destructive' : 'default'}>
-                          {m.delivery.status === 'SENT' ? 'Отправлено' : m.delivery.status === 'FAILED' ? 'Не отправлено' : 'Отправляется'}
+                        {/* MCR-7A — accepted / delivered / not delivered, never a raw provider code. */}
+                        <Badge variant={deliveryLabel(m.delivery).variant} title={m.delivery.providerStatus ?? undefined}>
+                          {deliveryLabel(m.delivery).label}
                         </Badge>
                       </div>
                     )}

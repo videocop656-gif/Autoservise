@@ -97,10 +97,23 @@ async function claimForSending(tenantId: string, businessId: string, channelConn
 }
 
 /** Transitions a claimed (SENDING) delivery to SENT — clears any previous error, since a later successful attempt supersedes an earlier failure. */
-function markSent(deliveryId: string, externalMessageId: string | null) {
+function markSent(deliveryId: string, externalMessageId: string | null, provider: string | null = null) {
   return prisma.channelDelivery.update({
     where: { id: deliveryId },
-    data: { status: SENT, deliveredAt: new Date(), externalMessageId, errorCode: null, errorMessage: null },
+    data: { status: SENT, deliveredAt: new Date(), externalMessageId, provider, errorCode: null, errorMessage: null },
+  })
+}
+
+/**
+ * MCR-7A — the provider may already have the message (timeout / lost
+ * response after sending). The row deliberately STAYS SENDING: every later
+ * claim sees IN_PROGRESS, so nothing — no retry, no other channel — sends it
+ * again automatically. The code makes the state diagnosable.
+ */
+function markUncertain(deliveryId: string, errorCode: string, errorMessage: string, provider: string | null = null) {
+  return prisma.channelDelivery.update({
+    where: { id: deliveryId },
+    data: { failedAt: new Date(), errorCode, errorMessage, provider },
   })
 }
 
@@ -120,5 +133,6 @@ export const channelDeliveryRepository = {
   claimForSending,
   markSent,
   markFailed,
+  markUncertain,
   findByConnectionAndMessage,
 }

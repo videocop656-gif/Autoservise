@@ -1217,6 +1217,20 @@ model ChannelDelivery {
   // outbound direction.
   externalMessageId String?
 
+  // MCR-7A — which transport sent it ("mobizon", "mock"). Together with
+  // externalMessageId it is how a provider delivery report finds THIS row —
+  // never by a tenant/business the provider payload might claim.
+  provider String?
+  // MCR-7A — carrier-side delivery, AFTER the provider accepted the message
+  // (status SENT). Separate from `status` on purpose: SENT = accepted.
+  // Monotonic (see channels/deliveryStatus.ts): a final state never regresses.
+  providerDeliveryState ProviderDeliveryState?
+  // The provider's own last status code (e.g. "DELIVRD"), for debugging only.
+  providerStatus        String?
+  providerStatusAt      DateTime?
+  // Segments the provider reports it billed/sent (observability, not billing).
+  providerSegments      Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1245,6 +1259,8 @@ model ChannelDelivery {
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
   @@index([messageId])
+  // MCR-7A — delivery reports are matched by (provider, provider message id).
+  @@index([provider, externalMessageId])
   @@map("channel_deliveries")
 }
 
@@ -1632,4 +1648,37 @@ model RecoveryBridgeLink {
 
   @@index([tenantId, businessId])
   @@map("recovery_bridge_links")
+}
+
+// ---------------------------------------------------------------------------
+// MCR-7A — production SMS transport (Mobizon).
+// ---------------------------------------------------------------------------
+
+// Carrier delivery after provider acceptance. ACCEPTED / PARTIALLY_DELIVERED
+// are in transit; the rest are final and never overwritten.
+enum ProviderDeliveryState {
+  ACCEPTED
+  PARTIALLY_DELIVERED
+  DELIVERED
+  UNDELIVERED
+  EXPIRED
+  REJECTED
+}
+
+// Idempotency ledger of provider webhook events: one row per (provider,
+// provider event id). A retried / duplicated report finds its row and changes
+// nothing. Never the payload (it contains the customer phone).
+model ProviderWebhookEvent {
+  id                String   @id @default(uuid())
+  provider          String
+  eventId           String
+  // Our delivery it applied to, when one matched (null: unknown message id).
+  channelDeliveryId String?
+  // Safe outcome code: APPLIED / NO_CHANGE / UNKNOWN_MESSAGE / DESTINATION_MISMATCH / IGNORED_EVENT_TYPE.
+  outcome           String
+  receivedAt        DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@index([channelDeliveryId])
+  @@map("provider_webhook_events")
 }

@@ -100,6 +100,13 @@ export interface ChannelSendResult {
    * existing test changes.
    */
   errorCode?: string
+  /**
+   * MCR-7A — failure only: the request may have reached the provider and the
+   * message may already be out (timeout / lost response after sending). The
+   * delivery core then leaves the delivery SENDING (→ DELIVERY_UNCERTAIN):
+   * it is NEVER automatically resent, on this or any other channel.
+   */
+  uncertain?: boolean
 }
 
 /**
@@ -116,6 +123,8 @@ export interface ChannelSendResult {
  */
 export interface ChannelAdapter {
   readonly channelType: ChannelType
+  /** MCR-7A — the transport behind this adapter ("mobizon", "mock", …), stored on ChannelDelivery for delivery-report matching. */
+  readonly provider?: string
   parseIncoming(rawPayload: unknown): NormalizedIncomingMessage
   sendMessage(input: NormalizedOutboundMessage): Promise<ChannelSendResult>
   /**

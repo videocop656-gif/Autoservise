@@ -41,6 +41,11 @@ export interface ChannelDeliveryDto {
   sentAt: string | null
   errorCode: string | null
   errorMessage: string | null
+  // MCR-7A — carrier delivery after acceptance (provider reports).
+  provider?: string | null
+  providerDeliveryState?: 'ACCEPTED' | 'PARTIALLY_DELIVERED' | 'DELIVERED' | 'UNDELIVERED' | 'EXPIRED' | 'REJECTED' | null
+  providerStatus?: string | null
+  providerSegments?: number | null
   createdAt: string
   updatedAt: string
 }

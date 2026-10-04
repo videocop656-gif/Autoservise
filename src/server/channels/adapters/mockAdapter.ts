@@ -29,6 +29,7 @@ import { ApiError } from '../../lib/errors'
 export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
   return {
     channelType,
+    provider: 'mock',
     parseIncoming(rawPayload: unknown): NormalizedIncomingMessage {
       // MCR-6 — SMS is outbound-only for now (recovery bridge to WhatsApp);
       // two-way SMS is a future stage, so an inbound SMS is refused, never guessed.

@@ -4,6 +4,7 @@ import { ApiError } from '../lib/errors'
 import type { ChannelAdapter } from './types'
 import { createMockAdapter } from './adapters/mockAdapter'
 import { createTelegramAdapter } from './adapters/telegramAdapter'
+import { smsAdapter } from './smsTransport'
 
 /**
  * Selects an adapter by `ChannelType` (spec §"CHANNEL REGISTRY"). WEBSITE
@@ -13,8 +14,6 @@ import { createTelegramAdapter } from './adapters/telegramAdapter'
 const MOCK_ADAPTERS: Partial<Record<ChannelType, ChannelAdapter>> = {
   WHATSAPP: createMockAdapter('WHATSAPP'),
   WEBSITE: createMockAdapter('WEBSITE'),
-  // MCR-6 — outbound SMS (recovery bridge). Mock only; no SMS SDK exists here.
-  SMS: createMockAdapter('SMS'),
 }
 
 /**
@@ -37,6 +36,9 @@ const MOCK_ADAPTERS: Partial<Record<ChannelType, ChannelAdapter>> = {
  * nothing cached at module-load time.
  */
 export function getChannelAdapter(type: ChannelType): ChannelAdapter {
+  // MCR-7A — SMS: Mobizon in production when explicitly configured, the mock
+  // in dev/test, otherwise an unavailable transport (fail closed).
+  if (type === 'SMS') return smsAdapter()
   if (type === 'TELEGRAM') {
     const token = env.telegramBotToken
     return token ? createTelegramAdapter(token) : createMockAdapter('TELEGRAM')

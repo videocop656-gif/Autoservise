@@ -873,4 +873,10 @@ It does not wait on any external research.
   - `/r/<token>` bridge: 128-bit random token stored as SHA-256 in `RecoveryBridgeLink`, 72 h expiry, revocable, redirect only to the business's configured `wa.me` entry, click = attribution only.
 
   The original audit's MCR-6 (handoff card + owner mobile) moves to a later stage.
-- MCR-7 and later are not implemented.
+- **MCR-7A — production SMS transport (Mobizon Kazakhstan): implemented, verified against mocked HTTP only** (`docs/final-reports/final-report-mcr-7a.md`). It covers:
+  - `MobizonSmsAdapter` behind the existing `ChannelAdapter` boundary, selected explicitly (`SMS_PROVIDER`) and failing closed;
+  - official API: `POST https://api.mobizon.kz/service/Message/SendSmsMessage` with `apiKey` in the query;
+  - outcomes ACCEPTED / REJECTED / TRANSIENT / PERMANENT / UNCERTAIN. UNCERTAIN keeps the delivery SENDING and becomes DELIVERY_UNCERTAIN, never resent; Mobizon has no idempotency key;
+  - `POST /api/webhooks/channels/mobizon`: SHA1 signature verified before any write, an `eventId` ledger, routing by the stored provider message id, a destination cross-check, the status re-read through `Message.GetSMSStatus` (the signature does not cover `data`), and a monotonic `providerDeliveryState`;
+  - an optional first-party short link origin, and an SMS template that keeps the business name and picks the fewest segments.
+- MCR-7B (real WhatsApp) and later are not implemented.
