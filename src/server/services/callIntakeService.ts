@@ -1,5 +1,6 @@
 import type { CallOutcome, CallRecoveryState } from '@prisma/client'
 import { runInTransaction } from '../db/transaction'
+import { logger } from '../lib/logger'
 import { normalizePhone } from '../lib/phone'
 import { businessPhoneNumberRepository } from '../repositories/businessPhoneNumberRepository'
 import { businessRepository } from '../repositories/businessRepository'
@@ -51,8 +52,19 @@ export interface CallIntakeResult {
   recoveryJob: RecoveryJobPublishStatus | 'NOT_REQUIRED'
 }
 
-export async function ingestCallEvent(event: NormalizedCallEvent, receivedAt: Date = new Date()): Promise<CallIntakeResult> {
-  const committed = await recordCallEvent(event, receivedAt)
+export interface CallIntakeOptions {
+  /**
+   * MCR-8A — the business the provider's webhook secret belongs to (Kcell: one
+   * CRM token per business). The called number must route to this SAME
+   * business; otherwise the event is refused exactly like an unknown number
+   * (nothing written, nothing revealed). The number still decides routing —
+   * this only narrows it.
+   */
+  expectedBusinessId?: string
+}
+
+export async function ingestCallEvent(event: NormalizedCallEvent, receivedAt: Date = new Date(), options: CallIntakeOptions = {}): Promise<CallIntakeResult> {
+  const committed = await recordCallEvent(event, receivedAt, options)
   // Also on a duplicate event that finds the call still READY: that is the
   // provider retrying after an earlier publish failure. Any later state
   // (CLAIMED / SENT / NOT_ELIGIBLE / …) means there is nothing to trigger.
@@ -60,7 +72,7 @@ export async function ingestCallEvent(event: NormalizedCallEvent, receivedAt: Da
   return { ...committed, recoveryJob: await publishRecoveryJob(committed.callInteractionId) }
 }
 
-async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Promise<Omit<CallIntakeResult, 'recoveryJob'>> {
+async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date, options: CallIntakeOptions): Promise<Omit<CallIntakeResult, 'recoveryJob'>> {
   // 1. Route: the business-side number must be international (E.164) as the
   //    provider sends it — no default region exists before the tenant is known.
   const businessSide = event.direction === 'INBOUND' ? event.calledPhone : event.callerPhone
@@ -74,6 +86,7 @@ async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Pr
   if (!business || business.id !== number.businessId) throw new CallIntakeError('UNROUTABLE_NUMBER')
   const tenantId = number.tenantId
   const businessId = number.businessId
+  if (options.expectedBusinessId !== undefined && options.expectedBusinessId !== businessId) throw new CallIntakeError('UNROUTABLE_NUMBER')
 
   // 2. The other party (MCR-1 normalization, the business's region). Hidden,
   //    anonymous or invalid → null: the call is still recorded, never linked.
@@ -122,6 +135,7 @@ async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Pr
         provider: event.provider,
         providerEventId: event.providerEventId,
         eventType: event.eventType,
+        providerStatus: event.providerStatus ?? null,
         occurredAt: event.occurredAt,
         receivedAt,
       },
@@ -149,6 +163,11 @@ async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Pr
     // caller. Only the pre-engine states are recomputed here.
     const engineOwned = !['PENDING', 'READY', 'NOT_ELIGIBLE'].includes(call.recoveryState)
     const recovery = engineOwned ? { recoveryState: call.recoveryState, recoveryIneligibleReason: call.recoveryIneligibleReason } : recoveryFor(next)
+    // MCR-8A — answer evidence after the engine already owned the call: the
+    // outcome is corrected, nothing is undone or re-sent (a message may already
+    // be with the customer). Recorded once, for investigation.
+    const conflict = engineOwned && next.outcome === 'ANSWERED' && call.outcome !== 'ANSWERED'
+    if (conflict) logger.warn('call_outcome_conflict', { callInteractionId: call.id, provider: event.provider, recoveryState: call.recoveryState })
     const updated = await callInteractionRepository.update(
       call.id,
       {
@@ -160,6 +179,7 @@ async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Pr
         lastEventReceivedAt: receivedAt.getTime() > call.lastEventReceivedAt.getTime() ? receivedAt : call.lastEventReceivedAt,
         recoveryState: recovery.recoveryState,
         recoveryIneligibleReason: recovery.recoveryIneligibleReason,
+        ...(conflict && !call.outcomeConflictAt ? { outcomeConflictAt: receivedAt } : {}),
       },
       tx
     )

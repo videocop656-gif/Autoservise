@@ -887,4 +887,12 @@ It does not wait on any external research.
   - safe bridge attribution (`RecoveryBridgeLink.whatsappInboundAt`, exactly one candidate or nothing);
   - `ProviderDeliveryState.READ` and monotonic transitions; media / location → operator handoff;
   - sender ownership via the server allowlist `TWILIO_WHATSAPP_SENDERS` and owner/admin connect.
-- MCR-7B2 (Embedded Signup) and later are not implemented.
+- **MCR-8A — production telephony (Kcell Virtual PBX CRM REST API): implemented, verified against simulated callbacks only** (`docs/final-reports/final-report-mcr-8a.md`). It covers:
+  - `KcellTelephonyAdapter` behind the MCR-2 `TelephonyAdapter`; Recovery Engine / router / MCR-5 unchanged;
+  - `POST /api/webhooks/telephony/kcell` for `cmd=event` / `history` / `contact`; `crm_token` (one per business, server env `KCELL_CRM_TOKENS`, constant-time) checked before any read or write, plus an ACTIVE `TelephonyConnection`; responses 200 {} / 400 / 401 as documented;
+  - routing only by the called number (`diversion` → `BusinessPhoneNumber`), which must belong to the token's business (`expectedBusinessId`); unknown or foreign number → 200 {}, nothing written;
+  - `callid` = providerCallId; a deterministic SHA-256 fingerprint of documented fields as `providerEventId`;
+  - **CANCELLED is `OBSERVED` (no outcome claim)** because of group calls; ACCEPTED / COMPLETED / history Success = answered; history Missed / inbound Cancel = missed; outbound never a lead;
+  - history `start` + `duration` as provider times; `CallInteraction.outcomeConflictAt` when an answer arrives after the engine owned the call;
+  - the security boundary is a shared token over HTTPS, not a signature; no documented source IPs.
+- MCR-7B2 (Embedded Signup), MCR-8B (live Kcell activation) and later are not implemented.

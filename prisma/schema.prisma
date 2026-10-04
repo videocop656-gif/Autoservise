@@ -245,6 +245,7 @@ model Tenant {
   businessPhoneNumbers           BusinessPhoneNumber[]
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
+  telephonyConnections           TelephonyConnection[]
   aiConversationTurns            AiConversationTurn[]
   channelConsents                ChannelConsent[]
   recoveryBridgeLinks            RecoveryBridgeLink[]
@@ -339,6 +340,7 @@ model Business {
   businessPhoneNumbers           BusinessPhoneNumber[]
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
+  telephonyConnections           TelephonyConnection[]
   aiConversationTurns            AiConversationTurn[]
   channelConsents                ChannelConsent[]
   recoveryBridgeLinks            RecoveryBridgeLink[]
@@ -1379,6 +1381,10 @@ enum CallEventType {
   ANSWERED
   COMPLETED
   MISSED
+  // MCR-8A — a provider event that makes no claim about the call outcome
+  // (Kcell CANCELLED of one leg — another group member may have answered —,
+  // TRANSFERRED, an undocumented status). Recorded, never applied.
+  OBSERVED
 }
 
 // A public phone number a Business receives calls on — the ONLY source of
@@ -1476,6 +1482,11 @@ model CallInteraction {
   recoveryChannel     RecoveryRoute?
   recoveryRouteReason String?
 
+  // MCR-8A — set once when answer evidence arrives AFTER the recovery engine
+  // already owned the call (CLAIMED / SENT / FAILED): the outcome becomes
+  // ANSWERED but nothing is undone or re-sent. For investigation only.
+  outcomeConflictAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1501,6 +1512,38 @@ model CallInteraction {
   @@map("call_interactions")
 }
 
+// MCR-8A — a Business's connection to a telephony provider (Kcell Virtual PBX
+// first). Provider-neutral: one row per (business, provider). The provider's
+// webhook secret is NOT stored here (pilot: server environment, see
+// env.kcellCrmTokens); a webhook is accepted only when its secret maps to a
+// business whose connection is ACTIVE. Which calls belong to the business is
+// still decided by the called number (BusinessPhoneNumber), never by this row.
+enum TelephonyConnectionStatus {
+  ACTIVE
+  DISABLED
+}
+
+model TelephonyConnection {
+  id         String @id @default(uuid())
+  tenantId   String
+  businessId String
+
+  provider    String
+  status      TelephonyConnectionStatus @default(ACTIVE)
+  connectedAt DateTime                  @default(now())
+  disabledAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, provider])
+  @@index([tenantId, businessId])
+  @@map("telephony_connections")
+}
+
 // Provider-event idempotency ledger: one row per distinct provider event
 // (never the raw payload — only the normalized, non-PII essentials).
 model CallEvent {
@@ -1512,6 +1555,9 @@ model CallEvent {
   provider        String
   providerEventId String
   eventType       CallEventType
+  // MCR-8A — the provider's own short status code (e.g. "event:CANCELLED",
+  // "history:in:Missed"); never a phone, token or URL.
+  providerStatus  String?
   occurredAt      DateTime?
   receivedAt      DateTime
 

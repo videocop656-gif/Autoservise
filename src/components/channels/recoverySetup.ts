@@ -93,3 +93,39 @@ export function whatsappTransportView(s: WhatsAppTransportStatusLike) {
     template: s.recoveryTemplateConfigured ? 'шаблон восстановления настроен' : 'шаблон восстановления не настроен — первое сообщение уходит SMS',
   }
 }
+
+// MCR-8A — telephony (Kcell Virtual PBX) status for Settings. Secret-free:
+// the CRM token never reaches the browser, numbers arrive masked.
+export interface TelephonyStatusLike {
+  provider: 'kcell' | 'mock' | 'none'
+  mode: 'production' | 'mock' | 'off'
+  tokenConfigured: boolean
+  connection: 'ACTIVE' | 'DISABLED' | null
+  connectedAt: string | null
+  numbers: string[]
+  missedCallEventsEnabled: boolean
+  webhookUrl: string | null
+}
+
+export function telephonyView(s: TelephonyStatusLike) {
+  const kcell = s.provider === 'kcell'
+  return {
+    provider: kcell ? 'Kcell Виртуальная АТС' : s.provider === 'mock' ? 'Тестовый (mock)' : 'не подключена',
+    status: kcell
+      ? s.connection === 'ACTIVE'
+        ? s.tokenConfigured
+          ? 'подключено'
+          : 'ключ интеграции на сервере не найден'
+        : s.tokenConfigured
+          ? 'готово к подключению'
+          : 'не настроено'
+      : s.provider === 'mock'
+        ? 'тестовый режим'
+        : 'не настроено',
+    ok: s.missedCallEventsEnabled && kcell,
+    numbers: s.numbers.length > 0 ? s.numbers.join(', ') : 'номер мастерской не добавлен',
+    events: s.missedCallEventsEnabled ? 'пропущенные звонки: включены' : 'пропущенные звонки: не поступают',
+    canConnect: kcell && s.tokenConfigured && s.connection !== 'ACTIVE',
+    canDisconnect: kcell && s.connection === 'ACTIVE',
+  }
+}

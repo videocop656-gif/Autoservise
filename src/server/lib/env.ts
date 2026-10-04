@@ -150,6 +150,26 @@ export const env = {
     const value = process.env.TWILIO_TEMPLATE_MISSED_CALL_RECOVERY_V1?.trim()
     return value && /^HX[0-9a-fA-F]{32}$/.test(value) ? value : undefined
   },
+  /**
+   * MCR-8A — Kcell Virtual PBX CRM tokens, one per business:
+   * "<businessId>=<crm_token>,…". Kcell sends the token in every callback
+   * body (crm_token); it is the ONLY proof a callback comes from that
+   * business's PBX. Server-side only (never stored in the database, never sent
+   * to the browser). Entries with a short / malformed token, and a token
+   * listed for two businesses, are dropped — never guessed between.
+   */
+  get kcellCrmTokens(): { businessId: string; token: string }[] {
+    const entries = (process.env.KCELL_CRM_TOKENS ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const at = entry.indexOf('=')
+        return at < 0 ? { businessId: '', token: '' } : { businessId: entry.slice(0, at).trim(), token: entry.slice(at + 1).trim() }
+      })
+      .filter((e) => /^[0-9a-f-]{36}$/i.test(e.businessId) && /^[A-Za-z0-9._~-]{24,200}$/.test(e.token))
+    return entries.filter((e) => entries.filter((o) => o.token === e.token).length === 1)
+  },
   /** MCR-2 — enables the MOCK telephony webhook (development/testing only; ignored in production). */
   get telephonyMockWebhookSecret(): string | undefined {
     const value = process.env.TELEPHONY_MOCK_WEBHOOK_SECRET

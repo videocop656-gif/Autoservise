@@ -41,6 +41,7 @@ export const callInteractionRepository = {
       provider: string
       providerEventId: string
       eventType: CallEventType
+      providerStatus?: string | null
       occurredAt: Date | null
       receivedAt: Date
     },

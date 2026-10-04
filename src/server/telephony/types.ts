@@ -30,10 +30,29 @@ export interface NormalizedCallEvent {
    * provider says so (true/false); null when the provider doesn't report it.
    */
   wasAnswered: boolean | null
+  /**
+   * MCR-8A — optional call-summary times some providers report with the final
+   * record (Kcell history: start + duration). Provider times only; never
+   * invented from receipt time.
+   */
+  callStartedAt?: Date | null
+  callEndedAt?: Date | null
+  /** MCR-8A — the provider's own short status code, kept on the CallEvent ledger (no PII). */
+  providerStatus?: string | null
 }
 
 /** Outcome of verifying the provider's authentication of a webhook request. */
-export type TelephonyAuthResult = { ok: true } | { ok: false }
+export type TelephonyAuthResult =
+  | {
+      ok: true
+      /**
+       * MCR-8A — for providers whose secret identifies one configured provider
+       * account (Kcell: one CRM token per business), the business that secret
+       * belongs to. The called number must then route to the SAME business.
+       */
+      accountBusinessId?: string
+    }
+  | { ok: false }
 
 export interface TelephonyWebhookRequest {
   headers: Record<string, string | string[] | undefined>

@@ -8,7 +8,7 @@ import { Label } from '../../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
-import { recoverySetupView, smsTransportView, whatsappTransportView, type SmsTransportStatusLike, type WhatsAppTransportStatusLike } from '../../components/channels/recoverySetup'
+import { recoverySetupView, smsTransportView, telephonyView, whatsappTransportView, type SmsTransportStatusLike, type TelephonyStatusLike, type WhatsAppTransportStatusLike } from '../../components/channels/recoverySetup'
 
 type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE' | 'SMS'
 type ChannelStatus = 'ACTIVE' | 'INACTIVE'
@@ -53,6 +53,8 @@ export default function ChannelsSettingsPage() {
   // MCR-7A — server-wide SMS transport (provider, mode, sender); secrets never reach the client.
   const [smsTransport, setSmsTransport] = useState<SmsTransportStatusLike | null>(null)
   const [whatsappTransport, setWhatsappTransport] = useState<WhatsAppTransportStatusLike | null>(null)
+  // MCR-8A — telephony (Kcell Virtual PBX) for this business; no secrets.
+  const [telephony, setTelephony] = useState<TelephonyStatusLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -98,6 +100,9 @@ export default function ChannelsSettingsPage() {
     apiFetch<{ whatsapp: WhatsAppTransportStatusLike }>('/api/channels/whatsapp-transport')
       .then((data) => setWhatsappTransport(data.whatsapp))
       .catch(() => setWhatsappTransport(null))
+    apiFetch<{ telephony: TelephonyStatusLike }>('/api/telephony/kcell')
+      .then((data) => setTelephony(data.telephony))
+      .catch(() => setTelephony(null))
   }, [])
 
   function openCreateForm() {
@@ -184,6 +189,17 @@ export default function ChannelsSettingsPage() {
     }
   }
 
+  // MCR-8A — activate / disable the Kcell PBX integration prepared on the server.
+  async function handleKcell(connect: boolean) {
+    setActionError(null)
+    try {
+      const data = await apiFetch<{ telephony: TelephonyStatusLike }>('/api/telephony/kcell', { method: connect ? 'POST' : 'DELETE' })
+      setTelephony(data.telephony)
+    } catch (err) {
+      setActionError(err instanceof ApiClientError ? err.message : 'Не удалось изменить подключение телефонии.')
+    }
+  }
+
   // MCR-7B1 — attach / detach the Twilio sender assigned to this business by the server.
   async function handleTwilio(connection: ChannelConnectionDto, connect: boolean) {
     setActionError(null)
@@ -237,6 +253,26 @@ export default function ChannelsSettingsPage() {
                       </div>
                       <div className="break-words">Номер WhatsApp: {wa.sender}</div>
                       <div>{wa.template}</div>
+                    </div>
+                  )
+                })()}
+                {telephony && (() => {
+                  const tel = telephonyView(telephony)
+                  return (
+                    <div className="mt-2 space-y-0.5 border-t border-border pt-2 text-xs text-muted-foreground">
+                      <div>
+                        Телефония: <span className="text-foreground">{tel.provider}</span> ·{' '}
+                        <span className={tel.ok ? 'text-success' : 'text-muted-foreground'}>{tel.status}</span>
+                      </div>
+                      <div className="break-words">Номер: {tel.numbers}</div>
+                      <div>{tel.events}</div>
+                      {canManage && (tel.canConnect || tel.canDisconnect) && (
+                        <div className="pt-1">
+                          <Button variant="outline" size="sm" onClick={() => void handleKcell(tel.canConnect)}>
+                            {tel.canConnect ? 'Подключить Kcell' : 'Отключить Kcell'}
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )
                 })()}

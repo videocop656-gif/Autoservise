@@ -140,6 +140,14 @@ MCR-7B1 (production WhatsApp transport, Twilio pilot) is implemented: real Whats
 
 The pilot uses one AUTOSERVISE Twilio account and senders assigned to businesses by server configuration; self-service onboarding (Embedded Signup) is MCR-7B2. No real WhatsApp message has been sent yet: the Twilio account and sender are a deployment step. See `docs/final-reports/final-report-mcr-7b1.md`.
 
+MCR-8A (production telephony, Kcell Virtual PBX) is implemented: a real unanswered call to the workshop can start recovery with no operator action.
+- The workshop's number (a Kcell number, or its existing number brought into the Kcell PBX by SIP or forwarding) is connected once; Kcell then reports every call to AUTOSERVISE.
+- A call counts as missed only when Kcell's final call record says so. If any employee picked up — including another member of a group — it is answered, and the customer gets nothing.
+- Outbound calls, hidden numbers and repeated reports never produce a message; one missed call produces at most one recovery message.
+- Settings → Каналы shows «Телефония: Kcell Виртуальная АТС · подключено» with the masked number.
+
+The pilot keeps one secret integration key per workshop on the server. No real Kcell call has been received yet: the PBX setup and live test are MCR-8B. See `docs/final-reports/final-report-mcr-8a.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

@@ -14,6 +14,8 @@ import type { NormalizedCallEvent } from './types'
 //   COMPLETED wasAnswered=false → MISSED evidence
 //   COMPLETED wasAnswered=null  → end time only (no outcome claim)
 //   MISSED                      → MISSED evidence
+//   OBSERVED                    → nothing (MCR-8A: e.g. one leg of a group
+//                                  call cancelled — another may have answered)
 //
 // The next outcome is the HIGHER of current and evidence: answer evidence is
 // the strongest fact and nothing can turn an answered call into a missed one;
@@ -57,6 +59,7 @@ function evidenceOf(event: Pick<NormalizedCallEvent, 'eventType' | 'wasAnswered'
     case 'COMPLETED':
       return event.wasAnswered === true ? 'ANSWERED' : event.wasAnswered === false ? 'MISSED' : 'IN_PROGRESS'
     case 'RINGING':
+    case 'OBSERVED':
       return 'IN_PROGRESS'
   }
 }
@@ -64,20 +67,22 @@ function evidenceOf(event: Pick<NormalizedCallEvent, 'eventType' | 'wasAnswered'
 /** Applies one (already de-duplicated) event. Never regresses the outcome. */
 export function applyCallEvent(
   state: CallState,
-  event: Pick<NormalizedCallEvent, 'eventType' | 'wasAnswered' | 'occurredAt'>,
+  event: Pick<NormalizedCallEvent, 'eventType' | 'wasAnswered' | 'occurredAt' | 'callStartedAt' | 'callEndedAt'>,
   receivedAt: Date
 ): CallState {
   const evidence = evidenceOf(event)
   const outcome = RANK[evidence] > RANK[state.outcome] ? evidence : state.outcome
   const outcomeChanged = outcome !== state.outcome
   const at = event.occurredAt
+  // OBSERVED claims nothing about the call — not even its end (one leg ended).
+  if (event.eventType === 'OBSERVED') return { ...state, startedAt: earliest(state.startedAt, event.callStartedAt ?? null) }
 
   return {
     ...state,
     outcome,
-    startedAt: earliest(state.startedAt, at),
+    startedAt: earliest(earliest(state.startedAt, at), event.callStartedAt ?? null),
     answeredAt: event.eventType === 'ANSWERED' ? earliest(state.answeredAt, at) : state.answeredAt,
-    endedAt: event.eventType === 'COMPLETED' || event.eventType === 'MISSED' ? (state.endedAt ?? at) : state.endedAt,
+    endedAt: event.eventType === 'COMPLETED' || event.eventType === 'MISSED' ? (state.endedAt ?? event.callEndedAt ?? at) : state.endedAt,
     // When the CURRENT final outcome first became known to AUTOSERVISE.
     outcomeDetectedAt: outcomeChanged ? receivedAt : state.outcomeDetectedAt,
   }
