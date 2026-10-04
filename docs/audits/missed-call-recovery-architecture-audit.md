@@ -848,4 +848,10 @@ It does not wait on any external research.
   - a secured processor endpoint.
 
   Production needs a scheduler or queue to call the processor (R0-D).
+- **MCR-4.1 — durable recovery trigger: implemented with Vercel Queues (Beta)** (`docs/final-reports/final-report-mcr-4.1.md`). This resolves R0-D:
+  - after intake commits READY, a job `{ callInteractionId }` is published to topic `missed-call-recovery` with idempotency key `missed-call-recovery:<id>`;
+  - the push consumer `api/queues/missed-call-recovery.ts` calls the same `processRecovery`;
+  - delivery is at-least-once, and the MCR-4 claim is the duplicate guard;
+  - on publish failure the call stays READY, the webhook returns 500 so the provider retries and re-publishes, and `POST /api/internal/recovery/process` remains the reconciliation backstop;
+  - no schema change.
 - MCR-5 and later are not implemented.

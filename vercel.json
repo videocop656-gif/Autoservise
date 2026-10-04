@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "api/queues/missed-call-recovery.ts": {
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "missed-call-recovery",
+          "retryAfterSeconds": 135,
+          "maxDeliveries": 6
+        }
+      ]
+    }
+  }
+}

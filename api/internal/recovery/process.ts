@@ -6,13 +6,17 @@ import { processPendingRecoveries, processRecovery } from '../../../src/server/s
 import { logger } from '../../../src/server/lib/logger'
 
 // ============================================================================
-// MCR-4 — POST /api/internal/recovery/process: the recovery processor
-// trigger. Called by a scheduler (production: Vercel Cron / an external
-// scheduler every minute — see final-report-mcr-4 §18), never by a browser
-// session. The serverless platform has no durable background queue, so the
-// durable part is the database (READY / CLAIMED / FAILED rows); this endpoint
-// only runs one processor pass. Safe to call repeatedly and concurrently:
-// every call is claimed atomically.
+// MCR-4 — POST /api/internal/recovery/process: one recovery processor pass.
+//
+// MCR-4.1 — NOT the primary trigger any more. Normal production flow is
+// intake → Vercel Queues job → api/queues/missed-call-recovery.ts → the same
+// processRecovery. This endpoint is the reconciliation / operational
+// backstop: READY calls whose queue publish failed, stale CLAIMED calls and
+// retryable FAILED calls whose queue job gave up, and local development
+// (no queue outside a Vercel deployment). Called by an operator or an
+// external scheduler, never by a browser session. The database (READY /
+// CLAIMED / FAILED rows) is the durable state. Safe to call repeatedly and
+// concurrently with the queue consumer: every call is claimed atomically.
 //
 // Auth: "Authorization: Bearer <RECOVERY_PROCESSOR_SECRET>" (constant-time
 // compare) BEFORE any database access; unset secret → always 401.

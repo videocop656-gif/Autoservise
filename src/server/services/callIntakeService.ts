@@ -6,6 +6,7 @@ import { businessRepository } from '../repositories/businessRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { callInteractionRepository } from '../repositories/callInteractionRepository'
 import { applyCallEvent, recoveryFor, type CallState } from '../telephony/callStateMachine'
+import { publishRecoveryJob, type RecoveryJobPublishStatus } from '../recovery/recoveryJobs'
 import type { NormalizedCallEvent } from '../telephony/types'
 
 // ---------------------------------------------------------------------------
@@ -13,6 +14,14 @@ import type { NormalizedCallEvent } from '../telephony/types'
 // CallInteraction per call out. Nothing else: no message, no delivery, no
 // conversation, no AI, no request, no appointment, no notification. The
 // recovery engine (MCR-4) picks up calls left in recoveryState READY.
+//
+// MCR-4.1 — after the transaction COMMITS, a call that is READY gets its
+// durable recovery job published (Vercel Queues; see recovery/recoveryJobs).
+// Postgres and the queue can't commit atomically, so the order is: READY is
+// durable first, the job second. A failed publish leaves the call READY
+// (recovered by the internal processor) and is reported as
+// recoveryJob: 'PUBLISH_FAILED' so the webhook can ask the provider to retry;
+// the retried (duplicate) event re-publishes with the same idempotency key.
 //
 // Tenant routing comes ONLY from the business-side number (the called number
 // of an inbound call) → the one ACTIVE BusinessPhoneNumber holding it
@@ -38,9 +47,20 @@ export interface CallIntakeResult {
   callInteractionId: string
   outcome: CallOutcome
   recoveryState: CallRecoveryState
+  /** MCR-4.1 — NOT_REQUIRED unless the committed state is READY. */
+  recoveryJob: RecoveryJobPublishStatus | 'NOT_REQUIRED'
 }
 
 export async function ingestCallEvent(event: NormalizedCallEvent, receivedAt: Date = new Date()): Promise<CallIntakeResult> {
+  const committed = await recordCallEvent(event, receivedAt)
+  // Also on a duplicate event that finds the call still READY: that is the
+  // provider retrying after an earlier publish failure. Any later state
+  // (CLAIMED / SENT / NOT_ELIGIBLE / …) means there is nothing to trigger.
+  if (committed.recoveryState !== 'READY') return { ...committed, recoveryJob: 'NOT_REQUIRED' }
+  return { ...committed, recoveryJob: await publishRecoveryJob(committed.callInteractionId) }
+}
+
+async function recordCallEvent(event: NormalizedCallEvent, receivedAt: Date): Promise<Omit<CallIntakeResult, 'recoveryJob'>> {
   // 1. Route: the business-side number must be international (E.164) as the
   //    provider sends it — no default region exists before the tenant is known.
   const businessSide = event.direction === 'INBOUND' ? event.calledPhone : event.callerPhone

@@ -14,7 +14,9 @@ import { logger } from '../../../src/server/lib/logger'
 //      set, and always disabled in production;
 //   2. parse into a provider-neutral NormalizedCallEvent (any tenantId /
 //      businessId in the body is dropped);
-//   3. ingestCallEvent — routing by the called number only.
+//   3. ingestCallEvent — routing by the called number only; for a READY call
+//      it also publishes the durable recovery job (MCR-4.1). The recovery
+//      SEND never happens here — it runs in the queue consumer.
 //
 // Responses (never a tenant, business, customer or call id):
 //   200 { ok: true, status: "accepted" | "duplicate" }  — duplicates are 200 so
@@ -24,6 +26,7 @@ import { logger } from '../../../src/server/lib/logger'
 //   422 UNROUTABLE_NUMBER     no active business number matches (permanent, nothing written)
 //   409 CALL_ROUTING_CONFLICT the call id already belongs to another business (nothing written)
 //   500 INTERNAL_ERROR        transient — the provider should retry; idempotency makes that safe
+//                             (includes: event recorded but recovery job publish failed)
 // ============================================================================
 const adapter = createMockTelephonyAdapter()
 
@@ -52,6 +55,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   try {
     const result = await ingestCallEvent(event)
+    if (result.recoveryJob === 'PUBLISH_FAILED') {
+      // MCR-4.1 — the event IS recorded (call durable in READY); only the
+      // recovery trigger is missing. 500 makes the provider retry: the retry
+      // is a duplicate event that re-publishes (same idempotency key). If it
+      // never comes, the internal processor still finds the READY call.
+      res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Something went wrong' } })
+      return
+    }
     res.status(200).json({ ok: true, status: result.status })
   } catch (err) {
     if (err instanceof CallIntakeError) {

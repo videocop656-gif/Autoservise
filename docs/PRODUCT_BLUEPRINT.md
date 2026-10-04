@@ -101,6 +101,13 @@ MCR-4 (recovery engine) is implemented with a MOCK WhatsApp channel:
 
 It runs when the processor endpoint is called; a production scheduler, real WhatsApp and real telephony are still pending. See `docs/final-reports/final-report-mcr-4.md`.
 
+MCR-4.1 (durable recovery trigger) is implemented:
+- a missed call that becomes READY publishes one job to Vercel Queues (Beta) — no operator, no cron wait, no in-memory timer;
+- the queue consumer runs the same MCR-4 engine; delivery is at-least-once, and the engine's claim keeps it to one message;
+- if publishing fails, the call stays READY in the database and the internal processor recovers it.
+
+Real-Vercel verification happens on the first deployment. See `docs/final-reports/final-report-mcr-4.1.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.
