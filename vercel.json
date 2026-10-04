@@ -1,4 +1,10 @@
 {
+  "rewrites": [
+    {
+      "source": "/r/:token",
+      "destination": "/api/bridge/:token"
+    }
+  ],
   "functions": {
     "api/queues/missed-call-recovery.ts": {
       "experimentalTriggers": [

@@ -19,6 +19,7 @@ import type {
   ChannelConnection,
   ChannelDelivery,
   BusinessPhoneNumber,
+  CallInteraction,
 } from '@prisma/client'
 import { describeServicePricing, type PricingType } from '../domain/pricing'
 
@@ -433,6 +434,16 @@ export interface ConversationDto {
     createdAt: Date
   } | null
   messages?: MessageDto[]
+  // MCR-6 — single-GET only: how the missed call behind this conversation was
+  // recovered (route + stable reason code; human labels are the UI's job).
+  recovery?: {
+    state: CallInteraction['recoveryState']
+    channel: CallInteraction['recoveryChannel']
+    routeReason: string | null
+    sentAt: Date | null
+    bridgeOpenedAt: Date | null
+    bridgeOpenCount: number
+  } | null
 }
 
 type ConversationWithOptionalDetail = Conversation & {
@@ -446,6 +457,13 @@ type ConversationWithOptionalDetail = Conversation & {
     createdAt: Date
   } | null
   messages?: MessageWithOptionalDelivery[]
+  recoveredCalls?: {
+    recoveryState: CallInteraction['recoveryState']
+    recoveryChannel: CallInteraction['recoveryChannel']
+    recoveryRouteReason: string | null
+    recoverySentAt: Date | null
+    bridgeLink: { firstOpenedAt: Date | null; openCount: number } | null
+  }[]
 }
 
 export function toConversationDto(conversation: ConversationWithOptionalDetail): ConversationDto {
@@ -467,6 +485,19 @@ export function toConversationDto(conversation: ConversationWithOptionalDetail):
     ...('customer' in conversation ? { customer: conversation.customer ?? null } : {}),
     ...('customerRequest' in conversation ? { customerRequest: conversation.customerRequest ?? null } : {}),
     ...(conversation.messages ? { messages: conversation.messages.map(toMessageDto) } : {}),
+    ...(conversation.recoveredCalls ? { recovery: toRecoveryDto(conversation.recoveredCalls[0]) } : {}),
+  }
+}
+
+function toRecoveryDto(call: NonNullable<ConversationWithOptionalDetail['recoveredCalls']>[number] | undefined): ConversationDto['recovery'] {
+  if (!call) return null
+  return {
+    state: call.recoveryState,
+    channel: call.recoveryChannel,
+    routeReason: call.recoveryRouteReason,
+    sentAt: call.recoverySentAt,
+    bridgeOpenedAt: call.bridgeLink?.firstOpenedAt ?? null,
+    bridgeOpenCount: call.bridgeLink?.openCount ?? 0,
   }
 }
 

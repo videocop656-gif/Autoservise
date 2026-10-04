@@ -31,6 +31,7 @@ import { RequestBookingSection } from '../requests/RequestBookingSection'
 import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
 import { aiAutomationView } from './aiAutomation'
+import { RECOVERY_ROUTE_LABELS, recoveryReasonText } from './recoveryRoute'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1.
@@ -537,6 +538,24 @@ export function ConversationDetailPanel({
                   onChanged()
                 }}
               />
+            )}
+
+            {/* MCR-6 — how the missed call behind this conversation was recovered. */}
+            {detail.recovery?.channel && (
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Восстановление звонка</h3>
+                <div className="mt-1 space-y-0.5 text-sm">
+                  <div>Канал восстановления: {RECOVERY_ROUTE_LABELS[detail.recovery.channel]}</div>
+                  {recoveryReasonText(detail.recovery.routeReason) && (
+                    <div className="text-muted-foreground">Причина: {recoveryReasonText(detail.recovery.routeReason)}</div>
+                  )}
+                  {detail.recovery.channel === 'SMS_BRIDGE' && (
+                    <div className="text-xs text-muted-foreground">
+                      {detail.recovery.bridgeOpenedAt ? `Клиент открыл ссылку · ${formatActivity(detail.recovery.bridgeOpenedAt)}` : 'Ссылку ещё не открывали'}
+                    </div>
+                  )}
+                </div>
+              </section>
             )}
 
             {/* MCR-5 — automatic AI replies for this conversation. */}

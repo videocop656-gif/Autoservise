@@ -864,4 +864,13 @@ It does not wait on any external research.
   - `MessageSenderType.AI` and operator UI (status, pause/resume, «Ответ AI»).
 
   Eligible channel: WhatsApp only (Telegram unchanged).
-- MCR-6 and later are not implemented.
+- **MCR-6 — recovery channel router & SMS → WhatsApp bridge: implemented with mock providers** (`docs/final-reports/final-report-mcr-6.md`). It covers:
+  - one provider-neutral router keeping four facts separate: technical capability (adapter), consent (`ChannelConsent`; no row = UNKNOWN, never permission), the WhatsApp customer-service window (derived from authoritative inbound messages, 24 h in one constant) and approved-template availability;
+  - policy: WhatsApp if permitted (session open, or OPTED_IN + template), else `SMS_BRIDGE` (SMS + WhatsApp customer entry + public URL), else `NO_ELIGIBLE_CHANNEL`;
+  - the route and its reason code pinned on the call when the first message is created (`recoveryChannel`, `recoveryRouteReason`); retries never re-route;
+  - `MISSED_CALL_SMS_BRIDGE_V1` (≤ 2 UCS-2 segments) and an SMS segment estimator;
+  - mock SMS adapter (`ChannelType.SMS`, outbound only);
+  - `/r/<token>` bridge: 128-bit random token stored as SHA-256 in `RecoveryBridgeLink`, 72 h expiry, revocable, redirect only to the business's configured `wa.me` entry, click = attribution only.
+
+  The original audit's MCR-6 (handoff card + owner mobile) moves to a later stage.
+- MCR-7 and later are not implemented.

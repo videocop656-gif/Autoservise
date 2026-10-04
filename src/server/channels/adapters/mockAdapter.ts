@@ -1,6 +1,7 @@
 import type { ChannelType } from '@prisma/client'
 import type { BusinessInitiatedCapability, ChannelAdapter, ChannelSendResult, NormalizedIncomingMessage, NormalizedOutboundMessage } from '../types'
 import { env } from '../../lib/env'
+import { ApiError } from '../../lib/errors'
 
 /**
  * Foundation-only mock adapter (spec §"MOCK ADAPTERS" / §"CHANNEL
@@ -29,6 +30,11 @@ export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
   return {
     channelType,
     parseIncoming(rawPayload: unknown): NormalizedIncomingMessage {
+      // MCR-6 — SMS is outbound-only for now (recovery bridge to WhatsApp);
+      // two-way SMS is a future stage, so an inbound SMS is refused, never guessed.
+      if (channelType === 'SMS') {
+        throw new ApiError(400, 'CHANNEL_INBOUND_UNSUPPORTED', 'Inbound messages are not supported for this channel yet')
+      }
       const payload = rawPayload as Partial<NormalizedIncomingMessage> & { text?: string; sentAt?: string | Date }
       return {
         channelType,
@@ -59,7 +65,7 @@ export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
       }
       // MCR-4 — deterministic recovery failure for tests: a mock WhatsApp
       // destination ending in 0000 is "rejected by the provider".
-      if (channelType === 'WHATSAPP' && input.idempotencyKey && /0000$/.test(input.externalConversationId)) {
+      if ((channelType === 'WHATSAPP' || channelType === 'SMS') && input.idempotencyKey && /0000$/.test(input.externalConversationId)) {
         return { success: false, errorMessage: 'Mock provider rejected the destination', retryable: true, errorCode: 'CHANNEL_PROVIDER_ERROR' }
       }
       // With an idempotency key the provider id is deterministic (a retry of
@@ -67,13 +73,21 @@ export function createMockAdapter(channelType: ChannelType): ChannelAdapter {
       if (input.idempotencyKey) return { success: true, externalMessageId: `mock-out-${input.idempotencyKey}` }
       return { success: true, externalMessageId: `mock-out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
     },
-    // MCR-4 — only the mock WHATSAPP channel may pose as a recovery channel,
-    // and only when RECOVERY_MOCK_CHANNEL_ENABLED=true outside production.
+    // MCR-4 / MCR-6 — only the mock WHATSAPP and SMS channels may pose as
+    // recovery channels, and only when RECOVERY_MOCK_CHANNEL_ENABLED=true
+    // outside production. TECHNICAL capability only (see types.ts).
     businessInitiatedCapability(destinationE164: string): BusinessInitiatedCapability {
-      if (channelType !== 'WHATSAPP') return { eligible: false, reason: 'BUSINESS_INITIATION_NOT_PERMITTED' }
+      if (channelType !== 'WHATSAPP' && channelType !== 'SMS') return { eligible: false, reason: 'BUSINESS_INITIATION_NOT_PERMITTED' }
       if (!env.recoveryMockChannelEnabled) return { eligible: false, reason: 'PROVIDER_UNAVAILABLE' }
       if (!/^\+[1-9]\d{6,14}$/.test(destinationE164)) return { eligible: false, reason: 'INVALID_DESTINATION' }
       return { eligible: true }
+    },
+    // MCR-6 — mock "approved provider templates": the connection's own config
+    // key `approvedTemplates` (comma-separated template keys). WhatsApp only.
+    recoveryTemplateAvailable(connection: { config: unknown }, templateKey: string): boolean {
+      if (channelType !== 'WHATSAPP') return false
+      const list = (connection.config as Record<string, unknown> | null)?.approvedTemplates
+      return typeof list === 'string' && list.split(',').map((k) => k.trim()).includes(templateKey)
     },
   }
 }

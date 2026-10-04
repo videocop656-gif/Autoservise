@@ -70,6 +70,19 @@ export const conversationRepository = {
         // capped reference list on the client.
         customerRequest: { select: { id: true, subject: true, status: true, customerId: true, vehicleId: true, serviceId: true, createdAt: true } },
         messages: { orderBy: { createdAt: 'asc' }, include: { channelDelivery: true } },
+        // MCR-6 — the latest missed call this conversation recovered: route,
+        // reason and bridge attribution (no phone, no token).
+        recoveredCalls: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            recoveryState: true,
+            recoveryChannel: true,
+            recoveryRouteReason: true,
+            recoverySentAt: true,
+            bridgeLink: { select: { firstOpenedAt: true, openCount: true } },
+          },
+        },
       },
     })
   },

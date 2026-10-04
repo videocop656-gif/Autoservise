@@ -116,6 +116,14 @@ MCR-5 (automatic AI conversation) is implemented with the mock WhatsApp channel 
 
 Real WhatsApp (MCR-7) and a live OpenAI run are still pending. See `docs/final-reports/final-report-mcr-5.md`.
 
+MCR-6 (recovery channel routing) is implemented with mock WhatsApp and mock SMS:
+- a missed call is never treated as permission to message on WhatsApp;
+- WhatsApp is used for the first message only when the customer recently wrote in WhatsApp themselves, or recorded consent and an approved template exist;
+- otherwise the customer gets a short SMS with a one-tap link that opens THIS workshop's WhatsApp with a ready greeting — no app, no account, no Telegram;
+- the link carries no phone or internal ids; opening it is tracked but is not consent and is not a message — the AI starts only when the customer actually writes.
+
+Real SMS / WhatsApp providers are MCR-7. See `docs/final-reports/final-report-mcr-6.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

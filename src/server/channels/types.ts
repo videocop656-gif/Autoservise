@@ -58,9 +58,13 @@ export interface NormalizedOutboundMessage {
 
 /**
  * MCR-4 — can this channel start a conversation with this phone number right
- * now (business-initiated, e.g. after a missed call)? Distinct from
- * "configured": a real WhatsApp adapter will answer with its own policy
- * (template, consent, window). The router never sends without `eligible`.
+ * now (business-initiated, e.g. after a missed call)?
+ *
+ * MCR-6 — this is TECHNICAL capability only (provider configured and
+ * reachable, destination valid for the provider). Consent, the
+ * customer-service window and template availability are separate concepts,
+ * evaluated by the recovery channel router (recovery/channelRouter.ts) —
+ * `eligible` here is never permission on its own.
  */
 export type BusinessInitiatedCapability =
   | { eligible: true }
@@ -119,6 +123,13 @@ export interface ChannelAdapter {
    * business-initiated recovery (e.g. Telegram can't message a phone number).
    */
   businessInitiatedCapability?(destinationE164: string): BusinessInitiatedCapability
+  /**
+   * MCR-6 — optional. Does this connection have an APPROVED provider template
+   * for this recovery template key (WhatsApp business-initiated messages
+   * outside a session need one)? A real adapter asks its provider / config;
+   * absent = no approved template.
+   */
+  recoveryTemplateAvailable?(connection: { config: unknown }, templateKey: string): boolean
 }
 
 /**
@@ -137,6 +148,8 @@ export function channelTypeToConversationChannel(type: ChannelType): Conversatio
       return 'WHATSAPP'
     case 'WEBSITE':
       return 'WEBSITE'
+    case 'SMS':
+      return 'SMS'
     default: {
       const exhaustive: never = type
       throw new Error(`Unmapped ChannelType: ${String(exhaustive)}`)

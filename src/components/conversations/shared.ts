@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Globe, Send, Phone, MessageCircle, HelpCircle, UserRound } from 'lucide-react'
+import { Globe, Send, Phone, MessageCircle, HelpCircle, UserRound, MessageSquareText } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1. Shared types/labels/helpers between
@@ -11,7 +11,7 @@ import { Globe, Send, Phone, MessageCircle, HelpCircle, UserRound } from 'lucide
 // returned by the existing, unmodified backend.
 // ---------------------------------------------------------------------------
 
-export type ConversationChannel = 'MANUAL' | 'WEBSITE' | 'TELEGRAM' | 'WHATSAPP' | 'PHONE' | 'OTHER'
+export type ConversationChannel = 'MANUAL' | 'WEBSITE' | 'TELEGRAM' | 'WHATSAPP' | 'PHONE' | 'OTHER' | 'SMS'
 export type ConversationStatus = 'OPEN' | 'CLOSED'
 export type MessageDirection = 'INBOUND' | 'OUTBOUND'
 // MCR-5 — 'AI': an automatic AI-administrator reply (never a staff member).
@@ -85,6 +85,15 @@ export interface ConversationDto {
     createdAt: string
   } | null
   messages?: MessageDto[]
+  // MCR-6 — how the missed call behind this conversation was recovered (single GET only).
+  recovery?: {
+    state: string
+    channel: 'WHATSAPP' | 'SMS_BRIDGE' | null
+    routeReason: string | null
+    sentAt: string | null
+    bridgeOpenedAt: string | null
+    bridgeOpenCount: number
+  } | null
 }
 
 /** Reference-data shape — same convention as the Dashboard/Appointments/Conversations reference-data lookups: fetched once (pageSize=100), resolved client-side by id. Only the fields this UI actually reads are declared. */
@@ -168,6 +177,7 @@ export const CHANNEL_LABELS: Record<ConversationChannel, string> = {
   WHATSAPP: 'WhatsApp',
   PHONE: 'Телефон',
   OTHER: 'Другое',
+  SMS: 'SMS',
 }
 
 export const CHANNEL_ICONS: Record<ConversationChannel, LucideIcon> = {
@@ -177,6 +187,7 @@ export const CHANNEL_ICONS: Record<ConversationChannel, LucideIcon> = {
   WHATSAPP: MessageCircle,
   PHONE: Phone,
   OTHER: HelpCircle,
+  SMS: MessageSquareText,
 }
 
 export const ESCALATION_STATUS_LABELS: Record<EscalationStatus, string> = {

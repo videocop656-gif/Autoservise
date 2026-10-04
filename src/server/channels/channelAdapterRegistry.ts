@@ -13,6 +13,8 @@ import { createTelegramAdapter } from './adapters/telegramAdapter'
 const MOCK_ADAPTERS: Partial<Record<ChannelType, ChannelAdapter>> = {
   WHATSAPP: createMockAdapter('WHATSAPP'),
   WEBSITE: createMockAdapter('WEBSITE'),
+  // MCR-6 — outbound SMS (recovery bridge). Mock only; no SMS SDK exists here.
+  SMS: createMockAdapter('SMS'),
 }
 
 /**

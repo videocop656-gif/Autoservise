@@ -122,6 +122,14 @@ vi.mock('../src/server/repositories/channelConnectionRepository', () => ({
     findById: async (t: string, b: string, cid: string) => db.connections.find((c) => c.tenantId === t && c.businessId === b && c.id === cid) ?? null,
   },
 }))
+// MCR-6 — these MCR-4 tests exercise the PERMITTED WhatsApp path: the caller
+// has recorded WhatsApp consent and the connection an approved recovery
+// template (routing itself is covered in tests/recoveryRouting.test.ts).
+vi.mock('../src/server/repositories/recoveryRoutingRepository', () => ({
+  channelConsentRepository: { find: async (_t: string, _b: string, channel: string) => (channel === 'WHATSAPP' ? { status: 'OPTED_IN' } : null) },
+  customerServiceWindowRepository: { latestInboundAt: async () => null },
+  bridgeLinkRepository: { create: async () => undefined },
+}))
 vi.mock('../src/server/repositories/messageRepository', () => ({
   messageRepository: { findById: async (t: string, b: string, mid: string) => db.messages.find((m) => m.tenantId === t && m.businessId === b && m.id === mid) ?? null },
 }))
@@ -205,9 +213,9 @@ beforeEach(() => {
   db.messages = []
   db.deliveries = []
   db.connections = [
-    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE' },
+    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
     { id: 'tg-1', tenantId: 't1', businessId: 'b1', type: 'TELEGRAM', status: 'ACTIVE' },
-    { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE' },
+    { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
   ]
   process.env.RECOVERY_MOCK_CHANNEL_ENABLED = 'true'
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -379,11 +387,11 @@ describe('channel routing & capability', () => {
     expect(outbound()).toHaveLength(0)
   })
 
-  it('router explains why each channel was blocked', async () => {
+  it('router explains why each channel was blocked (MCR-6 decision shape)', async () => {
     delete process.env.RECOVERY_MOCK_CHANNEL_ENABLED
-    expect(await selectRecoveryChannel({ tenantId: 't1', businessId: 'b1' }, CALLER)).toEqual({ ok: false, blocked: [{ channelType: 'WHATSAPP', reason: 'PROVIDER_UNAVAILABLE' }] })
+    expect(await selectRecoveryChannel({ tenantId: 't1', businessId: 'b1' }, CALLER)).toMatchObject({ ok: false, reason: 'WHATSAPP_PROVIDER_UNAVAILABLE|SMS_NOT_CONFIGURED' })
     db.connections = []
-    expect(await selectRecoveryChannel({ tenantId: 't1', businessId: 'b1' }, CALLER)).toEqual({ ok: false, blocked: [{ channelType: 'WHATSAPP', reason: 'NOT_CONFIGURED' }] })
+    expect(await selectRecoveryChannel({ tenantId: 't1', businessId: 'b1' }, CALLER)).toMatchObject({ ok: false, reason: 'WHATSAPP_NOT_CONFIGURED|SMS_NOT_CONFIGURED' })
   })
 
   it('mock channel disabled (no flag) → no eligible channel: FAILED, nothing sent, never a fake SENT', async () => {
@@ -407,8 +415,8 @@ describe('channel routing & capability', () => {
 
   it("an inactive WhatsApp connection or another tenant's connection is never used", async () => {
     db.connections = [
-      { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'INACTIVE' },
-      { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE' },
+      { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'INACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
+      { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
     ]
     const c = seedCall()
     expect(await processRecovery(c.id, NOW)).toBe('FAILED')

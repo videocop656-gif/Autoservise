@@ -90,6 +90,11 @@ function localApiPlugin(): Plugin {
     name: 'local-vercel-api',
     configureServer(server: ViteDevServer) {
       server.middlewares.use(async (req, res, next) => {
+        // MCR-6 — the public SMS bridge path /r/<token> (vercel.json rewrites it
+        // to /api/bridge/<token> in production); same mapping for local dev.
+        if (req.url && /^\/r\/[^/?]+/.test(req.url)) {
+          req.url = req.url.replace(/^\/r\//, '/api/bridge/')
+        }
         if (!req.url || !req.url.startsWith('/api/')) {
           next()
           return

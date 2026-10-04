@@ -95,6 +95,7 @@ enum ConversationChannel {
   WHATSAPP
   PHONE
   OTHER
+  SMS
 }
 
 enum ConversationStatus {
@@ -170,6 +171,9 @@ enum ChannelType {
   TELEGRAM
   WHATSAPP
   WEBSITE
+  // MCR-6 — outbound SMS (missed-call recovery bridge to WhatsApp). Mock only;
+  // two-way SMS is a future stage.
+  SMS
 }
 
 // INACTIVE is the default for every newly-created connection (spec
@@ -242,6 +246,8 @@ model Tenant {
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
   aiConversationTurns            AiConversationTurn[]
+  channelConsents                ChannelConsent[]
+  recoveryBridgeLinks            RecoveryBridgeLink[]
 
   @@map("tenants")
 }
@@ -334,6 +340,8 @@ model Business {
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
   aiConversationTurns            AiConversationTurn[]
+  channelConsents                ChannelConsent[]
+  recoveryBridgeLinks            RecoveryBridgeLink[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -1433,6 +1441,13 @@ model CallInteraction {
   recoveryConversationId String?
   recoveryMessageId      String?   @unique
 
+  // MCR-6 — the route the recovery router chose, pinned when the first
+  // message is created (a retry never re-routes), and WHY, as a stable code
+  // (e.g. WHATSAPP_TEMPLATE_AVAILABLE, WHATSAPP_NO_RECORDED_CONSENT, or for
+  // NO_ELIGIBLE_CHANNEL: "WHATSAPP_NOT_CONFIGURED|SMS_NOT_CONFIGURED").
+  recoveryChannel     RecoveryRoute?
+  recoveryRouteReason String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1444,6 +1459,7 @@ model CallInteraction {
   events               CallEvent[]
   recoveryConversation Conversation?       @relation("CallRecoveryConversation", fields: [recoveryConversationId], references: [id], onDelete: Restrict)
   recoveryMessage      Message?            @relation("CallRecoveryMessage", fields: [recoveryMessageId], references: [id], onDelete: SetNull)
+  bridgeLink           RecoveryBridgeLink?
 
   @@unique([provider, providerCallId])
   @@index([tenantId, businessId, createdAt])
@@ -1546,4 +1562,74 @@ model AiConversationTurn {
   @@index([conversationId, createdAt])
   @@index([state, createdAt])
   @@map("ai_conversation_turns")
+}
+
+// ---------------------------------------------------------------------------
+// MCR-6 — recovery channel routing & SMS → WhatsApp bridge.
+// ---------------------------------------------------------------------------
+
+enum RecoveryRoute {
+  // business-initiated WhatsApp message (open session, or recorded consent +
+  // an approved recovery template)
+  WHATSAPP
+  // SMS with a one-tap link that opens the business WhatsApp chat
+  SMS_BRIDGE
+}
+
+enum ChannelConsentStatus {
+  OPTED_IN
+  OPTED_OUT
+}
+
+// Recorded permission to INITIATE communication on one channel with one
+// canonical destination, for one business. Provider-neutral. No row means
+// UNKNOWN — and UNKNOWN is never permission. Never derived from a missed
+// call, the existence of a Customer / phone number, an old conversation or
+// a bridge click: only an authoritative event, recorded with its source.
+model ChannelConsent {
+  id              String               @id @default(uuid())
+  tenantId        String
+  businessId      String
+  channel         ChannelType
+  destinationE164 String
+  status          ChannelConsentStatus
+  // Provenance, required (CUSTOMER_OPT_IN_MESSAGE / CUSTOMER_OPT_OUT_MESSAGE / PROVIDER_EVENT).
+  source          String
+  recordedAt      DateTime
+  // Set when the destination opted out (status OPTED_OUT).
+  revokedAt       DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, businessId, channel, destinationE164])
+  @@map("channel_consents")
+}
+
+// The SMS bridge link of one recovered call: /r/<token> redirects to the
+// business's own WhatsApp entry. Only the SHA-256 of the high-entropy random
+// token is stored (a leaked database never yields working links); the URL
+// carries no tenant / business / call / phone. Expires; revocable. Opening
+// it is attribution only — never consent, never an inbound message.
+model RecoveryBridgeLink {
+  id                String    @id @default(uuid())
+  tenantId          String
+  businessId        String
+  callInteractionId String    @unique
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  firstOpenedAt     DateTime?
+  lastOpenedAt      DateTime?
+  openCount         Int       @default(0)
+  createdAt         DateTime  @default(now())
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business        Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  callInteraction CallInteraction @relation(fields: [callInteractionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, businessId])
+  @@map("recovery_bridge_links")
 }

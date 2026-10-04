@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client'
+import { Prisma, type ChannelType } from '@prisma/client'
 import { ApiError } from '../lib/errors'
 import { logger } from '../lib/logger'
 import { maskPhone } from '../lib/phone'
@@ -7,14 +7,20 @@ import { callRecoveryRepository } from '../repositories/callRecoveryRepository'
 import { channelTypeToConversationChannel } from '../channels/types'
 import { selectRecoveryChannel } from '../recovery/channelRouter'
 import { recoveryThreadKey } from '../recovery/policy'
-import { MISSED_CALL_RECOVERY_V1, renderRecoveryTemplate } from '../recovery/templates'
+import { MISSED_CALL_RECOVERY_V1, MISSED_CALL_SMS_BRIDGE_V1, renderRecoveryTemplate } from '../recovery/templates'
+import { bridgeLinkExpiry, buildBridgeUrl, generateBridgeToken } from '../recovery/bridge'
+import { bridgeLinkRepository } from '../repositories/recoveryRoutingRepository'
 import { deliverSystemMessage } from './channelDeliveryService'
 
 // ---------------------------------------------------------------------------
 // MCR-4 — Missed Call Recovery Engine.
 //
 //   READY call → atomic claim (anti-spam, late-answer re-check)
-//   → Recovery Channel Router (best eligible configured channel; none → FAILED)
+//   → Recovery Channel Router (MCR-6: WhatsApp only when genuinely permitted,
+//     else the SMS → WhatsApp bridge; none → FAILED NO_ELIGIBLE_CHANNEL). The
+//     route is decided ONCE, in the attempt that creates the message, and
+//     pinned on the call with its reason; a retry re-delivers that same
+//     message on that same channel and never re-routes.
 //   → find-or-create the channel Conversation for the caller's number
 //   → ONE deterministic SYSTEM message (template MISSED_CALL_RECOVERY_V1),
 //     created and linked to the call in the same transaction that re-checks
@@ -33,7 +39,7 @@ const SYSTEM_SUBJECT = 'Пропущенный звонок'
 
 async function findOrCreateRecoveryConversation(
   scope: { tenantId: string; businessId: string },
-  connection: { id: string; type: 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE' },
+  connection: { id: string; type: ChannelType },
   threadKey: string,
   customerId: string | null,
   tx: Prisma.TransactionClient
@@ -71,14 +77,21 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
   // message again (idempotent per ChannelDelivery), never a second one.
   let messageId = call.recoveryMessageId
   if (!messageId) {
-    const route = await selectRecoveryChannel(scope, destination)
+    const route = await selectRecoveryChannel(scope, destination, now)
     if (!route.ok) {
-      await callRecoveryRepository.transitionFromClaimed(call.id, { recoveryState: 'FAILED', recoveryFailureCode: 'NO_ELIGIBLE_CHANNEL' })
-      logger.info('call_recovery_no_channel', { blocked: route.blocked.map((b) => `${b.channelType}:${b.reason}`).join(','), caller: maskPhone(destination) })
+      await callRecoveryRepository.transitionFromClaimed(call.id, { recoveryState: 'FAILED', recoveryFailureCode: 'NO_ELIGIBLE_CHANNEL', recoveryRouteReason: route.reason })
+      logger.info('call_recovery_no_channel', { routeReason: route.reason, caller: maskPhone(destination) })
       return 'FAILED'
     }
     const business = await businessRepository.findFirstByTenant(scope.tenantId)
-    const content = renderRecoveryTemplate(MISSED_CALL_RECOVERY_V1, { businessName: business?.id === scope.businessId ? business.name : null })
+    const businessName = business?.id === scope.businessId ? business.name : null
+    // SMS bridge: a fresh opaque token; only its hash is stored, with the message.
+    const bridge = route.route === 'SMS_BRIDGE' ? generateBridgeToken() : null
+    const templateKey = route.route === 'SMS_BRIDGE' ? MISSED_CALL_SMS_BRIDGE_V1 : MISSED_CALL_RECOVERY_V1
+    const content =
+      route.route === 'SMS_BRIDGE'
+        ? renderRecoveryTemplate(MISSED_CALL_SMS_BRIDGE_V1, { businessName, bridgeUrl: buildBridgeUrl(route.bridgeBaseUrl, bridge!.token) })
+        : renderRecoveryTemplate(MISSED_CALL_RECOVERY_V1, { businessName })
 
     const created = await callRecoveryRepository.withClaimedMissedCall(call.id, async (tx, locked) => {
       const conversation = await findOrCreateRecoveryConversation(scope, route.connection, recoveryThreadKey(destination), locked.customerId, tx)
@@ -86,13 +99,24 @@ export async function processRecovery(callId: string, now: Date = new Date()): P
         data: { ...scope, conversationId: conversation.id, direction: 'OUTBOUND', senderType: 'SYSTEM', content },
       })
       await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: message.createdAt } })
+      if (bridge) {
+        await bridgeLinkRepository.create(tx, { ...scope, callInteractionId: call.id, tokenHash: bridge.tokenHash, expiresAt: bridgeLinkExpiry(now) })
+      }
+      // The route is pinned here, with the message: retries never re-route.
       await callRecoveryRepository.transitionFromClaimed(
         call.id,
-        { recoveryConversationId: conversation.id, recoveryMessageId: message.id, recoveryTemplateKey: MISSED_CALL_RECOVERY_V1 },
+        {
+          recoveryConversationId: conversation.id,
+          recoveryMessageId: message.id,
+          recoveryTemplateKey: templateKey,
+          recoveryChannel: route.route,
+          recoveryRouteReason: route.reason,
+        },
         tx
       )
       messageId = message.id
     })
+    logger.info('call_recovery_routed', { route: route.route, routeReason: route.reason, caller: maskPhone(destination) })
     if (created === 'ANSWERED') return 'NOT_ELIGIBLE'
     if (created === 'LOST_CLAIM') return 'SKIPPED'
   } else {

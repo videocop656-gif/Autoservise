@@ -13,7 +13,7 @@ describe('createChannelConnectionSchema', () => {
   })
 
   it('rejects an invalid channel type', () => {
-    expect(() => createChannelConnectionSchema.parse({ type: 'SMS', displayName: 'X', externalAccountId: 'x' })).toThrow()
+    expect(() => createChannelConnectionSchema.parse({ type: 'FAX', displayName: 'X', externalAccountId: 'x' })).toThrow()
   })
 
   it('rejects a missing externalAccountId (required, per spec §"CHANNEL CREATE")', () => {

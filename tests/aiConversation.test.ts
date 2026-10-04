@@ -210,6 +210,13 @@ vi.mock('../src/server/repositories/channelConnectionRepository', () => ({
     list: async (t: string, b: string) => db.connections.filter((c) => c.tenantId === t && c.businessId === b),
   },
 }))
+// MCR-6 — the recovery here is the PERMITTED WhatsApp path (recorded consent +
+// approved template); routing itself is covered in tests/recoveryRouting.test.ts.
+vi.mock('../src/server/repositories/recoveryRoutingRepository', () => ({
+  channelConsentRepository: { find: async (_t: string, _b: string, channel: string) => (channel === 'WHATSAPP' ? { status: 'OPTED_IN' } : null) },
+  customerServiceWindowRepository: { latestInboundAt: async () => null },
+  bridgeLinkRepository: { create: async () => undefined },
+}))
 vi.mock('../src/server/repositories/channelDeliveryRepository', () => ({
   channelDeliveryRepository: {
     claimForSending: async (t: string, b: string, conn: string, mid: string) => {
@@ -372,9 +379,9 @@ beforeEach(() => {
     { id: randomUUID(), businessId: 'b2', dayOfWeek: d, isOpen: true, openTime: '10:00', closeTime: '18:00' },
   ])
   db.connections = [
-    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE' },
+    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
     { id: 'tg-1', tenantId: 't1', businessId: 'b1', type: 'TELEGRAM', status: 'ACTIVE' },
-    { id: 'wa-2', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE' },
+    { id: 'wa-2', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
   ]
   db.services = [
     service(PAINT, 'Кузовная покраска', { priceFrom: 40000, requiresInspection: true, durationMinutes: 120, priceNote: 'Точная стоимость зависит от состояния детали и объёма подготовительных работ' }),

@@ -8,8 +8,9 @@ import { Label } from '../../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
 import { useAuth } from '../../context/AuthContext'
+import { recoverySetupView } from '../../components/channels/recoverySetup'
 
-type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE'
+type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'WEBSITE' | 'SMS'
 type ChannelStatus = 'ACTIVE' | 'INACTIVE'
 
 interface ChannelConnectionDto {
@@ -29,8 +30,8 @@ function telegramUsername(connection: ChannelConnectionDto): string | null {
   return typeof value === 'string' ? value : null
 }
 
-const TYPE_LABEL: Record<ChannelType, string> = { TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', WEBSITE: 'Website Chat' }
-const CHANNEL_TYPES: ChannelType[] = ['TELEGRAM', 'WHATSAPP', 'WEBSITE']
+const TYPE_LABEL: Record<ChannelType, string> = { TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', WEBSITE: 'Website Chat', SMS: 'SMS' }
+const CHANNEL_TYPES: ChannelType[] = ['TELEGRAM', 'WHATSAPP', 'WEBSITE', 'SMS']
 
 interface CreateFormState {
   type: ChannelType
@@ -56,7 +57,9 @@ export default function ChannelsSettingsPage() {
   const [creating, setCreating] = useState(false)
 
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState({ displayName: '', externalAccountId: '' })
+  // MCR-6 — customerEntryPhone: the WhatsApp number customers open from the recovery SMS (WhatsApp only).
+  const [editForm, setEditForm] = useState({ displayName: '', externalAccountId: '', customerEntryPhone: '' })
+  const editingConnection = connections.find((c) => c.id === editingId) ?? null
   const [editError, setEditError] = useState<string | null>(null)
   const [editFieldErrors, setEditFieldErrors] = useState<Record<string, string[]>>({})
   const [saving, setSaving] = useState(false)
@@ -114,7 +117,8 @@ export default function ChannelsSettingsPage() {
 
   function openEditForm(connection: ChannelConnectionDto) {
     setEditingId(connection.id)
-    setEditForm({ displayName: connection.displayName, externalAccountId: connection.externalAccountId })
+    const entry = connection.config?.customerEntryPhone
+    setEditForm({ displayName: connection.displayName, externalAccountId: connection.externalAccountId, customerEntryPhone: typeof entry === 'string' ? entry : '' })
     setEditError(null)
     setEditFieldErrors({})
   }
@@ -126,7 +130,13 @@ export default function ChannelsSettingsPage() {
     setEditFieldErrors({})
     setSaving(true)
     try {
-      await apiFetch(`/api/channels/${editingId}`, { method: 'PATCH', body: JSON.stringify(editForm) })
+      const { customerEntryPhone, ...profile } = editForm
+      // Config is replaced as a whole on PATCH: keep the existing keys, change only the entry number.
+      const body =
+        editingConnection?.type === 'WHATSAPP'
+          ? { ...profile, config: { ...(editingConnection.config ?? {}), customerEntryPhone: customerEntryPhone.trim() || null } }
+          : profile
+      await apiFetch(`/api/channels/${editingId}`, { method: 'PATCH', body: JSON.stringify(body) })
       setEditingId(null)
       await loadConnections()
     } catch (err) {
@@ -177,14 +187,34 @@ export default function ChannelsSettingsPage() {
   return (
     <PageContainer className="max-w-4xl space-y-6">
       <PageHeader title="Каналы" subtitle="Connected communication channels" />
+        {/* MCR-6 — missed-call recovery setup at a glance. */}
+        {!loading && !listError && (() => {
+          const view = recoverySetupView(connections)
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle>Восстановление пропущенных звонков</CardTitle>
+                <CardDescription>{view.fallback}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-1 text-sm">
+                <div>
+                  WhatsApp: <span className={view.whatsapp.configured ? 'text-success' : 'text-muted-foreground'}>{view.whatsapp.label}</span>
+                </div>
+                <div>
+                  SMS для восстановления: <span className={view.sms.configured ? 'text-success' : 'text-muted-foreground'}>{view.sms.label}</span>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })()}
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle>Channels</CardTitle>
               <CardDescription>
-                Внешние каналы связи (Telegram, WhatsApp, Website Chat). Telegram может быть подключён к реальному
-                Telegram Bot API — остальные каналы пока foundation-уровня (внутренний тестовый pipeline). AI не
-                отвечает автоматически ни в одном канале.
+                Внешние каналы связи (Telegram, WhatsApp, Website Chat, SMS). Telegram может быть подключён к реальному
+                Telegram Bot API — остальные каналы пока foundation-уровня (внутренний тестовый pipeline). Автоответы
+                AI включаются отдельно в разделе AI и работают только в WhatsApp.
               </CardDescription>
             </div>
             {canManage && (
@@ -365,6 +395,21 @@ export default function ChannelsSettingsPage() {
                     <p className="text-sm text-destructive">{editFieldErrors.externalAccountId[0]}</p>
                   )}
                 </div>
+                {editingConnection?.type === 'WHATSAPP' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-entry-phone">Номер WhatsApp для клиентов</Label>
+                    <Input
+                      id="edit-entry-phone"
+                      inputMode="tel"
+                      placeholder="+7 701 123 45 67"
+                      value={editForm.customerEntryPhone}
+                      onChange={(e) => setEditForm({ ...editForm, customerEntryPhone: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      На этот номер клиент попадает по ссылке из SMS после пропущенного звонка.
+                    </p>
+                  </div>
+                )}
 
                 {editError && <p className="text-sm text-destructive">{editError}</p>}
 

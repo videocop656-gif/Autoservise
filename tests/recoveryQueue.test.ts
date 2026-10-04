@@ -163,6 +163,13 @@ vi.mock('../src/server/repositories/channelConnectionRepository', () => ({
     findById: async (t: string, b: string, cid: string) => db.connections.find((c) => c.tenantId === t && c.businessId === b && c.id === cid) ?? null,
   },
 }))
+// MCR-6 — the recovery here is the PERMITTED WhatsApp path (recorded consent +
+// approved template); routing itself is covered in tests/recoveryRouting.test.ts.
+vi.mock('../src/server/repositories/recoveryRoutingRepository', () => ({
+  channelConsentRepository: { find: async (_t: string, _b: string, channel: string) => (channel === 'WHATSAPP' ? { status: 'OPTED_IN' } : null) },
+  customerServiceWindowRepository: { latestInboundAt: async () => null },
+  bridgeLinkRepository: { create: async () => undefined },
+}))
 vi.mock('../src/server/repositories/messageRepository', () => ({
   messageRepository: { findById: async (t: string, b: string, mid: string) => db.messages.find((m) => m.tenantId === t && m.businessId === b && m.id === mid) ?? null },
 }))
@@ -292,8 +299,8 @@ beforeEach(() => {
   hooks.onRoute = null
   Object.assign(db, { calls: [], events: [], conversations: [], messages: [], deliveries: [] })
   db.connections = [
-    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE' },
-    { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE' },
+    { id: 'wa-1', tenantId: 't1', businessId: 'b1', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
+    { id: 'wa-foreign', tenantId: 't2', businessId: 'b2', type: 'WHATSAPP', status: 'ACTIVE', config: { approvedTemplates: 'MISSED_CALL_RECOVERY_V1' }, createdAt: new Date(0) },
   ]
   queue.jobs = []
   queue.fail = false

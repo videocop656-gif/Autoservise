@@ -30,13 +30,38 @@ export const RECOVERY_STALE_CLAIM_SECONDS = 120
 export const NON_RETRYABLE_FAILURE_CODES: readonly string[] = ['DELIVERY_UNCERTAIN']
 
 /**
- * Preferred recovery channels, best first. Only channel types that exist and
- * whose adapter says it can initiate a conversation are ever used. WhatsApp
- * first (the product's customer channel); SMS will join when an SMS
- * ChannelType/adapter exists. Telegram is deliberately absent: a Telegram bot
- * cannot message a phone number, so it must never become the default.
+ * MCR-6 — the recovery routes, best first: a business-initiated WhatsApp
+ * message when it is genuinely permitted, otherwise an SMS that bridges the
+ * customer into the business's WhatsApp chat. Telegram is deliberately
+ * absent: a Telegram bot cannot message a phone number, and the customer
+ * must never need Telegram (or any app/account) to be recovered.
+ * The decision itself lives in recovery/channelRouter.ts.
  */
-export const RECOVERY_CHANNEL_PRIORITY: readonly ChannelType[] = ['WHATSAPP']
+export const RECOVERY_ROUTE_CHANNELS: readonly ChannelType[] = ['WHATSAPP', 'SMS']
+
+/**
+ * WhatsApp customer-service window: after the customer's own last inbound
+ * WhatsApp message, free-form business messages are allowed for this long.
+ * The ONE place this number lives (derived from authoritative inbound
+ * Messages — see recoveryRoutingRepository).
+ */
+export const WHATSAPP_CUSTOMER_SERVICE_WINDOW_HOURS = 24
+
+/** An SMS bridge link stops working after this long (the "you just called" moment is long gone). */
+export const RECOVERY_BRIDGE_LINK_TTL_HOURS = 72
+
+/** A recovery SMS must fit in this many segments (UCS-2 for Russian: 2 × 67 units). */
+export const RECOVERY_SMS_MAX_SEGMENTS = 2
+
+/** Business name is cut to this many characters in the SMS so the message stays within RECOVERY_SMS_MAX_SEGMENTS. */
+export const RECOVERY_SMS_MAX_NAME_LENGTH = 24
+
+/**
+ * The text pre-filled in WhatsApp when the customer opens the bridge. The
+ * customer still has to press send — and only that sent message is an
+ * inbound message. No phone, call id, token or tenant in it.
+ */
+export const RECOVERY_BRIDGE_PREFILL_TEXT = 'Здравствуйте! Я только что звонил(а) в автосервис.'
 
 /**
  * The external thread key of a recovery conversation: the caller's E.164

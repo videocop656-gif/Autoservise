@@ -1,4 +1,5 @@
-import { Prisma } from '@prisma/client'
+import { Prisma, type ChannelType } from '@prisma/client'
+import { normalizePhone } from '../lib/phone'
 import type { AuthContext } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { env } from '../lib/env'
@@ -34,6 +35,24 @@ export async function getChannelConnection(ctx: AuthContext, id: string) {
   return resolveConnection(ctx, id)
 }
 
+/**
+ * MCR-6 — a WhatsApp connection's `customerEntryPhone` (the number customers
+ * open via the SMS bridge, wa.me/<number>) is stored only as canonical E.164;
+ * anything else is a 400, never silently kept. Other config keys pass through.
+ */
+function normalizeChannelConfig(ctx: AuthContext, type: ChannelType, config: Record<string, unknown> | undefined) {
+  if (!config || config.customerEntryPhone === undefined) return config
+  if (type !== 'WHATSAPP') throw new ApiError(400, 'VALIDATION_ERROR', 'customerEntryPhone is only for WhatsApp connections')
+  const raw = config.customerEntryPhone
+  if (raw === null || raw === '') {
+    const { customerEntryPhone: _drop, ...rest } = config
+    return rest
+  }
+  const e164 = typeof raw === 'string' ? normalizePhone(raw, ctx.business.phoneRegion) : null
+  if (!e164) throw new ApiError(400, 'VALIDATION_ERROR', 'Укажите номер WhatsApp в международном формате, например +7 701 123 45 67')
+  return { ...config, customerEntryPhone: e164 }
+}
+
 /** Always created INACTIVE (spec §"CHANNEL CREATE") — an explicit activate is always required before any inbound/outbound processing is possible. */
 export async function createChannelConnection(ctx: AuthContext, input: CreateChannelConnectionInput) {
   requireRole(ctx, ...MANAGING_ROLES)
@@ -46,7 +65,7 @@ export async function createChannelConnection(ctx: AuthContext, input: CreateCha
       status: 'INACTIVE',
       displayName: input.displayName,
       externalAccountId: input.externalAccountId,
-      config: sanitizeChannelConfig(input.config),
+      config: sanitizeChannelConfig(normalizeChannelConfig(ctx, input.type, input.config)),
     })
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -59,13 +78,14 @@ export async function createChannelConnection(ctx: AuthContext, input: CreateCha
 /** Profile fields only — displayName/externalAccountId/config. Status changes exclusively through activate/deactivate below (spec §"CHANNEL PATCH"). */
 export async function updateChannelConnection(ctx: AuthContext, id: string, input: UpdateChannelConnectionInput) {
   requireRole(ctx, ...MANAGING_ROLES)
-  await resolveConnection(ctx, id)
+  const existing = await resolveConnection(ctx, id)
+  const config = input.config !== undefined ? normalizeChannelConfig(ctx, existing.type, input.config) : undefined
 
   try {
     const updated = await channelConnectionRepository.updateById(ctx.tenant.id, ctx.business.id, id, {
       ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
       ...(input.externalAccountId !== undefined ? { externalAccountId: input.externalAccountId } : {}),
-      ...(input.config !== undefined ? { config: sanitizeChannelConfig(input.config) ?? Prisma.JsonNull } : {}),
+      ...(input.config !== undefined ? { config: sanitizeChannelConfig(config) ?? Prisma.JsonNull } : {}),
     })
     if (!updated) {
       throw new ApiError(404, 'CHANNEL_NOT_FOUND', 'Channel connection not found')

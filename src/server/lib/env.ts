@@ -53,9 +53,10 @@ export const env = {
     return value && value.trim() !== '' ? value : undefined
   },
   /**
-   * MCR-4 — lets the MOCK WhatsApp channel accept business-initiated recovery
-   * messages ("true"). Development/testing only: always false in production,
-   * so a mock can never pose as a real recovery channel there.
+   * MCR-4 / MCR-6 — lets the MOCK WhatsApp and MOCK SMS channels act as
+   * recovery channels ("true"). Development/testing only: always false in
+   * production, so a mock can never pose as a real provider there. (Consent,
+   * session and template rules apply on top — see recovery/channelRouter.ts.)
    */
   get recoveryMockChannelEnabled(): boolean {
     return !this.isProduction && process.env.RECOVERY_MOCK_CHANNEL_ENABLED === 'true'
