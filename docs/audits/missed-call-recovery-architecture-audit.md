@@ -854,4 +854,14 @@ It does not wait on any external research.
   - delivery is at-least-once, and the MCR-4 claim is the duplicate guard;
   - on publish failure the call stays READY, the webhook returns 500 so the provider retries and re-publishes, and `POST /api/internal/recovery/process` remains the reconciliation backstop;
   - no schema change.
-- MCR-5 and later are not implemented.
+- **MCR-5 — automatic AI conversation: implemented with a MOCK channel and the MOCK AI provider** (`docs/final-reports/final-report-mcr-5.md`). It covers:
+  - `Business.aiAutoReplyEnabled` (default false) and a per-conversation pause (`HUMAN_TAKEOVER` on any staff reply, operator pause/resume, AI handoff reasons);
+  - one durable `AiConversationTurn` per eligible inbound message (unique), committed with the message; Vercel Queues topic `ai-conversation-reply` with `{ messageId }`; `POST /api/internal/ai-replies/process` as reconciliation;
+  - an atomic claim with per-conversation serialization and coalescing of rapid messages; a final re-check of the kill switch, pause, staff takeover and newer messages under the conversation lock before the one AI message is created;
+  - the same AI core in a new read-only `auto_reply` mode, then a deterministic grounding validator (prices and their type, inspection caveat, numbers, links, address, times, booking claims, promotions) that fails closed into a handoff;
+  - deterministic handoff for explicit human requests and a turn limit (4 automatic replies in a row);
+  - bounded AI-failure and delivery retries that re-deliver the same message and never regenerate;
+  - `MessageSenderType.AI` and operator UI (status, pause/resume, «Ответ AI»).
+
+  Eligible channel: WhatsApp only (Telegram unchanged).
+- MCR-6 and later are not implemented.

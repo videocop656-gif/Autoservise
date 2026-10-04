@@ -23,3 +23,12 @@ export interface AuthContext {
   business: Business
   sessionId: string
 }
+
+/**
+ * MCR-5 — the tenant + business an operation runs for, with NO user. A staff
+ * AuthContext satisfies it as-is; an automation (the AI auto-reply worker)
+ * builds it from its own durable record — never a synthetic user. Only
+ * functions that genuinely never read ctx.user / ctx.sessionId and never
+ * check a role take this type.
+ */
+export type BusinessScope = Pick<AuthContext, 'tenant' | 'business'>

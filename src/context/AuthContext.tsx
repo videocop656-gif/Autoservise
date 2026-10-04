@@ -32,6 +32,8 @@ export interface AuthBusiness {
   /** Prompt 50 — simultaneous service bays / posts. */
   serviceBayCapacity: number
   phoneRegion: string
+  /** MCR-5 — automatic AI replies switched on for this business. */
+  aiAutoReplyEnabled: boolean
 }
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'

@@ -165,11 +165,12 @@ async function attemptDelivery(
  * MCR-4 — sends an automated (senderType SYSTEM) outbound message through
  * its conversation's channel. No AuthContext and no user: the scope is the
  * tenant/business the caller already resolved from its own record. Same
- * ownership and channel checks as the staff path; only SYSTEM messages pass.
+ * ownership and channel checks as the staff path; only automated messages
+ * pass: SYSTEM (MCR-4 recovery template) and AI (MCR-5 automatic replies).
  */
 export async function deliverSystemMessage(scope: { tenantId: string; businessId: string }, messageId: string): Promise<DeliveryAttempt> {
   const message = await messageRepository.findById(scope.tenantId, scope.businessId, messageId)
-  if (!message || message.direction !== 'OUTBOUND' || message.senderType !== 'SYSTEM') {
+  if (!message || message.direction !== 'OUTBOUND' || (message.senderType !== 'SYSTEM' && message.senderType !== 'AI')) {
     throw new ApiError(404, 'MESSAGE_NOT_FOUND', 'Message not found')
   }
   const conversation = await conversationRepository.findById(scope.tenantId, scope.businessId, message.conversationId)

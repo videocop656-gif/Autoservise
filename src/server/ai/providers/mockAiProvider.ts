@@ -60,6 +60,11 @@ export class MockAiProvider implements AiProvider {
       return { type: 'final', raw: qualifyResult(request) }
     }
 
+    // MCR-5 — automatic reply to the customer (no operator in the loop).
+    if (request.mode === 'auto_reply') {
+      return autoReplyGenerate(request)
+    }
+
     if (toolExchanges.length > 0) {
       return { type: 'final', raw: buildFinalFromToolResult(toolExchanges[toolExchanges.length - 1]!) }
     }
@@ -719,4 +724,109 @@ function customerInformationResult(context: AiBusinessContext) {
     ? ` Автомобиль: ${context.vehicle.make} ${context.vehicle.model}${context.vehicle.licensePlate ? ` (${context.vehicle.licensePlate})` : ''}.`
     : ''
   return finalResult('CUSTOMER_INFORMATION', 0.85, `По нашим данным: ${name}, телефон ${context.customer.phone}.${vehiclePart}`, false, null)
+}
+
+// --- Automatic reply (MCR-5) --------------------------------------------------
+//
+// A deterministic stand-in for a real model in 'auto_reply' mode, through the
+// same validated AiResult contract. Useful facts first (service, price with its
+// type, inspection, conditions), then at most one short question. Service by
+// meaning (shared word stems: «покрасить» ~ «Кузовная покраска»), never an
+// unconfigured one. Availability only through check_availability; a chosen
+// time is never booked here — the administrator confirms it.
+
+const HUMAN_WORDS = /человек|оператор|администратор|мастер|менеджер|позвоните/
+
+function autoReplyServiceMatch(context: AiBusinessContext, texts: string[]) {
+  const words = stems4(texts.join(' \n '))
+  const candidates = context.services.filter((s) => [...stems4(s.name)].some((stem) => !GENERIC_STEMS.has(stem) && words.has(stem)))
+  return candidates.length === 1 ? candidates[0]! : null
+}
+
+/** «после 15», «после 15:30», «после трёх» → "HH:mm". */
+const HOUR_WORDS: Record<string, number> = { часа: 13, двух: 14, трех: 15, трёх: 15, четырех: 16, четырёх: 16, пяти: 17, шести: 18 }
+function preferredFrom(lower: string): string | null {
+  const digits = /после\s+(\d{1,2})(?::(\d{2}))?/.exec(lower)
+  if (digits) return `${digits[1]!.padStart(2, '0')}:${digits[2] ?? '00'}`
+  const word = /после\s+(\p{L}+)/u.exec(lower)?.[1]
+  const hour = word ? HOUR_WORDS[word] : undefined
+  return hour ? `${hour}:00` : null
+}
+
+function autoReplyFromTool(exchange: AiToolExchange) {
+  const { result } = exchange
+  if (!result.success) {
+    if (result.errorCode === 'NOT_ALLOWED_IN_AUTO_REPLY') {
+      return finalResult('BOOKING_REQUEST', 0.7, 'Спасибо! Администратор подтвердит запись в этом чате.', false, null)
+    }
+    return finalResult('UNKNOWN', 0.3, 'Не удалось проверить свободное время.', true, `${result.errorCode}: tool failed`)
+  }
+  const data = result.data as { available: boolean; slots: { localStart: string }[]; date: string }
+  if (!data.available || data.slots.length === 0) {
+    return finalResult('AVAILABILITY_INQUIRY', 0.85, `На ${data.date} свободного времени нет. Посмотреть другой день?`, false, null)
+  }
+  const list = data.slots.slice(0, 3).map((s) => s.localStart).join(', ')
+  return finalResult('AVAILABILITY_INQUIRY', 0.9, `На ${data.date} свободно: ${list}. Какое время вам удобнее? Администратор подтвердит запись в этом чате.`, false, null)
+}
+
+function autoReplyGenerate(request: AiGenerationRequest): AiGenerationResult {
+  const { businessContext: context, toolExchanges, history } = request
+  if (toolExchanges.length > 0) return { type: 'final', raw: autoReplyFromTool(toolExchanges[toolExchanges.length - 1]!) }
+
+  const message = request.userMessage.trim()
+  const lower = message.toLowerCase()
+  if (PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { type: 'final', raw: finalResult('UNKNOWN', 0.3, 'Извините, с этим я помочь не могу.', true, 'Possible prompt injection.') }
+  }
+  if (HUMAN_WORDS.test(lower)) {
+    return { type: 'final', raw: finalResult('UNKNOWN', 0.9, 'Подключаю сотрудника.', true, 'CUSTOMER_REQUESTED_HUMAN') }
+  }
+  const customerTexts = [...history.filter((m) => m.direction === 'INBOUND').map((m) => m.content), message]
+  const service = autoReplyServiceMatch(context, customerTexts)
+
+  // A specific chosen time: thank, never book (the administrator confirms).
+  const chosenTime = extractTime(message)
+  if (isExplicitConfirmation(message) && chosenTime) {
+    return { type: 'final', raw: finalResult('BOOKING_REQUEST', 0.8, `Спасибо! Администратор подтвердит запись на ${chosenTime} в этом чате.`, false, null) }
+  }
+  // "Можно завтра после трёх?" → real availability only.
+  if (/можно|свобод|время|запис|приехать|приеду/.test(lower) && /завтра|сегодня|послезавтра|\d{4}-\d{2}-\d{2}/.test(lower)) {
+    const chosen = service ?? (context.services.length === 1 ? context.services[0]! : null)
+    if (!chosen) return { type: 'final', raw: finalResult('AVAILABILITY_INQUIRY', 0.6, 'Подскажите, пожалуйста, какая работа нужна — подберу время.', false, null) }
+    return toolCallResult('check_availability', {
+      customerId: null,
+      vehicleId: null,
+      serviceId: chosen.id,
+      date: resolveDateKey(message, history, context.business.timezone) ?? tomorrowKey(context.business.timezone),
+      preferredTimeFrom: preferredFrom(lower),
+      preferredTimeTo: null,
+    })
+  }
+  if (/стук|скрип|не заводится|не работает|сломал|странный звук|течёт|запах гари|вибрац|дтп|авари/.test(lower)) {
+    return { type: 'final', raw: finalResult('VEHICLE_PROBLEM', 0.6, 'Здесь нужна диагностика.', true, 'Vehicle problem needs a human diagnosis.') }
+  }
+  if (LOCATION_QUESTION.test(lower)) return { type: 'final', raw: locationResult(context) }
+  if (/до скольки|во сколько вы|часы работы|график работы|режим работы|работаете|открыты/.test(lower)) {
+    return { type: 'final', raw: workingHoursResult(context) }
+  }
+  if (service) {
+    const parts = [`Да, «${service.name}» у нас делают.`]
+    if (service.pricing.formatted) {
+      parts.push(`Стоимость: ${service.pricing.formatted}.`)
+      if (service.priceNote) parts.push(asSentence(service.priceNote))
+      if (service.requiresInspection) parts.push('Точная стоимость определяется после осмотра.')
+    } else {
+      parts.push(service.requiresInspection ? 'Стоимость мастер назовёт после осмотра.' : 'Стоимость уточнит администратор.')
+    }
+    // One short next-step question: the car's year if a car was named without it, else the visit.
+    const allText = customerTexts.join(' ')
+    const vehicle = /\b([A-Z][a-zA-Z-]+(?:\s+[A-Z0-9][a-zA-Z0-9-]*)?)\b/.exec(allText)?.[1]
+    const hasYear = /\b(19|20)\d{2}\b/.test(allText)
+    parts.push(vehicle && !hasYear ? `Подскажите, пожалуйста, ${vehicle} какого года?` : 'Когда вам удобно подъехать на осмотр?')
+    return { type: 'final', raw: finalResult('SERVICE_INQUIRY', 0.85, parts.join(' '), false, null, service.name) }
+  }
+  if (/сколько стоит|стоимость|цена/.test(lower)) {
+    return { type: 'final', raw: finalResult('PRICE_INQUIRY', 0.5, 'Уточните, пожалуйста, какая работа нужна.', false, null) }
+  }
+  return { type: 'final', raw: classifyCustomerSupport(request) }
 }

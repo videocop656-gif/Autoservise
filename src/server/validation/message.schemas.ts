@@ -5,7 +5,9 @@ import { MessageDirection, MessageSenderType } from '@prisma/client'
 // created, content can never be changed through the API.
 export const createMessageSchema = z.object({
   direction: z.nativeEnum(MessageDirection),
-  senderType: z.nativeEnum(MessageSenderType),
+  // MCR-5 — 'AI' is server-only (automatic replies): a client can never
+  // create a message that looks like it came from the AI administrator.
+  senderType: z.nativeEnum(MessageSenderType).refine((v) => v !== 'AI', { message: 'senderType AI is reserved for automatic replies' }),
   content: z.string().trim().min(1, 'Content is required').max(10000),
 })
 

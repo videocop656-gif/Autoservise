@@ -677,10 +677,10 @@ describe('consumer route & Vercel configuration', () => {
 
   it('vercel.json wires exactly this route to the topic, with the retry delay / delivery cap the code assumes', () => {
     const config = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../vercel.json'), 'utf-8'))
-    const fns = Object.keys(config.functions)
-    expect(fns).toEqual(['api/queues/missed-call-recovery.ts'])
-    expect(fs.existsSync(path.resolve(__dirname, '..', fns[0]!))).toBe(true)
-    expect(config.functions[fns[0]!].experimentalTriggers).toEqual([
+    const fn = 'api/queues/missed-call-recovery.ts'
+    expect(Object.keys(config.functions)).toContain(fn)
+    expect(fs.existsSync(path.resolve(__dirname, '..', fn))).toBe(true)
+    expect(config.functions[fn].experimentalTriggers).toEqual([
       { type: 'queue/v2beta', topic: RECOVERY_QUEUE_TOPIC, retryAfterSeconds: RECOVERY_JOB_RETRY_AFTER_SECONDS, maxDeliveries: RECOVERY_JOB_MAX_DELIVERIES },
     ])
   })

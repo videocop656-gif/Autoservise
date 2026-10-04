@@ -7,6 +7,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Label } from '../../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { apiFetch, ApiClientError } from '../../lib/apiClient'
+import { AiAutoReplySettingsCard } from '../../components/ai/AiAutoReplySettingsCard'
 
 type ConversationStatus = 'OPEN' | 'CLOSED'
 
@@ -178,6 +179,8 @@ export default function AiSettingsPage() {
   return (
     <PageContainer className="max-w-3xl space-y-6">
       <PageHeader title="AI-администратор" subtitle="Configure how your AI assistant communicates with customers" />
+        {/* MCR-5 — business kill switch for automatic replies. */}
+        <AiAutoReplySettingsCard />
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

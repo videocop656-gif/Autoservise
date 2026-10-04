@@ -1,5 +1,5 @@
 import type { AiLogOutcome } from '@prisma/client'
-import type { AuthContext } from '../types/auth'
+import type { AuthContext, BusinessScope } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { conversationRepository } from '../repositories/conversationRepository'
@@ -11,7 +11,7 @@ import { applySafetyLayer } from '../ai/safety'
 import { getAiProvider } from '../ai/aiProviderFactory'
 import { AiProviderError } from '../ai/provider'
 import type { AiProvider, AiGenerationResult } from '../ai/provider'
-import { TOOL_DEFINITIONS, executeTool } from '../ai/tools/registry'
+import { TOOL_DEFINITIONS, executeTool, executeReadOnlyTool } from '../ai/tools/registry'
 import { isToolAllowed, toolDefinitionsForMode, draftModeToolRefusal, type AiExecutionMode } from '../ai/executionMode'
 import { EMPTY_AI_ENTITIES, type AiResult, type AiToolExchange, type AiBusinessContext, type AiHistoryMessage } from '../ai/types'
 import type { AnalyzeMessageInput } from '../validation/ai.schemas'
@@ -136,6 +136,8 @@ export async function analyzeMessage(ctx: AuthContext, input: AnalyzeMessageInpu
 }
 
 interface AnalysisRun {
+  /** MCR-5 — the customer Message being answered, when there is one (AiLog.messageId). */
+  messageId?: string
   context: AiBusinessContext
   history: AiHistoryMessage[]
   /** The one untrusted value — the customer message being answered. */
@@ -153,8 +155,18 @@ interface AnalysisRun {
  * behaviour. Returns the AI_ANALYZE outcome alongside the result so a
  * caller can tell a real answer from the safe fallback placeholder.
  */
+/**
+ * MCR-5 — who runs the analysis: a staff member (AuthContext) or the
+ * auto-reply worker (BusinessScope only — no user, so no mutating tool and
+ * no core-side escalation can ever be reached for it, whatever the mode).
+ */
+type AnalysisCaller = AuthContext | BusinessScope
+function isStaffCaller(caller: AnalysisCaller): caller is AuthContext {
+  return 'user' in caller
+}
+
 async function runAnalysis(
-  ctx: AuthContext,
+  ctx: AnalysisCaller,
   conversation: { id: string; customerId: string | null },
   run: AnalysisRun
 ): Promise<{ result: AiAnalyzeResult; outcome: AiLogOutcome }> {
@@ -217,9 +229,11 @@ async function runAnalysis(
         // Draft mode (Prompt 53): a mutating tool is refused before the
         // registry is reached, even if the provider asks for one it was
         // never offered — nothing is created, moved or cancelled.
-        const result = isToolAllowed(mode, call.name)
-          ? await executeTool(ctx, call.name, call.arguments, run.userMessage, allowedEntities)
-          : draftModeToolRefusal(call.name)
+        const result = !isToolAllowed(mode, call.name)
+          ? draftModeToolRefusal(call.name, mode)
+          : isStaffCaller(ctx)
+            ? await executeTool(ctx, call.name, call.arguments, run.userMessage, allowedEntities)
+            : await executeReadOnlyTool(ctx, call.name, call.arguments)
         toolExchanges.push({ call, result })
 
         // AI_TOOL_EXECUTION logging (Prompt 13) — only for a genuine
@@ -251,6 +265,7 @@ async function runAnalysis(
     if (err instanceof ApiError && (err.code === 'AI_PROVIDER_UNAVAILABLE' || err.code === 'AI_CONFIGURATION_ERROR')) {
       await logAiAnalyze(ctx, {
         conversationId: conversation.id,
+        messageId: run.messageId ?? null,
         outcome: 'FAILED',
         reason: `Provider error: ${err.code}`,
         metadata: { errorCode: err.code, statusCode: err.statusCode },
@@ -321,7 +336,7 @@ async function runAnalysis(
   // row or reused an existing active one; aiService.ts never guesses.
   // Draft mode (Prompt 53) opens no escalation: preparing a suggested reply
   // has no side effects; needsHuman is returned to the operator instead.
-  const escalation = eligibleForEscalation && finalResult.needsHuman && mode === 'interactive'
+  const escalation = eligibleForEscalation && finalResult.needsHuman && mode === 'interactive' && isStaffCaller(ctx)
     ? await (async () => {
         const reason = deriveEscalationReason(finalResult.reason)
         const { escalation: row } = await createOrReuseActiveEscalation(ctx, {
@@ -341,6 +356,7 @@ async function runAnalysis(
   // AiResult's own fields plus small, whitelisted metadata.
   await logAiAnalyze(ctx, {
     conversationId: conversation.id,
+    messageId: run.messageId ?? null,
     escalationId: escalation?.id ?? null,
     outcome: analyzeOutcome,
     intent: finalResult.intent,
@@ -489,4 +505,37 @@ export async function runQualificationAnalysis(ctx: AuthContext, conversationId:
     }
     throw err
   }
+}
+
+// --- Automatic conversation (MCR-5) -----------------------------------------
+//
+// The same AI core in 'auto_reply' mode, for the auto-reply worker
+// (aiConversationService). No AuthContext: the scope is the tenant/business
+// of the conversation's own row. Read-only availability is the only tool;
+// nothing is created, changed or escalated here — the worker validates the
+// result and decides REPLY / HANDOFF itself. Provider failures throw the
+// usual ApiError (AI_PROVIDER_UNAVAILABLE / AI_CONFIGURATION_ERROR).
+
+export interface AutoReplyAnalysis {
+  context: AiBusinessContext
+  result: AiAnalyzeResult
+  outcome: AiLogOutcome
+}
+
+export async function runAutoReplyAnalysis(
+  scope: BusinessScope,
+  conversation: { id: string; customerId: string | null; customerRequestId: string | null },
+  input: { messageId: string; userMessage: string; history: AiHistoryMessage[] },
+  deps: AnalyzeDeps & { now?: Date } = {}
+): Promise<AutoReplyAnalysis> {
+  const context = await buildAiContext(scope, conversation, deps.now)
+  const { result, outcome } = await runAnalysis(scope, conversation, {
+    messageId: input.messageId,
+    context,
+    history: input.history.slice(-MAX_HISTORY_MESSAGES),
+    userMessage: input.userMessage,
+    mode: 'auto_reply',
+    provider: deps.provider ?? getAiProvider(),
+  })
+  return { context, result, outcome }
 }

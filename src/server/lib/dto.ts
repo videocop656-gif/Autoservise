@@ -47,6 +47,8 @@ export interface BusinessDto {
   serviceBayCapacity: number
   /** MCR-1 — default region for phones written without "+" (ISO 3166-1 alpha-2). */
   phoneRegion: string
+  /** MCR-5 — automatic AI replies to inbound customer messages (kill switch, default false). */
+  aiAutoReplyEnabled: boolean
   createdAt: Date
   updatedAt: Date
 }
@@ -65,6 +67,7 @@ export function toBusinessDto(business: Business): BusinessDto {
     currency: business.currency,
     serviceBayCapacity: business.serviceBayCapacity,
     phoneRegion: business.phoneRegion,
+    aiAutoReplyEnabled: business.aiAutoReplyEnabled,
     createdAt: business.createdAt,
     updatedAt: business.updatedAt,
   }
@@ -413,6 +416,11 @@ export interface ConversationDto {
   // could be sent through, without exposing externalConversationId (an
   // internal provider-facing id, never needed by the UI).
   channelConnectionId: string | null
+  // MCR-5 — automatic AI for this conversation: paused (since when, why) or
+  // not (both null). Whether AI actually answers also needs the business
+  // switch and an auto-reply channel — the UI combines them.
+  aiAutomationPausedAt: Date | null
+  aiAutomationPausedReason: string | null
   // Only present on the single-GET response (spec §24); list items omit
   // both the summaries and the messages array.
   customer?: { id: string; firstName: string; lastName: string | null } | null
@@ -454,6 +462,8 @@ export function toConversationDto(conversation: ConversationWithOptionalDetail):
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     channelConnectionId: conversation.channelConnectionId,
+    aiAutomationPausedAt: conversation.aiAutomationPausedAt ?? null,
+    aiAutomationPausedReason: conversation.aiAutomationPausedReason ?? null,
     ...('customer' in conversation ? { customer: conversation.customer ?? null } : {}),
     ...('customerRequest' in conversation ? { customerRequest: conversation.customerRequest ?? null } : {}),
     ...(conversation.messages ? { messages: conversation.messages.map(toMessageDto) } : {}),

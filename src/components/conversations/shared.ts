@@ -14,7 +14,8 @@ import { Globe, Send, Phone, MessageCircle, HelpCircle, UserRound } from 'lucide
 export type ConversationChannel = 'MANUAL' | 'WEBSITE' | 'TELEGRAM' | 'WHATSAPP' | 'PHONE' | 'OTHER'
 export type ConversationStatus = 'OPEN' | 'CLOSED'
 export type MessageDirection = 'INBOUND' | 'OUTBOUND'
-export type MessageSenderType = 'CUSTOMER' | 'STAFF' | 'SYSTEM'
+// MCR-5 — 'AI': an automatic AI-administrator reply (never a staff member).
+export type MessageSenderType = 'CUSTOMER' | 'STAFF' | 'SYSTEM' | 'AI'
 export type EscalationStatus = 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CANCELLED'
 export type EscalationPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT'
 export type AiLogOperation =
@@ -68,6 +69,9 @@ export interface ConversationDto {
   createdAt: string
   updatedAt: string
   channelConnectionId: string | null
+  // MCR-5 — automatic AI paused for this conversation (null = not paused).
+  aiAutomationPausedAt: string | null
+  aiAutomationPausedReason: string | null
   // Prompt 54 — phone/email added for the identity section (single-GET only).
   customer?: { id: string; firstName: string; lastName: string | null; phone?: string; email?: string | null } | null
   // Prompt 49 — richer summary of the linked request (single-GET only).

@@ -1,4 +1,4 @@
-import type { AuthContext } from '../../types/auth'
+import type { AuthContext, BusinessScope } from '../../types/auth'
 import type { ToolResult, AiToolAllowedEntities } from '../types'
 import { TOOL_DEFINITIONS } from './definitions'
 import { executeCheckAvailability, CHECK_AVAILABILITY_TOOL_NAME } from './checkAvailabilityTool'
@@ -47,4 +47,16 @@ export async function executeTool(
     return { success: false, tool: name, errorCode: 'INVALID_INPUT', message: `Unknown tool: ${name}`, attempted: false }
   }
   return executor(ctx, args, currentUserMessage, allowed)
+}
+
+/**
+ * MCR-5 — the tool path for a caller with NO staff user (the auto-reply
+ * worker): only the read-only check_availability can run; any other name is
+ * refused before anything executes, whatever the mode gate said.
+ */
+export async function executeReadOnlyTool(scope: BusinessScope, name: string, args: unknown): Promise<ToolResult> {
+  if (name !== CHECK_AVAILABILITY_TOOL_NAME) {
+    return { success: false, tool: name, errorCode: 'NOT_ALLOWED_IN_AUTO_REPLY', message: 'This tool is not available to automatic replies', attempted: false }
+  }
+  return executeCheckAvailability(scope, args)
 }

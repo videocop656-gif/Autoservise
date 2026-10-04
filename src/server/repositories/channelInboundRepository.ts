@@ -1,5 +1,6 @@
 import type { ConversationChannel } from '@prisma/client'
 import { prisma } from '../db/prisma'
+import { aiTurnRepository } from './aiTurnRepository'
 
 export interface RecordInboundInput {
   tenantId: string
@@ -12,6 +13,13 @@ export interface RecordInboundInput {
   sentAt: Date
   /** Only ever applied when a NEW Conversation is created — an existing conversation's customerId is never overwritten by this pipeline (spec doesn't ask for re-linking an ongoing conversation; a deliberate simplification, see channelMessageService.ts). */
   customerId: string | null
+  /**
+   * MCR-5 — the caller determined automatic AI replies are on for this
+   * business and channel: record the PENDING AI turn in this same
+   * transaction (unless the conversation's automation is paused), so the
+   * owed AI work is exactly as durable as the customer's message.
+   */
+  aiAutoReply?: boolean
 }
 
 export interface RecordInboundResult {
@@ -19,6 +27,8 @@ export interface RecordInboundResult {
   message: { id: string; createdAt: Date }
   wasConversationCreated: boolean
   wasConversationReopened: boolean
+  /** MCR-5 — a PENDING AiConversationTurn was created for this message. */
+  aiTurnCreated: boolean
 }
 
 /**
@@ -139,11 +149,22 @@ export async function recordInboundMessage(input: RecordInboundInput): Promise<R
       data: { lastMessageAt: message.createdAt },
     })
 
+    const aiTurnCreated = !!input.aiAutoReply && !conversation.aiAutomationPausedAt
+    if (aiTurnCreated) {
+      await aiTurnRepository.createForInbound(tx, {
+        tenantId: input.tenantId,
+        businessId: input.businessId,
+        conversationId: conversation.id,
+        inboundMessageId: message.id,
+      })
+    }
+
     return {
       conversation: { id: conversation.id, customerId: conversation.customerId, status: conversation.status },
       message: { id: message.id, createdAt: message.createdAt },
       wasConversationCreated,
       wasConversationReopened,
+      aiTurnCreated,
     }
   })
 }

@@ -52,6 +52,8 @@ export const businessProfileSchema = z
       .min(1, SERVICE_BAY_CAPACITY_MESSAGE)
       .max(MAX_SERVICE_BAY_CAPACITY, `Количество постов не может быть больше ${MAX_SERVICE_BAY_CAPACITY}.`)
       .optional(),
+    // MCR-5 — kill switch for automatic AI replies (owner/admin only, like the rest of the profile).
+    aiAutoReplyEnabled: z.boolean().optional(),
     // MCR-1 — default region for phone numbers written without "+"
     // (ISO 3166-1 alpha-2, one libphonenumber supports).
     phoneRegion: z

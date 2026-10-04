@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle, Sparkles } from 'lucide-react'
+import { ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle, Sparkles, Bot, Pause, Play } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
 import { Badge } from '../ui/badge'
@@ -30,6 +30,7 @@ import { ConversationQualificationSection } from './ConversationQualificationSec
 import { RequestBookingSection } from '../requests/RequestBookingSection'
 import { useAuth } from '../../context/AuthContext'
 import { aiDraftAvailability, applyAiDraft, aiDraftErrorMessage, AI_DRAFT_FAILED_MESSAGE } from './aiDraft'
+import { aiAutomationView } from './aiAutomation'
 
 // ---------------------------------------------------------------------------
 // Prompt 22 — Conversation Detail v1.
@@ -92,7 +93,7 @@ export function ConversationDetailPanel({
 }: ConversationDetailPanelProps) {
   const navigate = useNavigate()
   // Prompt 54 — creating customers/vehicles is owner/admin (same as the Clients/Vehicles screens).
-  const { user } = useAuth()
+  const { user, business } = useAuth()
   const canCreateRecords = canManage && (user?.role === 'owner' || user?.role === 'admin')
   const [detail, setDetail] = useState<ConversationDto | null>(null)
   const [escalation, setEscalation] = useState<EscalationDto | null>(null)
@@ -107,6 +108,9 @@ export function ConversationDetailPanel({
   const [statusError, setStatusError] = useState<string | null>(null)
   const [channelSendError, setChannelSendError] = useState<string | null>(null)
   const [channelSendingId, setChannelSendingId] = useState<string | null>(null)
+  // MCR-5 — per-conversation pause / resume of automatic AI replies.
+  const [aiAutomationBusy, setAiAutomationBusy] = useState(false)
+  const [aiAutomationError, setAiAutomationError] = useState<string | null>(null)
 
   // Prompt 53 — "Предложить ответ AI": operator-side draft only. The token
   // ignores a response that arrives after the operator moved to another
@@ -237,6 +241,20 @@ export function ConversationDetailPanel({
     }
   }
 
+  // MCR-5 — explicit operator control; the server re-checks before any AI send.
+  async function handleAiAutomation(action: 'pause' | 'resume') {
+    setAiAutomationError(null)
+    setAiAutomationBusy(true)
+    try {
+      await apiFetch(`/api/conversations/${conversationId}/ai-automation`, { method: 'POST', body: JSON.stringify({ action }) })
+      await loadAll()
+    } catch (err) {
+      setAiAutomationError(err instanceof ApiClientError ? err.message : 'Не удалось изменить режим AI.')
+    } finally {
+      setAiAutomationBusy(false)
+    }
+  }
+
   // Prompt 53 — asks the server for a reply draft (read-only AI run, nothing
   // created or sent) and puts it into the existing composer, only if the
   // operator hasn't typed anything meanwhile. Sending stays the existing
@@ -272,6 +290,15 @@ export function ConversationDetailPanel({
   })
 
   const escalationActive = escalation ? isActiveEscalation(escalation.status) : false
+  const aiView = detail
+    ? aiAutomationView({
+        businessEnabled: !!business?.aiAutoReplyEnabled,
+        channel: detail.channel,
+        status: detail.status,
+        pausedAt: detail.aiAutomationPausedAt ?? null,
+        pausedReason: detail.aiAutomationPausedReason ?? null,
+      })
+    : null
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -348,21 +375,28 @@ export function ConversationDetailPanel({
               const canSendViaChannel = !!detail.channelConnectionId && m.direction === 'OUTBOUND' && m.senderType === 'STAFF'
               // MCR-4 — an automated outbound message (missed-call recovery) is a real
               // message to the customer: shown on the outgoing side, labelled as automatic.
-              const automated = m.senderType === 'SYSTEM' && m.direction === 'OUTBOUND'
+              // MCR-5 — an automatic AI reply: outgoing side, its own label and tint —
+              // never shown as a staff member, never as the recovery template.
+              const aiReply = m.senderType === 'AI'
+              const automated = (m.senderType === 'SYSTEM' && m.direction === 'OUTBOUND') || aiReply
               const alignment = m.senderType === 'STAFF' || automated ? 'justify-end' : m.senderType === 'SYSTEM' ? 'justify-center' : 'justify-start'
               const bubble =
                 m.senderType === 'STAFF'
                   ? 'bg-card border border-border'
-                  : automated
+                  : aiReply
+                    ? 'border border-primary/50 bg-primary/10'
+                    : automated
                     ? 'border border-dashed border-primary/40 bg-card'
                     : m.senderType === 'SYSTEM'
                     ? 'border border-dashed border-border bg-transparent text-xs text-muted-foreground'
                     : 'bg-muted'
-              const senderLabel = m.senderType === 'CUSTOMER' ? 'Клиент' : m.senderType === 'STAFF' ? 'Сотрудник' : automated ? 'Автоматическое сообщение' : 'Система'
+              const senderLabel =
+                m.senderType === 'CUSTOMER' ? 'Клиент' : m.senderType === 'STAFF' ? 'Сотрудник' : aiReply ? 'Ответ AI' : automated ? 'Автоматическое сообщение' : 'Система'
               return (
                 <div key={m.id} className={`flex ${alignment}`}>
                   <div className={`max-w-[85%] rounded-lg p-3 text-sm ${bubble}`}>
                     <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                      {aiReply && <Bot className="h-3 w-3 text-primary" aria-hidden="true" />}
                       <span>{senderLabel}</span>
                       <span>·</span>
                       <span>{formatActivity(m.createdAt)}</span>
@@ -503,6 +537,33 @@ export function ConversationDetailPanel({
                   onChanged()
                 }}
               />
+            )}
+
+            {/* MCR-5 — automatic AI replies for this conversation. */}
+            {aiView && (
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Автоответы AI</h3>
+                <div className="mt-1 space-y-1.5 text-sm">
+                  <Badge variant={aiView.kind === 'ACTIVE' ? 'success' : aiView.kind === 'PAUSED' ? 'warning' : 'default'}>
+                    <Bot className="h-3 w-3" />
+                    {aiView.label}
+                  </Badge>
+                  <p className="text-muted-foreground">{aiView.hint}</p>
+                  {canManage && aiView.kind === 'ACTIVE' && (
+                    <Button type="button" variant="outline" size="sm" disabled={aiAutomationBusy} onClick={() => void handleAiAutomation('pause')}>
+                      <Pause className="mr-1 h-4 w-4" />
+                      Приостановить AI
+                    </Button>
+                  )}
+                  {canManage && aiView.kind === 'PAUSED' && (
+                    <Button type="button" variant="outline" size="sm" disabled={aiAutomationBusy} onClick={() => void handleAiAutomation('resume')}>
+                      <Play className="mr-1 h-4 w-4" />
+                      Возобновить AI
+                    </Button>
+                  )}
+                  {aiAutomationError && <p className="text-sm text-destructive">{aiAutomationError}</p>}
+                </div>
+              </section>
             )}
 
             <section>

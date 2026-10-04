@@ -17,14 +17,19 @@ import type { AiToolDefinition, ToolResult } from './types'
 // Prompt 55 — 'qualify': "Разобрать обращение". The model only structures
 // the request for the operator (entities + a factual description); no tool
 // at all is offered or executed, nothing is changed, nothing escalated.
-export type AiExecutionMode = 'interactive' | 'draft' | 'qualify'
+// MCR-5 — 'auto_reply': the automatic AI administrator answering a customer
+// with no operator in the loop. Capabilities are its OWN, never inherited
+// from 'interactive': read-only availability only — no appointment is
+// created/moved/cancelled, nothing is escalated by the core (the auto-reply
+// worker decides handoff itself, after its own validation).
+export type AiExecutionMode = 'interactive' | 'draft' | 'qualify' | 'auto_reply'
 
 /** Tools with no side effects — the only ones a draft may run. */
 const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(['check_availability'])
 
 export function isToolAllowed(mode: AiExecutionMode, toolName: string): boolean {
   if (mode === 'interactive') return true
-  if (mode === 'draft') return READ_ONLY_TOOL_NAMES.has(toolName)
+  if (mode === 'draft' || mode === 'auto_reply') return READ_ONLY_TOOL_NAMES.has(toolName)
   return false // 'qualify': no tools
 }
 
@@ -33,8 +38,17 @@ export function toolDefinitionsForMode(definitions: readonly AiToolDefinition[],
   return definitions.filter((d) => isToolAllowed(mode, d.name))
 }
 
-/** A gate rejection (never executed, never logged as a tool execution) for a mutating tool requested in draft mode. */
-export function draftModeToolRefusal(toolName: string): ToolResult {
+/** A gate rejection (never executed, never logged as a tool execution) for a mutating tool requested in draft / auto-reply mode. */
+export function draftModeToolRefusal(toolName: string, mode: AiExecutionMode = 'draft'): ToolResult {
+  if (mode === 'auto_reply') {
+    return {
+      success: false,
+      tool: toolName,
+      errorCode: 'NOT_ALLOWED_IN_AUTO_REPLY',
+      message: 'Automatic replies cannot change bookings — a staff member confirms them',
+      attempted: false,
+    }
+  }
   return {
     success: false,
     tool: toolName,

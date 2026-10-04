@@ -9,6 +9,9 @@ import { recordInboundMessage } from '../repositories/channelInboundRepository'
 import { getChannelAdapter } from '../channels/channelAdapterRegistry'
 import { channelTypeToConversationChannel } from '../channels/types'
 import { resolveCustomerForInbound, linkCustomerIdentityBestEffort } from './channelCustomerService'
+import { isAutoReplyChannel } from '../aiConversation/policy'
+import { publishAiReplyJob, type AiReplyJobPublishStatus } from '../aiConversation/aiReplyJobs'
+import { aiTurnRepository } from '../repositories/aiTurnRepository'
 
 const ANY_STAFF_ROLE = ['owner', 'admin', 'manager'] as const
 
@@ -20,6 +23,13 @@ export interface ReceiveIncomingResult {
   duplicate: boolean
   conversationCreated: boolean
   conversationReopened: boolean
+  /**
+   * MCR-5 — present only when this message owes an automatic AI turn: the
+   * outcome of publishing its durable job. PUBLISH_FAILED still leaves the
+   * turn PENDING for reconciliation; a real provider webhook can answer 5xx
+   * so the provider's retry re-publishes (duplicate → re-publish below).
+   */
+  aiReplyJob?: AiReplyJobPublishStatus
 }
 
 /**
@@ -98,9 +108,14 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
 
   // Fast idempotency pre-check — the common case (a genuine webhook retry)
   // never even reaches the transaction below.
+  // MCR-5 — AI auto-replies apply only when the business switched them on AND
+  // the channel is an auto-reply channel (WhatsApp; never Telegram). The
+  // authoritative re-check happens again when the turn is claimed.
+  const aiAutoReply = ctx.business.aiAutoReplyEnabled === true && isAutoReplyChannel(channelTypeToConversationChannel(connection.type))
+
   const existingDuplicate = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
   if (existingDuplicate) {
-    return existingDuplicate
+    return aiAutoReply ? republishIfPending(ctx, existingDuplicate) : existingDuplicate
   }
 
   const resolution = await resolveCustomerForInbound(ctx, channelConnectionId, {
@@ -119,6 +134,7 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
     text: normalized.text,
     sentAt: normalized.sentAt,
     customerId: resolution.customerId,
+    aiAutoReply,
   }
 
   let recorded
@@ -142,7 +158,7 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
     //    only reports the conflict once the colliding transaction has
     //    fully committed), so loadDuplicateResult() finds it directly.
     const winner = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
-    if (winner) return winner
+    if (winner) return aiAutoReply ? republishIfPending(ctx, winner) : winner
 
     // 2. Two DIFFERENT first messages for the same brand-new external
     //    thread, racing to create the Conversation row — no ChannelMessage
@@ -159,7 +175,7 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
     } catch (retryErr) {
       if (retryErr instanceof Prisma.PrismaClientKnownRequestError && retryErr.code === 'P2002') {
         const winnerAfterRetry = await loadDuplicateResult(ctx, channelConnectionId, normalized.externalMessageId)
-        if (winnerAfterRetry) return winnerAfterRetry
+        if (winnerAfterRetry) return aiAutoReply ? republishIfPending(ctx, winnerAfterRetry) : winnerAfterRetry
       }
       throw retryErr
     }
@@ -177,7 +193,17 @@ export async function receiveIncoming(ctx: AuthContext, channelConnectionId: str
     duplicate: false,
     conversationCreated: recorded.wasConversationCreated,
     conversationReopened: recorded.wasConversationReopened,
+    // MCR-5 — published only AFTER the message + turn committed; the AI itself
+    // runs in the queue consumer, never on this request's critical path.
+    ...(recorded.aiTurnCreated ? { aiReplyJob: await publishAiReplyJob(recorded.message.id) } : {}),
   }
+}
+
+/** A retried webhook for a message whose AI turn is still PENDING re-publishes its job (same idempotency key). */
+async function republishIfPending(ctx: AuthContext, result: ReceiveIncomingResult): Promise<ReceiveIncomingResult> {
+  const turn = await aiTurnRepository.findByInboundMessage(ctx.tenant.id, ctx.business.id, result.messageId)
+  if (turn?.state !== 'PENDING') return result
+  return { ...result, aiReplyJob: await publishAiReplyJob(result.messageId) }
 }
 
 // The pre-Prompt-17 "sendOutbound()" foundation function that lived here has

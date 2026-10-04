@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import type { AuthContext } from '../types/auth'
+import type { AuthContext, BusinessScope } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { escalationRepository } from '../repositories/escalationRepository'
@@ -79,7 +79,18 @@ export async function createOrReuseActiveEscalation(
   // independently re-checks the role, even though its only caller
   // (aiService.ts's analyzeMessage) already did so upstream.
   requireRole(ctx, ...STAFF_ROLES)
+  return openOrReuseEscalation(ctx, input)
+}
 
+/**
+ * MCR-5 — the same create-or-reuse, for the AI auto-reply worker, which has
+ * no staff user (its scope comes from the conversation's own row). Same
+ * uniqueness guarantee, same AiLog events. Not reachable from any route.
+ */
+export async function openOrReuseEscalation(
+  ctx: BusinessScope,
+  input: CreateEscalationFromAiInput
+): Promise<{ escalation: Awaited<ReturnType<typeof escalationRepository.findById>>; created: boolean }> {
   const active = await escalationRepository.findActiveByConversation(ctx.tenant.id, ctx.business.id, input.conversationId)
   if (active) {
     // AI_ESCALATION_REUSE (Prompt 13) — this is the one place that

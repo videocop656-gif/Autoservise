@@ -27,6 +27,7 @@ export function makeBusiness(overrides: Partial<Business> = {}): Business {
     currency: 'RUB',
     serviceBayCapacity: 1,
     phoneRegion: 'KZ',
+    aiAutoReplyEnabled: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

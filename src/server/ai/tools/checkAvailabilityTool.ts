@@ -1,4 +1,4 @@
-import type { AuthContext } from '../../types/auth'
+import type { BusinessScope } from '../../types/auth'
 import { checkAvailability } from '../../services/appointmentService'
 import { checkAvailabilityToolSchema } from './schemas'
 import { toToolFailure, invalidInput } from './errors'
@@ -13,7 +13,7 @@ export const CHECK_AVAILABILITY_TOOL_NAME = 'check_availability'
  * truth for working hours/timezone/conflict/duration — nothing here
  * duplicates that logic.
  */
-export async function executeCheckAvailability(ctx: AuthContext, rawArgs: unknown): Promise<ToolResult> {
+export async function executeCheckAvailability(ctx: BusinessScope, rawArgs: unknown): Promise<ToolResult> {
   const parsed = checkAvailabilityToolSchema.safeParse(rawArgs)
   if (!parsed.success) {
     return invalidInput(CHECK_AVAILABILITY_TOOL_NAME, 'Invalid check_availability arguments')

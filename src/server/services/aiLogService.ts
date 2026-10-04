@@ -1,5 +1,5 @@
 import type { Prisma, AiLogOperation, AiLogOutcome } from '@prisma/client'
-import type { AuthContext } from '../types/auth'
+import type { AuthContext, BusinessScope } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { logger } from '../lib/logger'
@@ -100,7 +100,7 @@ export interface LogAiAnalyzeInput {
 }
 
 /** One row per completed analyze() call — never written for a provider/config failure that never produced any AiResult at all, only for one that did (even a degraded/fallback one) and was then classified into a safe outcome by aiService.ts. */
-export async function logAiAnalyze(ctx: AuthContext, input: LogAiAnalyzeInput): Promise<void> {
+export async function logAiAnalyze(ctx: BusinessScope, input: LogAiAnalyzeInput): Promise<void> {
   await writeLog({
     tenantId: ctx.tenant.id,
     businessId: ctx.business.id,
@@ -135,7 +135,7 @@ export interface LogToolExecutionInput {
  * raw tool arguments, customer PII, or a raw Prisma/appointment object —
  * only the tool's name and its already-sanitized ToolResult outcome.
  */
-export async function logToolExecution(ctx: AuthContext, input: LogToolExecutionInput): Promise<void> {
+export async function logToolExecution(ctx: BusinessScope, input: LogToolExecutionInput): Promise<void> {
   await writeLog({
     tenantId: ctx.tenant.id,
     businessId: ctx.business.id,
@@ -157,7 +157,7 @@ export interface LogEscalationEventInput {
 }
 
 /** Written from escalationService.createOrReuseActiveEscalation() only — the one place that genuinely knows whether a row was newly created or an existing active one was reused (spec §"ESCALATION LOGGING": never claim create when it was actually reuse). */
-export async function logEscalationEvent(ctx: AuthContext, input: LogEscalationEventInput): Promise<void> {
+export async function logEscalationEvent(ctx: BusinessScope, input: LogEscalationEventInput): Promise<void> {
   await writeLog({
     tenantId: ctx.tenant.id,
     businessId: ctx.business.id,

@@ -1,5 +1,5 @@
 import type { Appointment, AppointmentStatus, Prisma } from '@prisma/client'
-import type { AuthContext } from '../types/auth'
+import type { AuthContext, BusinessScope } from '../types/auth'
 import { ApiError } from '../lib/errors'
 import { requireRole } from '../middleware/requireRole'
 import { toBusinessLocalDateTime, businessLocalToUtc } from '../lib/timezone'
@@ -447,7 +447,7 @@ function minutesToTimeKey(totalMinutes: number): string {
  * be active here — offering slots is informational; the existing active
  * check still applies, unavoidably, at actual creation time.
  */
-export async function checkAvailability(ctx: AuthContext, input: CheckAvailabilityInput): Promise<AvailabilityResult> {
+export async function checkAvailability(ctx: BusinessScope, input: CheckAvailabilityInput): Promise<AvailabilityResult> {
   const timezone = ctx.business.timezone
 
   const service = await serviceRepository.findById(ctx.tenant.id, ctx.business.id, input.serviceId)
@@ -554,7 +554,7 @@ export async function checkAvailability(ctx: AuthContext, input: CheckAvailabili
  * appointment from the count. The final update still runs every check
  * under the scheduling lock.
  */
-async function resolveExcludedAppointment(ctx: AuthContext, id: string | null | undefined): Promise<string | undefined> {
+async function resolveExcludedAppointment(ctx: BusinessScope, id: string | null | undefined): Promise<string | undefined> {
   if (!id) return undefined
   const appointment = await appointmentRepository.findById(ctx.tenant.id, ctx.business.id, id)
   if (!appointment) {

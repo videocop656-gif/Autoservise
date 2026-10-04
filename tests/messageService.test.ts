@@ -60,7 +60,7 @@ describe('createMessage', () => {
       direction: 'INBOUND',
       senderType: 'CUSTOMER',
       content: 'hello',
-    })
+    }, { pauseAiAutomation: false }) // MCR-5: only a staff OUTBOUND reply pauses automatic AI
   })
 
   it('succeeds again once a previously-closed conversation is reopened (checked via the current findById result)', async () => {

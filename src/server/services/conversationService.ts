@@ -5,6 +5,7 @@ import { requireRole } from '../middleware/requireRole'
 import { conversationRepository } from '../repositories/conversationRepository'
 import { customerRepository } from '../repositories/customerRepository'
 import { customerRequestRepository } from '../repositories/customerRequestRepository'
+import { escalationRepository } from '../repositories/escalationRepository'
 import type { CreateConversationInput, UpdateConversationInput } from '../validation/conversation.schemas'
 import type { PaginationParams } from '../lib/pagination'
 
@@ -154,4 +155,40 @@ export async function updateConversation(ctx: AuthContext, id: string, input: Up
     throw new ApiError(404, 'NOT_FOUND', 'Conversation not found')
   }
   return updated
+}
+
+// --- MCR-5: automatic AI for one conversation --------------------------------
+//
+// Pause: AI stops answering this conversation's new inbound messages (an
+// already-running turn re-checks the pause before it sends). Resume: an
+// explicit operator decision — never implied by a draft, a qualification or a
+// new customer message — and it restarts the consecutive-turn counter. An
+// open escalation must be resolved first: the AI never talks over a handoff.
+
+export type AiAutomationAction = 'pause' | 'resume'
+
+export async function setConversationAiAutomation(ctx: AuthContext, id: string, action: AiAutomationAction) {
+  requireRole(ctx, 'owner', 'admin', 'manager')
+  const conversation = await conversationRepository.findById(ctx.tenant.id, ctx.business.id, id)
+  if (!conversation) {
+    throw new ApiError(404, 'NOT_FOUND', 'Диалог не найден')
+  }
+  if (action === 'pause') {
+    if (conversation.aiAutomationPausedAt) return conversation
+    const updated = await conversationRepository.setAiAutomation(ctx.tenant.id, ctx.business.id, id, {
+      aiAutomationPausedAt: new Date(),
+      aiAutomationPausedReason: 'OPERATOR_PAUSED',
+    })
+    return updated ?? conversation
+  }
+  const active = await escalationRepository.findActiveByConversation(ctx.tenant.id, ctx.business.id, id)
+  if (active) {
+    throw new ApiError(409, 'ESCALATION_ACTIVE', 'Сначала завершите эскалацию по этому диалогу, затем возобновите AI')
+  }
+  const updated = await conversationRepository.setAiAutomation(ctx.tenant.id, ctx.business.id, id, {
+    aiAutomationPausedAt: null,
+    aiAutomationPausedReason: null,
+    aiAutomationResumedAt: new Date(),
+  })
+  return updated ?? conversation
 }

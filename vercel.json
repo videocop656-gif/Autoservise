@@ -9,6 +9,16 @@
           "maxDeliveries": 6
         }
       ]
+    },
+    "api/queues/ai-conversation-reply.ts": {
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "ai-conversation-reply",
+          "retryAfterSeconds": 135,
+          "maxDeliveries": 8
+        }
+      ]
     }
   }
 }

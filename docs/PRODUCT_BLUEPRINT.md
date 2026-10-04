@@ -108,6 +108,14 @@ MCR-4.1 (durable recovery trigger) is implemented:
 
 Real-Vercel verification happens on the first deployment. See `docs/final-reports/final-report-mcr-4.1.md`.
 
+MCR-5 (automatic AI conversation) is implemented with the mock WhatsApp channel and the mock AI provider:
+- after the customer replies, the AI administrator answers automatically, from the business's own services, prices (FROM/RANGE/FIXED kept), inspection rule, address, hours and real availability;
+- it is off by default (business switch «Автоматические ответы AI»), pauses itself the moment a staff member replies, and can be paused or resumed per conversation;
+- anything it cannot ground — or a request for a person, a diagnosis, a dispute — goes to a human: escalation + pause + one honest handoff message;
+- it never creates customers, vehicles, requests or appointments, and never confirms a booking.
+
+Real WhatsApp (MCR-7) and a live OpenAI run are still pending. See `docs/final-reports/final-report-mcr-5.md`.
+
 ## 1. Product Vision
 
 The end goal is an **AI administrator**, not a chatbot bolted onto a CRM.

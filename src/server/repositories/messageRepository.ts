@@ -32,13 +32,22 @@ export const messageRepository = {
    * have been rejected by the service layer's own lookup before this is
    * ever called.
    */
-  createAndTouchConversation(tenantId: string, businessId: string, data: Prisma.MessageUncheckedCreateInput) {
+  createAndTouchConversation(tenantId: string, businessId: string, data: Prisma.MessageUncheckedCreateInput, opts: { pauseAiAutomation?: boolean } = {}) {
     return prisma.$transaction(async (tx) => {
       const message = await tx.message.create({ data })
       await tx.conversation.updateMany({
         where: withTenant(tenantId, { businessId, id: data.conversationId }),
         data: { lastMessageAt: message.createdAt },
       })
+      // MCR-5 — human takeover: a staff reply pauses automatic AI in the SAME
+      // transaction (same conversation row the AI worker locks before it
+      // sends), unless already paused (the first reason is kept).
+      if (opts.pauseAiAutomation) {
+        await tx.conversation.updateMany({
+          where: withTenant(tenantId, { businessId, id: data.conversationId, aiAutomationPausedAt: null }),
+          data: { aiAutomationPausedAt: message.createdAt, aiAutomationPausedReason: 'HUMAN_TAKEOVER' },
+        })
+      }
       return message
     })
   },

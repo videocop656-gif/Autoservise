@@ -111,6 +111,9 @@ enum MessageSenderType {
   CUSTOMER
   STAFF
   SYSTEM
+  // MCR-5 — an automatic AI-administrator reply (never a staff member, never
+  // the deterministic recovery template, which stays SYSTEM).
+  AI
 }
 
 enum AiEscalationStatus {
@@ -238,6 +241,7 @@ model Tenant {
   businessPhoneNumbers           BusinessPhoneNumber[]
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
+  aiConversationTurns            AiConversationTurn[]
 
   @@map("tenants")
 }
@@ -299,6 +303,10 @@ model Business {
   // 10-digit national number, so for +7 numbers the result is identical.
   // See src/server/lib/phone.ts.
   phoneRegion String @default("KZ")
+  // MCR-5 — business-level kill switch for automatic AI replies to inbound
+  // customer messages. OFF by default: a deploy never starts AI messaging on
+  // its own; owner/admin turn it on deliberately.
+  aiAutoReplyEnabled Boolean @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -325,6 +333,7 @@ model Business {
   businessPhoneNumbers           BusinessPhoneNumber[]
   callInteractions               CallInteraction[]
   callEvents                     CallEvent[]
+  aiConversationTurns            AiConversationTurn[]
 
   @@index([tenantId])
   @@map("businesses")
@@ -745,6 +754,15 @@ model Conversation {
   // OPEN. See assertStatusChange() in conversationService.ts.
   closedAt DateTime?
 
+  // MCR-5 — automatic AI paused for THIS conversation (null = not paused).
+  // Set by: a staff reply (HUMAN_TAKEOVER), an operator (OPERATOR_PAUSED) or
+  // an AI handoff (CUSTOMER_REQUESTED_HUMAN / AI_NEEDS_HUMAN / UNSAFE_REPLY /
+  // TURN_LIMIT / AI_FAILURE). Cleared only by an explicit operator resume,
+  // which stamps aiAutomationResumedAt (the turn-limit counter restarts there).
+  aiAutomationPausedAt     DateTime?
+  aiAutomationPausedReason String?
+  aiAutomationResumedAt    DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -769,6 +787,7 @@ model Conversation {
   escalations AiEscalation[]
   aiLogs      AiLog[]
   recoveredCalls CallInteraction[] @relation("CallRecoveryConversation")
+  aiTurns        AiConversationTurn[]
 
   @@index([tenantId, businessId])
   @@index([tenantId, businessId, status])
@@ -822,6 +841,8 @@ model Message {
   // Message that a real channel send was attempted for (Prompt 17).
   channelDelivery ChannelDelivery?
   recoveryForCall CallInteraction? @relation("CallRecoveryMessage")
+  aiTurnTrigger   AiConversationTurn? @relation("AiTurnInbound")
+  aiTurnReply     AiConversationTurn? @relation("AiTurnReply")
 
   @@index([tenantId, businessId, conversationId, createdAt])
   @@index([conversationId, createdAt])
@@ -1458,4 +1479,71 @@ model CallEvent {
   @@index([callInteractionId, receivedAt])
   @@index([tenantId, businessId])
   @@map("call_events")
+}
+
+// ---------------------------------------------------------------------------
+// MCR-5 — automatic AI conversation.
+//
+// One AiConversationTurn per eligible inbound customer Message, created in the
+// SAME transaction as that Message (channelInboundRepository) — the durable
+// "AI work is owed" marker and the idempotency key (unique inboundMessageId):
+// a retried webhook, a duplicate queue delivery or a concurrent worker can
+// never produce a second turn, and the one turn produces at most one reply
+// Message (unique replyMessageId). Written only by aiTurnRepository.
+// ---------------------------------------------------------------------------
+
+//   PENDING    — owed, not yet claimed (queue job published or not).
+//   PROCESSING — claimed by one worker (claimedAt; stale after a timeout).
+//   COMPLETED  — decided and, if a reply/handoff notice exists, delivered.
+//   SKIPPED    — deliberately not answered (reasonCode: AUTOMATION_DISABLED,
+//                AUTOMATION_PAUSED, SUPERSEDED, HUMAN_HANDLING, …).
+//   FAILED     — the last attempt failed (reasonCode); retried within limits.
+enum AiTurnState {
+  PENDING
+  PROCESSING
+  COMPLETED
+  SKIPPED
+  FAILED
+}
+
+enum AiTurnDecision {
+  REPLY
+  HANDOFF
+}
+
+model AiConversationTurn {
+  id             String @id @default(uuid())
+  tenantId       String
+  businessId     String
+  conversationId String
+  // The customer message this turn answers. Unique: one inbound → one turn.
+  inboundMessageId String @unique
+
+  state        AiTurnState     @default(PENDING)
+  decision     AiTurnDecision?
+  // Safe machine code: why skipped / failed / handed off. Never model text.
+  reasonCode   String?
+  attemptCount Int             @default(0)
+  claimedAt    DateTime?
+  completedAt  DateTime?
+
+  // The ONE outbound AI message of this turn (reply or handoff notice). Set
+  // in the transaction that creates it; a retry re-delivers this same
+  // message and never generates a new one.
+  replyMessageId String?   @unique
+  escalationId   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  business       Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  inboundMessage Message      @relation("AiTurnInbound", fields: [inboundMessageId], references: [id], onDelete: Cascade)
+  replyMessage   Message?     @relation("AiTurnReply", fields: [replyMessageId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, businessId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([state, createdAt])
+  @@map("ai_conversation_turns")
 }

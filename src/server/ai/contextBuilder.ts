@@ -1,4 +1,4 @@
-import type { AuthContext } from '../types/auth'
+import type { BusinessScope } from '../types/auth'
 import { serviceRepository } from '../repositories/serviceRepository'
 import { describeServicePricing } from '../domain/pricing'
 import { knowledgeRepository } from '../repositories/knowledgeRepository'
@@ -54,7 +54,7 @@ interface ConversationRef {
  *    this function.
  */
 // Prompt 53 — `now` is injectable for tests; production always passes the real clock.
-export async function buildAiContext(ctx: AuthContext, conversation: ConversationRef, now: Date = new Date()): Promise<AiBusinessContext> {
+export async function buildAiContext(ctx: BusinessScope, conversation: ConversationRef, now: Date = new Date()): Promise<AiBusinessContext> {
   const [services, knowledge, rules, hours] = await Promise.all([
     serviceRepository.listByBusiness(ctx.tenant.id, ctx.business.id, true),
     knowledgeRepository.listByBusiness(ctx.tenant.id, ctx.business.id, { activeOnly: true }),

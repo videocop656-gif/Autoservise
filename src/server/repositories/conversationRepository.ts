@@ -85,6 +85,21 @@ export const conversationRepository = {
   // relation writes (connect) that would fail at runtime (Prompt 49).
   // customerRequestId is excluded (Prompt 49.1): the link is written only
   // through linkCustomerRequest below.
+  /**
+   * MCR-5 — operator pause / resume of automatic AI for one conversation.
+   * Tenant-scoped; null when the conversation isn't this tenant's.
+   */
+  async setAiAutomation(
+    tenantId: string,
+    businessId: string,
+    id: string,
+    data: Pick<Prisma.ConversationUncheckedUpdateManyInput, 'aiAutomationPausedAt' | 'aiAutomationPausedReason' | 'aiAutomationResumedAt'>
+  ) {
+    const result = await prisma.conversation.updateMany({ where: withTenant(tenantId, { businessId, id }), data })
+    if (result.count === 0) return null
+    return prisma.conversation.findFirst({ where: withTenant(tenantId, { businessId, id }) })
+  },
+
   async updateById(
     tenantId: string,
     businessId: string,

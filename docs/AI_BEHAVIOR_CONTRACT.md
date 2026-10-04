@@ -476,6 +476,28 @@ itself never locks a second staff member out of eventually resolving or
 cancelling it (only claiming itself is exclusive, to prevent two people
 silently working the same case).
 
+### 15.1 Automatic replies (MCR-5)
+
+The AI administrator may answer a customer **without an operator** only in
+the `auto_reply` execution mode, and only when ALL hold:
+
+- the business switched «Автоматические ответы AI» on (`Business.aiAutoReplyEnabled`, default off);
+- the conversation is open, on an auto-reply channel (WhatsApp), and not paused;
+- no staff member has replied since the customer's message, and no escalation is open;
+- the message is a genuine inbound customer message, answered at most once.
+
+Its capabilities are its own:
+- read-only availability only;
+- it never creates, moves or cancels an appointment, never confirms a booking, and never opens an escalation itself;
+- it never writes a Customer, Vehicle, CustomerRequest or Appointment.
+
+Every answer passes the server's grounding check before it is sent:
+- configured prices with their type, and the inspection caveat;
+- no invented number, link, address or time;
+- no booking claim, no promotion the business didn't write, no internal text.
+
+Anything it cannot ground is **not sent**: the conversation goes to a human (escalation + pause + one honest handoff message). Any staff reply pauses automation for that conversation (`HUMAN_TAKEOVER`), and only an explicit operator action resumes it — the human always wins.
+
 ## 16. Development Boundary
 
 As of Prompt 13, this document is **almost entirely** a specification of
